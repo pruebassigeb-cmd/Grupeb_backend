@@ -9,10 +9,9 @@ import validator from "validator";
 // ==========================
 const JWT_EXPIRATION = "8h";
 const COOKIE_MAX_AGE = 8 * 60 * 60 * 1000;
-const MAX_LOGIN_ATTEMPTS = 100;
 
 // ==========================
-// LOGIN (MEJORADO)
+// LOGIN
 // ==========================
 export const login = async (req: Request, res: Response) => {
   try {
@@ -20,32 +19,21 @@ export const login = async (req: Request, res: Response) => {
 
     console.log("🔑 Intento de login");
 
-    // Validación estricta de ambos campos
     if (!codigo || !correo) {
-      return res.status(401).json({ 
-        error: "Credenciales inválidas" 
-      });
+      return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    // Validar formato del código
     if (!/^\d{5}$/.test(codigo)) {
-      return res.status(401).json({ 
-        error: "Credenciales inválidas" 
-      });
+      return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    // Validar formato del correo
     if (!validator.isEmail(correo)) {
-      return res.status(401).json({ 
-        error: "Credenciales inválidas" 
-      });
+      return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    // Sanitización
     const codigoSanitizado = codigo.replace(/\D/g, "");
     const correoSanitizado = validator.normalizeEmail(correo) || correo.toLowerCase().trim();
 
-    // Consulta optimizada: buscar usuario por correo
     const result = await pool.query(
       `SELECT u.idusuario, u.nombre, u.apellido, u.correo, u.codigo, 
               r.nombre as rol, r.acceso_total
@@ -57,36 +45,25 @@ export const login = async (req: Request, res: Response) => {
     );
 
     if ((result.rowCount ?? 0) === 0) {
-      // Delay para prevenir timing attacks
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      return res.status(401).json({ 
-        error: "Credenciales inválidas" 
-      });
+      return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
     const usuario = result.rows[0];
 
-    // Verificar el código hasheado
     const isMatch = await bcrypt.compare(codigoSanitizado, usuario.codigo);
-    
+
     if (!isMatch) {
-      // Delay para prevenir timing attacks
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      return res.status(401).json({ 
-        error: "Credenciales inválidas" 
-      });
+      return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    // Validar JWT_SECRET
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
       console.error("❌ JWT_SECRET no configurado");
-      return res.status(500).json({ 
-        error: "Error de configuración del servidor" 
-      });
+      return res.status(500).json({ error: "Error de configuración del servidor" });
     }
 
-    // Generar token JWT
     const token = jwt.sign(
       {
         id: usuario.idusuario,
@@ -95,17 +72,16 @@ export const login = async (req: Request, res: Response) => {
         acceso_total: usuario.acceso_total,
       },
       jwtSecret,
-      { 
+      {
         expiresIn: JWT_EXPIRATION,
-        algorithm: "HS256"
+        algorithm: "HS256",
       }
     );
 
-    // Cookie segura
     res.cookie("token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      secure: true,
+      sameSite: "none",
       maxAge: COOKIE_MAX_AGE,
       path: "/",
     });
@@ -124,21 +100,19 @@ export const login = async (req: Request, res: Response) => {
     console.log("✅ Login exitoso:", { id: usuario.idusuario, rol: usuario.rol });
   } catch (error: any) {
     console.error("❌ LOGIN ERROR:", error.message);
-    res.status(500).json({ 
-      error: "Error al procesar la solicitud" 
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   }
 };
 
 // ==========================
-// LOGOUT (MEJORADO)
+// LOGOUT
 // ==========================
 export const logout = (req: Request, res: Response) => {
   try {
     res.clearCookie("token", {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      secure: true,
+      sameSite: "none",
       path: "/",
     });
 
@@ -146,31 +120,27 @@ export const logout = (req: Request, res: Response) => {
     console.log("✅ Logout exitoso");
   } catch (error: any) {
     console.error("❌ LOGOUT ERROR:", error.message);
-    res.status(500).json({ 
-      error: "Error al cerrar sesión" 
-    });
+    res.status(500).json({ error: "Error al cerrar sesión" });
   }
 };
 
 // ==========================
-// VERIFICAR TOKEN (NUEVO)
+// VERIFICAR TOKEN
 // ==========================
 export const verifyToken = (req: Request, res: Response) => {
   try {
     const token = req.cookies?.token;
 
     if (!token) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: "No autenticado",
-        isAuthenticated: false 
+        isAuthenticated: false,
       });
     }
 
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
-      return res.status(500).json({ 
-        error: "Error de configuración del servidor" 
-      });
+      return res.status(500).json({ error: "Error de configuración del servidor" });
     }
 
     const decoded = jwt.verify(token, jwtSecret) as any;
@@ -186,9 +156,9 @@ export const verifyToken = (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("❌ TOKEN VERIFICATION ERROR:", error.message);
-    res.status(401).json({ 
+    res.status(401).json({
       error: "Token inválido o expirado",
-      isAuthenticated: false 
+      isAuthenticated: false,
     });
   }
 };
