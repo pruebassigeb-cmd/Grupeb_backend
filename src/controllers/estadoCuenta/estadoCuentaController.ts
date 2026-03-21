@@ -450,4 +450,4 @@ export const getListaEstadoCuenta = async (req: Request, res: Response) => {
     console.error("❌ LISTA ESTADO CUENTA ERROR:", error.message);
     return res.status(500).json({ error: "Error al obtener lista de estado de cuenta" });
   }
-};
+}; //hola
