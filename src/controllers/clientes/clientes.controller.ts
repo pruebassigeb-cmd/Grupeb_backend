@@ -281,7 +281,8 @@ export const searchClientes = async (req: Request, res: Response) => {
           c.telefono,
           c.atencion,
           c.celular,
-          c.razon_social
+          c.razon_social,
+          c.impresion
         FROM clientes c
         ORDER BY c.idclientes DESC
         LIMIT 50
@@ -302,7 +303,8 @@ export const searchClientes = async (req: Request, res: Response) => {
         c.telefono,
         c.atencion,
         c.celular,
-        c.razon_social
+        c.razon_social,
+        c.impresion
       FROM clientes c
       WHERE 
         c.atencion ILIKE $1 OR

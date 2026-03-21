@@ -41,22 +41,67 @@ export const createProductoPlastico = async (req: Request, res: Response) => {
 
     if ((tipoProducto.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "El tipo de producto seleccionado no existe",
-      });
+      return res.status(400).json({ error: "El tipo de producto seleccionado no existe" });
     }
 
     if ((material.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "El material seleccionado no existe",
-      });
+      return res.status(400).json({ error: "El material seleccionado no existe" });
     }
 
     if ((calibre.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "El calibre seleccionado no existe",
+      return res.status(400).json({ error: "El calibre seleccionado no existe" });
+    }
+
+    // ── Verificar unicidad — misma combinación de características ──────────
+    const duplicado = await client.query(
+      `SELECT
+         cp.idconfiguracion_plastico,
+         cp.medida,
+         tpp.material_plastico_producto AS tipo_producto,
+         mp.tipo_material               AS material,
+         c.calibre
+       FROM configuracion_plastico cp
+       JOIN tipo_producto_plastico tpp
+           ON tpp.idtipo_producto_plastico = cp.tipo_producto_plastico_plastico_idtipo_producto_plastico
+       JOIN material_plastico mp
+           ON mp.idmaterial_plastico = cp.material_plastico_plastico_idmaterial_plastico
+       JOIN calibre c
+           ON c.idcalibre = cp.calibre_idcalibre
+       WHERE cp.tipo_producto_plastico_plastico_idtipo_producto_plastico = $1
+         AND cp.material_plastico_plastico_idmaterial_plastico            = $2
+         AND cp.calibre_idcalibre                                         = $3
+         AND cp.altura       = $4
+         AND cp.ancho        = $5
+         AND cp.fuelle_fondo = $6
+         AND cp.fuelle_latIz = $7
+         AND cp.fuelle_latDe = $8
+         AND cp.refuerzo     = $9
+       LIMIT 1`,
+      [
+        tipo_producto_plastico_id,
+        material_plastico_id,
+        calibre_id,
+        altura,
+        ancho,
+        fuelle_fondo || 0,
+        fuelle_latIz || 0,
+        fuelle_latDe || 0,
+        refuerzo     || 0,
+      ]
+    );
+
+    if ((duplicado.rowCount ?? 0) > 0) {
+      const prod = duplicado.rows[0];
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "Ya existe un producto con estas características",
+        detalle: `"${prod.tipo_producto} — ${prod.medida}" ya está registrado con el mismo material (${prod.material}), calibre (${prod.calibre}) y medidas.`,
+        producto_existente: {
+          id:    prod.idconfiguracion_plastico,
+          medida: prod.medida,
+        },
       });
     }
 
@@ -82,7 +127,7 @@ export const createProductoPlastico = async (req: Request, res: Response) => {
         calibre_id,
         altura,
         fuelle_fondo || 0,
-        refuerzo || 0,
+        refuerzo     || 0,
         ancho,
         fuelle_latIz || 0,
         fuelle_latDe || 0,
@@ -100,17 +145,15 @@ export const createProductoPlastico = async (req: Request, res: Response) => {
     res.status(201).json({
       message: "Producto creado exitosamente",
       producto: {
-        id: nuevoProducto.idconfiguracion_plastico,
-        medida: nuevoProducto.medida,
+        id:       nuevoProducto.idconfiguracion_plastico,
+        medida:   nuevoProducto.medida,
         por_kilo: nuevoProducto.por_kilo,
       },
     });
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ CREATE PRODUCTO PLÁSTICO ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al procesar la solicitud",
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
   }
@@ -149,13 +192,10 @@ export const getProductosPlastico = async (req: Request, res: Response) => {
     `);
 
     console.log(`✅ ${result.rows.length} productos obtenidos`);
-
     res.json(result.rows);
   } catch (error: any) {
     console.error("❌ GET PRODUCTOS PLÁSTICO ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al obtener productos",
-    });
+    res.status(500).json({ error: "Error al obtener productos" });
   }
 };
 
@@ -165,12 +205,10 @@ export const getProductosPlastico = async (req: Request, res: Response) => {
 export const getProductoPlasticoById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-
     console.log("🔍 Obteniendo producto plástico:", id);
 
     const result = await pool.query(
-      `
-      SELECT 
+      `SELECT 
         cp.idconfiguracion_plastico as id,
         cp.altura,
         cp.fuelle_fondo,
@@ -194,25 +232,19 @@ export const getProductoPlasticoById = async (req: Request, res: Response) => {
       INNER JOIN calibre c 
         ON cp.calibre_idcalibre = c.idcalibre
       WHERE cp.idconfiguracion_plastico = $1
-      LIMIT 1
-    `,
+      LIMIT 1`,
       [id]
     );
 
     if ((result.rowCount ?? 0) === 0) {
-      return res.status(404).json({
-        error: "Producto no encontrado",
-      });
+      return res.status(404).json({ error: "Producto no encontrado" });
     }
 
     console.log("✅ Producto obtenido:", result.rows[0].medida);
-
     res.json(result.rows[0]);
   } catch (error: any) {
     console.error("❌ GET PRODUCTO BY ID ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al obtener producto",
-    });
+    res.status(500).json({ error: "Error al obtener producto" });
   }
 };
 
@@ -250,9 +282,7 @@ export const updateProductoPlastico = async (req: Request, res: Response) => {
 
     if ((productoExiste.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(404).json({
-        error: "Producto no encontrado",
-      });
+      return res.status(404).json({ error: "Producto no encontrado" });
     }
 
     // Verificar que existan los IDs de catálogos
@@ -270,22 +300,69 @@ export const updateProductoPlastico = async (req: Request, res: Response) => {
 
     if ((tipoProducto.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "El tipo de producto seleccionado no existe",
-      });
+      return res.status(400).json({ error: "El tipo de producto seleccionado no existe" });
     }
 
     if ((material.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "El material seleccionado no existe",
-      });
+      return res.status(400).json({ error: "El material seleccionado no existe" });
     }
 
     if ((calibre.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "El calibre seleccionado no existe",
+      return res.status(400).json({ error: "El calibre seleccionado no existe" });
+    }
+
+    // ── Verificar unicidad — excluir el propio registro ────────────────────
+    const duplicado = await client.query(
+      `SELECT
+         cp.idconfiguracion_plastico,
+         cp.medida,
+         tpp.material_plastico_producto AS tipo_producto,
+         mp.tipo_material               AS material,
+         c.calibre
+       FROM configuracion_plastico cp
+       JOIN tipo_producto_plastico tpp
+           ON tpp.idtipo_producto_plastico = cp.tipo_producto_plastico_plastico_idtipo_producto_plastico
+       JOIN material_plastico mp
+           ON mp.idmaterial_plastico = cp.material_plastico_plastico_idmaterial_plastico
+       JOIN calibre c
+           ON c.idcalibre = cp.calibre_idcalibre
+       WHERE cp.tipo_producto_plastico_plastico_idtipo_producto_plastico = $1
+         AND cp.material_plastico_plastico_idmaterial_plastico            = $2
+         AND cp.calibre_idcalibre                                         = $3
+         AND cp.altura       = $4
+         AND cp.ancho        = $5
+         AND cp.fuelle_fondo = $6
+         AND cp.fuelle_latIz = $7
+         AND cp.fuelle_latDe = $8
+         AND cp.refuerzo     = $9
+         AND cp.idconfiguracion_plastico != $10
+       LIMIT 1`,
+      [
+        tipo_producto_plastico_id,
+        material_plastico_id,
+        calibre_id,
+        altura,
+        ancho,
+        fuelle_fondo || 0,
+        fuelle_latIz || 0,
+        fuelle_latDe || 0,
+        refuerzo     || 0,
+        id,
+      ]
+    );
+
+    if ((duplicado.rowCount ?? 0) > 0) {
+      const prod = duplicado.rows[0];
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "Ya existe un producto con estas características",
+        detalle: `"${prod.tipo_producto} — ${prod.medida}" ya está registrado con el mismo material (${prod.material}), calibre (${prod.calibre}) y medidas.`,
+        producto_existente: {
+          id:    prod.idconfiguracion_plastico,
+          medida: prod.medida,
+        },
       });
     }
 
@@ -312,7 +389,7 @@ export const updateProductoPlastico = async (req: Request, res: Response) => {
         calibre_id,
         altura,
         fuelle_fondo || 0,
-        refuerzo || 0,
+        refuerzo     || 0,
         ancho,
         fuelle_latIz || 0,
         fuelle_latDe || 0,
@@ -323,25 +400,21 @@ export const updateProductoPlastico = async (req: Request, res: Response) => {
     );
 
     const productoActualizado = result.rows[0];
-
     await client.query("COMMIT");
 
     console.log("✅ Producto actualizado:", productoActualizado.idconfiguracion_plastico);
-
     res.json({
       message: "Producto actualizado exitosamente",
       producto: {
-        id: productoActualizado.idconfiguracion_plastico,
-        medida: productoActualizado.medida,
+        id:       productoActualizado.idconfiguracion_plastico,
+        medida:   productoActualizado.medida,
         por_kilo: productoActualizado.por_kilo,
       },
     });
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ UPDATE PRODUCTO PLÁSTICO ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al procesar la solicitud",
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
   }
@@ -355,12 +428,10 @@ export const deleteProductoPlastico = async (req: Request, res: Response) => {
 
   try {
     const { id } = req.params;
-
     console.log("🗑️ Eliminando producto plástico:", id);
 
     await client.query("BEGIN");
 
-    // Verificar que el producto existe
     const productoExiste = await client.query(
       "SELECT medida FROM configuracion_plastico WHERE idconfiguracion_plastico = $1",
       [id]
@@ -368,33 +439,98 @@ export const deleteProductoPlastico = async (req: Request, res: Response) => {
 
     if ((productoExiste.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(404).json({
-        error: "Producto no encontrado",
-      });
+      return res.status(404).json({ error: "Producto no encontrado" });
     }
 
     const medida = productoExiste.rows[0].medida;
 
-    // Eliminar producto
     await client.query(
       "DELETE FROM configuracion_plastico WHERE idconfiguracion_plastico = $1",
       [id]
     );
 
     await client.query("COMMIT");
-
     console.log("✅ Producto eliminado:", medida);
-
-    res.json({
-      message: "Producto eliminado exitosamente",
-    });
+    res.json({ message: "Producto eliminado exitosamente" });
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ DELETE PRODUCTO PLÁSTICO ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al procesar la solicitud",
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
+  }
+};
+
+// ==========================
+// VERIFICAR DUPLICADO (GET — sin crear)
+// ==========================
+export const checkProductoDuplicado = async (req: Request, res: Response) => {
+  try {
+    const {
+      tipo_producto_plastico_id,
+      material_plastico_id,
+      calibre_id,
+      altura,
+      ancho,
+      fuelle_fondo   = 0,
+      fuelle_latIz   = 0,
+      fuelle_latDe   = 0,
+      refuerzo       = 0,
+    } = req.query;
+
+    const { rows } = await pool.query(
+      `SELECT
+         cp.idconfiguracion_plastico,
+         cp.medida,
+         tpp.material_plastico_producto AS tipo_producto,
+         mp.tipo_material               AS material,
+         c.calibre
+       FROM configuracion_plastico cp
+       JOIN tipo_producto_plastico tpp
+           ON tpp.idtipo_producto_plastico = cp.tipo_producto_plastico_plastico_idtipo_producto_plastico
+       JOIN material_plastico mp
+           ON mp.idmaterial_plastico = cp.material_plastico_plastico_idmaterial_plastico
+       JOIN calibre c
+           ON c.idcalibre = cp.calibre_idcalibre
+       WHERE cp.tipo_producto_plastico_plastico_idtipo_producto_plastico = $1
+         AND cp.material_plastico_plastico_idmaterial_plastico            = $2
+         AND cp.calibre_idcalibre                                         = $3
+         AND cp.altura       = $4
+         AND cp.ancho        = $5
+         AND cp.fuelle_fondo = $6
+         AND cp.fuelle_latIz = $7
+         AND cp.fuelle_latDe = $8
+         AND cp.refuerzo     = $9
+       LIMIT 1`,
+      [
+        tipo_producto_plastico_id,
+        material_plastico_id,
+        calibre_id,
+        altura,
+        ancho,
+        fuelle_fondo,
+        fuelle_latIz,
+        fuelle_latDe,
+        refuerzo,
+      ]
+    );
+
+    if (rows.length === 0) {
+      return res.json({ existe: false });
+    }
+
+    const prod = rows[0];
+    return res.json({
+      existe:  true,
+      detalle: `"${prod.tipo_producto} — ${prod.medida}" ya está registrado con el mismo material (${prod.material}), calibre (${prod.calibre}) y medidas.`,
+      producto_existente: {
+        id:     prod.idconfiguracion_plastico,
+        medida: prod.medida,
+      },
+    });
+
+  } catch (error: any) {
+    console.error("❌ CHECK DUPLICADO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al verificar duplicado" });
   }
 };

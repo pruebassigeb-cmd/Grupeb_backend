@@ -6,6 +6,7 @@ import {
   getProductosPlastico,
   getProductoPlasticoById,
   updateProductoPlastico,
+  checkProductoDuplicado,
   //deleteProductoPlastico,
 } from "../../controllers/productos/productos-plastico.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
@@ -80,6 +81,8 @@ router.post(
 
 // Obtener todos los productos plástico
 router.get("/", authMiddleware, getProductosPlastico);
+// En tus rutas de productos
+router.get('/check-duplicado', checkProductoDuplicado);
 
 // Obtener producto por ID
 router.get("/:id", authMiddleware, validateId, getProductoPlasticoById);

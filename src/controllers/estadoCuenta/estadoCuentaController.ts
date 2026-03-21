@@ -32,7 +32,6 @@ const buscarTarifa = (
   ) ?? null;
 
   if (!resultado) {
-    // Mostrar por qué no matcheó — filtramos solo por tintas para ver qué hay disponible
     const porTintas = tarifas.filter(t => t.tintas_idtintas === tintasId);
     const porCaras  = tarifas.filter(t => t.caras_idcaras   === carasId);
     console.log(`  ❌ Sin match. Por tintas=${tintasId}: ${porTintas.length} tarifa(s) | Por caras=${carasId}: ${porCaras.length} tarifa(s)`);
@@ -88,6 +87,11 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     const { noPedido } = req.params;
     const IVA = 0.16;
 
+    // Estados
+    const ESTADO_PENDIENTE       = 1;
+    const ESTADO_ANTICIPO_PAGADO = 2;
+    const ESTADO_PAGADO          = 6;
+
     await client.query("BEGIN");
 
     // ── 1. Datos base — subtotal/iva/total NUNCA se tocan ─────
@@ -95,6 +99,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       SELECT
         s.idsolicitud, s.no_pedido, s.no_cotizacion, s.fecha,
         cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
+        cli.impresion,
         v.idventas,
         v.subtotal  AS subtotal_original,
         v.iva       AS iva_original,
@@ -296,6 +301,11 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
         idsolicitud_producto:  prod.idsolicitud_producto,
         no_produccion:         prod.no_produccion,
         nombre:                [prod.tipo_producto, prod.medida, prod.material].filter(Boolean).join(" "),
+        // ── campos agregados para PDF simple ─────────────────
+        medida:                prod.medida    ?? null,
+        material:              prod.material  ?? null,
+        impresion:             pedido.impresion ?? null,
+        // ─────────────────────────────────────────────────────
         tintas:                prod.tintas_num,
         caras:                 prod.caras_num,
         modo_cantidad:         prod.modo_cantidad,
@@ -324,26 +334,34 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     console.log(`   nuevoSubtotal=${nuevoSubtotal} | nuevoIva=${nuevoIva} | nuevoTotal=${nuevoTotal}`);
     console.log(`   totalOriginal=${totalOriginal} | diferenciaTotal=${diferenciaTotal} | nuevoSaldo=${nuevoSaldo}`);
 
-    // ── 8. Guardar _real y diferencia_total en BD ─────────────
-    // ✅ NUNCA toca subtotal / iva / total (los originales)
+    // ── 8. Determinar nuevo estado ────────────────────────────
+    let nuevoEstado: number;
+    if (nuevoSaldo <= 0)                             nuevoEstado = ESTADO_PAGADO;
+    else if (abonoActual >= Number(pedido.anticipo)) nuevoEstado = ESTADO_ANTICIPO_PAGADO;
+    else                                             nuevoEstado = ESTADO_PENDIENTE;
+
+    console.log(`\n🏷️  Nuevo estado → ${nuevoEstado} (saldo=${nuevoSaldo} | abono=${abonoActual} | anticipo=${pedido.anticipo})`);
+
+    // ── 9. Guardar en BD — NUNCA toca subtotal/iva/total originales ──
     const updateResult = await client.query(`
       UPDATE ventas
       SET subtotal_real    = $1,
           iva_real         = $2,
           total_real       = $3,
           saldo            = $4,
-          diferencia_total = $5
-      WHERE idventas = $6
-    `, [nuevoSubtotal, nuevoIva, nuevoTotal, nuevoSaldo, diferenciaTotal, pedido.idventas]);
+          diferencia_total = $5,
+          estado_administrativo_cat_idestado_administrativo_cat = $6
+      WHERE idventas = $7
+    `, [nuevoSubtotal, nuevoIva, nuevoTotal, nuevoSaldo, diferenciaTotal, nuevoEstado, pedido.idventas]);
 
     console.log(`\n💾 UPDATE ventas → rows afectadas: ${updateResult.rowCount} | idventas=${pedido.idventas}`);
-    console.log(`   subtotal_real=${nuevoSubtotal} | iva_real=${nuevoIva} | total_real=${nuevoTotal} | diferencia_total=${diferenciaTotal}`);
+    console.log(`   subtotal_real=${nuevoSubtotal} | iva_real=${nuevoIva} | total_real=${nuevoTotal} | diferencia_total=${diferenciaTotal} | estado=${nuevoEstado}`);
 
     await client.query("COMMIT");
     console.log(`✅ COMMIT exitoso — pedido #${noPedido}`);
 
     return res.json({
-      no_pedido:     Number(noPedido),
+      no_pedido:     pedido.no_pedido,
       no_cotizacion: pedido.no_cotizacion,
       fecha:         pedido.fecha,
       cliente:       pedido.cliente,
@@ -370,6 +388,9 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
       // ✅ Guardado en BD — total_real - total_original
       diferencia_total: diferenciaTotal,
+
+      // ✅ Estado actualizado
+      estado_id: nuevoEstado,
     });
 
   } catch (error: any) {

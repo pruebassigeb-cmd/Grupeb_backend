@@ -1,11 +1,15 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
+// ============================================================
+// GET /api/seguimiento
+// ============================================================
 export const getSeguimiento = async (req: Request, res: Response) => {
   try {
     const { rows } = await pool.query(`
       SELECT
         s.no_pedido,
+        s.no_cotizacion,
         s.fecha,
         cli.razon_social                              AS cliente,
         pr.tipo_producto                              AS tipo_producto,
@@ -13,8 +17,9 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         v.abono                                       AS anticipo_pagado,
         CASE WHEN v.abono >= v.anticipo
              THEN true ELSE false END                 AS anticipo_cubierto,
-        CASE WHEN v.abono >= v.total
+        CASE WHEN v.saldo <= 0.01
              THEN true ELSE false END                 AS pago_completo,
+        v.saldo                                       AS saldo_venta,
 
         dp.estado_administrativo_cat_idestado_administrativo_cat AS producto_diseno_estado_id,
         CASE WHEN dp.estado_administrativo_cat_idestado_administrativo_cat = 3
@@ -81,7 +86,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         sd.kilogramos                   AS kilogramos_orden,
         sd.modo_cantidad,
 
-        -- ── Campos de merma (incluyendo metros_merma) ────────
+        -- ── Campos de merma ────────
         op.kilos,
         op.kilos_merma,
         op.pzas,
@@ -155,7 +160,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         : (row.calibre_numero && Number(row.calibre_numero) !== 0 ? String(row.calibre_numero) : "");
 
       return {
-        no_pedido:           Number(row.no_pedido),
+        no_pedido:           row.no_pedido,
+        no_cotizacion:       row.no_cotizacion ?? null,
         fecha:               row.fecha,
         cliente:             row.cliente       || "",
         tipo_producto:       row.tipo_producto || "Plástico",
@@ -163,6 +169,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         anticipo_pagado:     Number(row.anticipo_pagado    ?? 0),
         anticipo_cubierto:   Boolean(row.anticipo_cubierto),
         pago_completo:       Boolean(row.pago_completo),
+        saldo_venta:         row.saldo_venta != null ? Number(row.saldo_venta) : null,
         diseno_estado_id:    Number(row.producto_diseno_estado_id ?? 1),
         diseno_aprobado:     Boolean(row.producto_diseno_aprobado),
         no_produccion:       row.no_produccion ?? null,
@@ -194,12 +201,12 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         cantidad_orden:   row.cantidad_orden   ? Number(row.cantidad_orden)   : null,
         kilogramos_orden: row.kilogramos_orden ? Number(row.kilogramos_orden) : null,
         modo_cantidad:    row.modo_cantidad    || "unidad",
-        // ── Campos de merma ──────────────────────────────────
+        // ── Campos de merma ──
         kilos:        row.kilos        != null ? Number(row.kilos)        : null,
         kilos_merma:  row.kilos_merma  != null ? Number(row.kilos_merma)  : null,
         pzas:         row.pzas         != null ? Number(row.pzas)         : null,
         pzas_merma:   row.pzas_merma   != null ? Number(row.pzas_merma)   : null,
-        metros_merma: row.metros_merma != null ? Number(row.metros_merma) : null, // ← NUEVO
+        metros_merma: row.metros_merma != null ? Number(row.metros_merma) : null,
       };
     });
 
@@ -211,6 +218,9 @@ export const getSeguimiento = async (req: Request, res: Response) => {
   }
 };
 
+// ============================================================
+// GET /api/seguimiento/:noPedido/orden-produccion
+// ============================================================
 export const getOrdenProduccion = async (req: Request, res: Response) => {
   try {
     const { noPedido } = req.params;
@@ -278,7 +288,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         op.repeticion_kidder,
         op.repeticion_sicosa,
         op.fecha_entrega,
-        -- ── campos de merma ──────────────────────────────────
+        -- ── campos de merma ──
         op.kilos,
         op.kilos_merma,
         op.pzas,
@@ -385,12 +395,12 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         repeticion_kidder:    r.repeticion_kidder    ?? null,
         repeticion_sicosa:    r.repeticion_sicosa    ?? null,
         fecha_entrega:        r.fecha_entrega        ?? null,
-        // ── campos de merma ──────────────────────────────────
+        // ── campos de merma ──
         kilos:        r.kilos        != null ? Number(r.kilos)        : null,
         kilos_merma:  r.kilos_merma  != null ? Number(r.kilos_merma)  : null,
         pzas:         r.pzas         != null ? Number(r.pzas)         : null,
         pzas_merma:   r.pzas_merma   != null ? Number(r.pzas_merma)   : null,
-        metros_merma: r.metros_merma != null ? Number(r.metros_merma) : null, // ← NUEVO
+        metros_merma: r.metros_merma != null ? Number(r.metros_merma) : null,
         // datos del proceso de extrusión (progreso real)
         kilos_extruir:  r.kilos_extruir  ? Number(r.kilos_extruir)  : null,
         metros_extruir: r.metros_extruir ? Number(r.metros_extruir) : null,
@@ -398,7 +408,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
     });
 
     return res.json({
-      no_pedido:       Number(pedido.no_pedido),
+      no_pedido:       pedido.no_pedido,
       no_cotizacion:   pedido.no_cotizacion ?? null,
       fecha:           pedido.fecha,
       cliente:         pedido.cliente   || "",
@@ -414,5 +424,145 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("❌ GET ORDEN PRODUCCION ERROR:", error.message);
     return res.status(500).json({ error: "Error al obtener orden de producción" });
+  }
+};
+
+// ============================================================
+// GET /api/seguimiento/:idproduccion/bultos-etiqueta
+// ============================================================
+export const getBultosEtiqueta = async (req: Request, res: Response) => {
+  try {
+    const { idproduccion } = req.params;
+
+    const { rows: pedidoRows } = await pool.query(`
+      SELECT
+        s.no_pedido,
+        s.fecha,
+        op.no_produccion,
+        op.idproduccion,
+        op.fecha_entrega,
+        op.bultos_finalizado,
+        -- Cliente
+        cli.razon_social  AS cliente,
+        cli.empresa,
+        cli.telefono,
+        cli.celular,
+        cli.correo,
+        cli.impresion     AS cliente_impresion,
+        -- Domicilio del cliente
+        dom.domicilio     AS calle,
+        dom.numero,
+        dom.colonia,
+        dom.codigo_postal,
+        dom.poblacion,
+        dom.estado,
+        -- Producto
+        tpp.material_plastico_producto AS nombre_producto,
+        cfg.medida,
+        mp.tipo_material               AS material,
+        sd.cantidad,
+        sd.kilogramos,
+        sd.modo_cantidad,
+        -- Cantidad real del proceso final (con merma)
+        COALESCE(af.pzas_finales, bol.piezas_bolseadas) AS cantidad_real
+      FROM orden_produccion op
+      JOIN solicitud_producto sp
+          ON sp.idsolicitud_producto = op.idsolicitud_producto
+      JOIN solicitud s
+          ON s.idsolicitud = sp.solicitud_idsolicitud
+      JOIN clientes cli
+          ON cli.idclientes = s.clientes_idclientes
+      LEFT JOIN domicilio dom
+          ON dom.clientes_idclientes = cli.idclientes
+      LEFT JOIN configuracion_plastico cfg
+          ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
+      LEFT JOIN tipo_producto_plastico tpp
+          ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
+      LEFT JOIN material_plastico mp
+          ON mp.idmaterial_plastico = cfg.material_plastico_plastico_idmaterial_plastico
+      LEFT JOIN solicitud_detalle sd
+          ON sd.solicitud_producto_id = sp.idsolicitud_producto
+          AND sd.aprobado = true
+      LEFT JOIN asa_flexible af
+          ON af.orden_produccion_idproduccion = op.idproduccion
+      LEFT JOIN bolseo bol
+          ON bol.orden_produccion_idproduccion = op.idproduccion
+      WHERE op.idproduccion = $1
+      LIMIT 1
+    `, [idproduccion]);
+
+    if (pedidoRows.length === 0)
+      return res.status(404).json({ error: "Orden no encontrada" });
+
+    const pedido = pedidoRows[0];
+
+    // ── 2. Validar que los bultos estén finalizados ────────────
+    if (!pedido.bultos_finalizado)
+      return res.status(403).json({ error: "Los bultos aún no están finalizados" });
+
+    // ── 3. Obtener bultos de esta orden ───────────────────────
+    const { rows: bultosRows } = await pool.query(`
+      SELECT
+        b.idbulto,
+        b.cantidad_unidades,
+        b.fecha_creacion,
+        CASE
+          WHEN b.asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
+          ELSE 'bolseo'
+        END AS proceso_origen
+      FROM bultos b
+      WHERE
+        b.bolseo_idbolseo IN (
+          SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = $1
+        )
+        OR
+        b.asa_flexible_idasa_flexible IN (
+          SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1
+        )
+      ORDER BY b.idbulto ASC
+    `, [idproduccion]);
+
+    return res.json({
+      // Pedido
+      no_pedido:      pedido.no_pedido,
+      no_produccion:  pedido.no_produccion,
+      fecha:          pedido.fecha,
+      fecha_entrega:  pedido.fecha_entrega ?? null,
+      // Cliente
+      cliente:           pedido.cliente           || "",
+      empresa:           pedido.empresa           || "",
+      telefono:          pedido.telefono          || "",
+      celular:           pedido.celular           || "",
+      correo:            pedido.correo            || "",
+      cliente_impresion: pedido.cliente_impresion || "",
+      // Domicilio
+      calle:         pedido.calle         || "",
+      numero:        pedido.numero        || "",
+      colonia:       pedido.colonia       || "",
+      codigo_postal: pedido.codigo_postal || "",
+      poblacion:     pedido.poblacion     || "",
+      estado:        pedido.estado        || "",
+      // Producto
+      nombre_producto: pedido.nombre_producto || "",
+      medida:          pedido.medida          || "",
+      material:        pedido.material        || "",
+      cantidad_total:  pedido.cantidad_real != null
+        ? Number(pedido.cantidad_real)
+        : pedido.cantidad ? Number(pedido.cantidad) : null,
+      kilogramos:      pedido.kilogramos ? Number(pedido.kilogramos) : null,
+      modo_cantidad:   pedido.modo_cantidad   || "unidad",
+      // Bultos
+      total_bultos: bultosRows.length,
+      bultos: bultosRows.map((b: any) => ({
+        idbulto:           b.idbulto,
+        cantidad_unidades: Number(b.cantidad_unidades),
+        fecha_creacion:    b.fecha_creacion,
+        proceso_origen:    b.proceso_origen,
+      })),
+    });
+
+  } catch (error: any) {
+    console.error("❌ GET BULTOS ETIQUETA ERROR:", error.message);
+    return res.status(500).json({ error: "Error al obtener datos de etiqueta" });
   }
 };

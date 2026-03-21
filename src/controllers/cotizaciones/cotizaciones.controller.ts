@@ -21,20 +21,59 @@ function normalizarNombreEstado(nombre: string): string {
   return "Pendiente";
 }
 
-async function obtenerSiguienteNoPedido(client: any): Promise<number> {
-  const { rows } = await client.query(
-    `SELECT COALESCE(MAX(no_pedido), 0) + 1 AS siguiente FROM solicitud`
-  );
+// ── Genera folio con año actual de 2 dígitos + número con padding ──
+function generarFolioCotizacion(numero: number): string {
+  const yy = new Date().getFullYear().toString().slice(-2);
+  return `COT${yy}${String(numero).padStart(3, "0")}`;
+}
+
+function generarFolioPedido(numero: number): string {
+  const yy = new Date().getFullYear().toString().slice(-2);
+  return `P${yy}${String(numero).padStart(3, "0")}`;
+}
+
+// ── Obtiene el siguiente número secuencial para cotizaciones ──────
+async function obtenerSiguienteNumeroCotizacion(client: any): Promise<number> {
+  const yy = new Date().getFullYear().toString().slice(-2);
+  const { rows } = await client.query(`
+    SELECT COALESCE(MAX(
+      CAST(SUBSTRING(no_cotizacion FROM 'COT${yy}(\\d+)') AS INTEGER)
+    ), 0) + 1 AS siguiente
+    FROM solicitud
+    WHERE no_cotizacion LIKE 'COT${yy}%'
+  `);
   return rows[0].siguiente;
 }
 
+async function obtenerSiguienteNumeroPedido(client: any): Promise<number> {
+  const yy = new Date().getFullYear().toString().slice(-2);
+  const { rows } = await client.query(`
+    SELECT COALESCE(MAX(
+      CAST(SUBSTRING(no_pedido FROM 'P${yy}(\\d+)') AS INTEGER)
+    ), 0) + 1 AS siguiente
+    FROM solicitud
+    WHERE no_pedido LIKE 'P${yy}%'
+  `);
+  return rows[0].siguiente;
+}
+
+async function obtenerSiguienteFolioCotizacion(client: any): Promise<string> {
+  const numero = await obtenerSiguienteNumeroCotizacion(client);
+  return generarFolioCotizacion(numero);
+}
+
+async function obtenerSiguienteFolioPedido(client: any): Promise<string> {
+  const numero = await obtenerSiguienteNumeroPedido(client);
+  return generarFolioPedido(numero);
+}
+
 // ============================================================
-// CREAR VENTA Y DISEÑO (sin orden_produccion — se crea en disenoController)
+// CREAR VENTA Y DISEÑO
 // ============================================================
 async function crearVentaYDiseno(
   client:      any,
   solicitudId: number,
-  noPedido:    number,
+  folioPedido: string,
   subtotal:    number
 ): Promise<void> {
   const iva      = Number((subtotal * IVA).toFixed(2));
@@ -51,7 +90,7 @@ async function crearVentaYDiseno(
     RETURNING idventas`,
     [solicitudId, ESTADO.PENDIENTE, subtotal, iva, total, anticipo, total, 0]
   );
-  console.log(`✅ Venta creada: idventas=${ventaRows[0].idventas} para pedido #${noPedido}`);
+  console.log(`✅ Venta creada: idventas=${ventaRows[0].idventas} para pedido ${folioPedido}`);
 
   const { rows: disenoRows } = await client.query(
     `INSERT INTO diseno (
@@ -82,7 +121,7 @@ async function crearVentaYDiseno(
     );
   }
 
-  console.log(`✅ Diseño #${disenoId} creado con ${productos.length} producto(s) para pedido #${noPedido}`);
+  console.log(`✅ Diseño #${disenoId} creado con ${productos.length} producto(s) para pedido ${folioPedido}`);
 }
 
 // ============================================================
@@ -99,24 +138,44 @@ export const crearCotizacion = async (req: Request, res: Response) => {
 
     await client.query("BEGIN");
 
-    let noPedido: number | null = null;
-    if (tipoDocumento === "pedido") {
-      noPedido = await obtenerSiguienteNoPedido(client);
+    // ── Generar folio según tipo ──────────────────────────────
+    let folioCotizacion: string | null = null;
+    let folioPedido:     string | null = null;
+
+    if (tipoDocumento === "cotizacion") {
+      folioCotizacion = await obtenerSiguienteFolioCotizacion(client);
+    } else {
+      folioPedido = await obtenerSiguienteFolioPedido(client);
     }
 
-    const { rows: solRows } = await client.query(
-      `INSERT INTO solicitud (
-        clientes_idclientes,
-        estado_administrativo_cat_idestado_administrativo_cat,
-        estado, no_pedido
-      ) VALUES ($1, $2, $3, $4)
-      RETURNING idsolicitud, no_cotizacion, no_pedido, estado`,
-      [clienteId, ESTADO.PENDIENTE, tipoDocumento, noPedido]
-    );
+    // ── FIX: INSERT usa columnas distintas según tipo para evitar NOT NULL en no_cotizacion ──
+    let solRows: any[];
 
-    const solicitudId      = solRows[0].idsolicitud;
-    const noCotizacion     = solRows[0].no_cotizacion;
-    const noPedidoGuardado = solRows[0].no_pedido;
+    if (tipoDocumento === "cotizacion") {
+      ({ rows: solRows } = await client.query(
+        `INSERT INTO solicitud (
+          clientes_idclientes,
+          estado_administrativo_cat_idestado_administrativo_cat,
+          estado, no_cotizacion
+        ) VALUES ($1, $2, $3, $4)
+        RETURNING idsolicitud, no_cotizacion, no_pedido, estado`,
+        [clienteId, ESTADO.PENDIENTE, tipoDocumento, folioCotizacion]
+      ));
+    } else {
+      ({ rows: solRows } = await client.query(
+        `INSERT INTO solicitud (
+          clientes_idclientes,
+          estado_administrativo_cat_idestado_administrativo_cat,
+          estado, no_pedido
+        ) VALUES ($1, $2, $3, $4)
+        RETURNING idsolicitud, no_cotizacion, no_pedido, estado`,
+        [clienteId, ESTADO.PENDIENTE, tipoDocumento, folioPedido]
+      ));
+    }
+
+    const solicitudId             = solRows[0].idsolicitud;
+    const folioCotizacionGuardado = solRows[0].no_cotizacion;
+    const folioPedidoGuardado     = solRows[0].no_pedido;
 
     let subtotalTotal = 0;
 
@@ -161,8 +220,6 @@ export const crearCotizacion = async (req: Request, res: Response) => {
 
       const solicitudProductoId = prodRows[0].idsolicitud_producto;
       const porKiloNum = porKilo ? Number(porKilo) : 0;
-
-      // ── FIX: aprobado = true en pedido directo, null en cotizacion ──
       const aprobadoValor = tipoDocumento === "pedido" ? true : null;
 
       for (const d of detallesValidos) {
@@ -188,9 +245,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
       }
     }
 
-    // ── Crear venta y diseño (la orden_produccion la crea disenoController) ──
     if (tipoDocumento === "pedido") {
-      await crearVentaYDiseno(client, solicitudId, noPedidoGuardado, subtotalTotal);
+      await crearVentaYDiseno(client, solicitudId, folioPedidoGuardado, subtotalTotal);
     }
 
     await client.query("COMMIT");
@@ -198,14 +254,14 @@ export const crearCotizacion = async (req: Request, res: Response) => {
     if (tipoDocumento === "pedido") {
       return res.status(201).json({
         message:   "Pedido creado exitosamente",
-        no_pedido: noPedidoGuardado,
+        no_pedido: folioPedidoGuardado,
         tipo:      "pedido",
       });
     }
 
     return res.status(201).json({
       message:       "Cotización creada exitosamente",
-      no_cotizacion: noCotizacion,
+      no_cotizacion: folioCotizacionGuardado,
       tipo:          "cotizacion",
     });
 
@@ -311,10 +367,10 @@ export const getCotizaciones = async (req: Request, res: Response) => {
       ORDER BY s.no_cotizacion DESC, sp.idsolicitud_producto, sd.idsolicitud_detalle
     `);
 
-    const agrupadas: Record<number, any> = {};
+    const agrupadas: Record<string, any> = {};
 
     for (const row of rows) {
-      const noCot: number = row.no_cotizacion;
+      const noCot: string = row.no_cotizacion;
 
       if (!agrupadas[noCot]) {
         agrupadas[noCot] = {
@@ -449,8 +505,8 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
     await client.query("BEGIN");
 
     const { rows: docRows } = await client.query(
-      `SELECT idsolicitud, estado, no_pedido 
-       FROM solicitud 
+      `SELECT idsolicitud, estado, no_pedido
+       FROM solicitud
        WHERE no_cotizacion = $1`,
       [id]
     );
@@ -461,17 +517,17 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
     }
 
     const doc = docRows[0];
-    let noPedidoAsignado: number | null = doc.no_pedido;
+    let folioPedidoAsignado: string | null = doc.no_pedido;
     let seConvirtioAPedido = false;
 
     if (Number(estadoId) === ESTADO.APROBADO && doc.estado === "cotizacion" && !doc.no_pedido) {
-      noPedidoAsignado   = await obtenerSiguienteNoPedido(client);
-      seConvirtioAPedido = true;
+      folioPedidoAsignado = await obtenerSiguienteFolioPedido(client);
+      seConvirtioAPedido  = true;
 
       await client.query(
         `DELETE FROM solicitud_detalle
          WHERE solicitud_producto_id IN (
-           SELECT idsolicitud_producto 
+           SELECT idsolicitud_producto
            FROM solicitud_producto
            WHERE solicitud_idsolicitud = $1
          )
@@ -487,13 +543,13 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
              fecha_aprobacion = NOW(),
              visible_hasta = NOW() + INTERVAL '5 days'
          WHERE no_cotizacion = $3`,
-        [estadoId, noPedidoAsignado, id]
+        [estadoId, folioPedidoAsignado, id]
       );
 
       const { rows: subtotalRows } = await client.query(
         `SELECT COALESCE(SUM(sd.precio_total), 0) AS subtotal
          FROM solicitud_detalle sd
-         JOIN solicitud_producto sp 
+         JOIN solicitud_producto sp
            ON sp.idsolicitud_producto = sd.solicitud_producto_id
          WHERE sp.solicitud_idsolicitud = $1`,
         [doc.idsolicitud]
@@ -502,7 +558,7 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
       await crearVentaYDiseno(
         client,
         doc.idsolicitud,
-        noPedidoAsignado,
+        folioPedidoAsignado,
         Number(subtotalRows[0].subtotal)
       );
 
@@ -522,7 +578,7 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
         ? "Cotización aprobada y convertida a pedido exitosamente"
         : "Estado actualizado exitosamente",
       convertida_a_pedido: seConvirtioAPedido,
-      no_pedido: noPedidoAsignado,
+      no_pedido: folioPedidoAsignado,
     });
 
   } catch (error: any) {
@@ -552,13 +608,11 @@ export const eliminarCotizacion = async (req: Request, res: Response) => {
     }
 
     const solicitudIds: number[] = solRows.map((r: any) => r.idsolicitud);
-
     const { rows: prodRows } = await client.query(
       `SELECT idsolicitud_producto FROM solicitud_producto
        WHERE solicitud_idsolicitud = ANY($1::int[])`,
       [solicitudIds]
     );
-
     const productoIds: number[] = prodRows.map((r: any) => r.idsolicitud_producto);
 
     if (productoIds.length > 0) {
