@@ -28,12 +28,13 @@ router.use(
 // ==========================
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  max: 50,
   message: { 
     error: "Demasiados intentos de inicio de sesión. Intenta en 15 minutos." 
   },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => process.env.NODE_ENV !== "production", // solo en producción
 });
 
 // ✅ NUEVO: Rate limit MÁS PERMISIVO para /verify (desarrollo con StrictMode)

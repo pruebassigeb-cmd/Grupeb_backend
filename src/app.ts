@@ -66,6 +66,7 @@ app.use("/api/rodillos", rodillosRoutes);
 app.use("/api/procesos", procesosRoutes);
 app.use("/api/estado-cuenta", estadoCuentaRoutes);
 app.use("/api/seguimiento/:idproduccion/bultos", bultosRoutes); // Rutas de bultos anidadas bajo seguimiento
+app.set("trust proxy", 1);
 
 // ==========================
 // HEALTH CHECK
