@@ -17,17 +17,21 @@ import catalogosProduccionRoutes from "./routes/catalogos_produccion/catalogos-p
 import cotizacionesRoutes from "./routes/cotizaciones/cotizaciones.routes";
 import calcularPrecioRoutes from "./routes/cotizaciones/calcular-precio.routes";
 import pedidosRoutes from "./routes/pedidos/pedidos.routes";
-import ventasRoutes  from "./routes/ventas/ventas.routes";
-import disenoRoutes  from "./routes/diseno/diseno.routes";
-import suajesRoutes  from "./routes/suajes/suajes.routes";
+import ventasRoutes from "./routes/ventas/ventas.routes";
+import disenoRoutes from "./routes/diseno/diseno.routes";
+import suajesRoutes from "./routes/suajes/suajes.routes";
 import seguimientoRoutes from "./routes/seguimiento/seguimiento.routes";
 import rodillosRoutes from "./routes/rodillos/rodillos.routes";
 import procesosRoutes from "./routes/procesos/procesos.routes";
 import estadoCuentaRoutes from "./routes/estadoCuenta/estadoCuenta.routes";
 import bultosRoutes from "./routes/seguimiento/bultos.routes";
 
-
 const app = express();
+
+// ==========================
+// TRUST PROXY (DEBE IR PRIMERO)
+// ==========================
+app.set("trust proxy", 1);
 
 // ==========================
 // CONFIGURACIÓN DE SEGURIDAD
@@ -57,16 +61,15 @@ app.use("/api/productos-plastico", productosPlasticoRoutes);
 app.use("/api/catalogos-produccion", catalogosProduccionRoutes);
 app.use("/api/cotizaciones", cotizacionesRoutes);
 app.use("/api/pedidos", pedidosRoutes);
-app.use("/api/ventas",  ventasRoutes);
-app.use("/api/diseno",  disenoRoutes);
+app.use("/api/ventas", ventasRoutes);
+app.use("/api/diseno", disenoRoutes);
 app.use("/api", calcularPrecioRoutes);
 app.use("/api", suajesRoutes);
 app.use("/api/seguimiento", seguimientoRoutes);
 app.use("/api/rodillos", rodillosRoutes);
 app.use("/api/procesos", procesosRoutes);
 app.use("/api/estado-cuenta", estadoCuentaRoutes);
-app.use("/api/seguimiento/:idproduccion/bultos", bultosRoutes); // Rutas de bultos anidadas bajo seguimiento
-app.set("trust proxy", 1);
+app.use("/api/seguimiento/:idproduccion/bultos", bultosRoutes);
 
 // ==========================
 // HEALTH CHECK
@@ -76,7 +79,7 @@ app.get("/health", (req, res) => {
 });
 
 // ==========================
-// 404 - RUTA NO ENCONTRADA (debe ir al final)
+// 404 - RUTA NO ENCONTRADA
 // ==========================
 app.use((req, res, next) => {
   res.status(404).json({ error: "Ruta no encontrada" });
