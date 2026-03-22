@@ -78,15 +78,9 @@ export const login = async (req: Request, res: Response) => {
       }
     );
 
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none",
-      maxAge: COOKIE_MAX_AGE,
-      path: "/",
-    });
-
+    // Devolver token en el body en lugar de cookie
     res.json({
+      token,
       usuario: {
         id: usuario.idusuario,
         nombre: usuario.nombre,
