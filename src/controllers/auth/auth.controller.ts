@@ -8,7 +8,6 @@ import validator from "validator";
 // CONSTANTES DE SEGURIDAD
 // ==========================
 const JWT_EXPIRATION = "8h";
-const COOKIE_MAX_AGE = 8 * 60 * 60 * 1000;
 
 // ==========================
 // LOGIN
@@ -78,7 +77,7 @@ export const login = async (req: Request, res: Response) => {
       }
     );
 
-    // Devolver token en el body en lugar de cookie
+    // Devolver token en el body
     res.json({
       token,
       usuario: {
@@ -103,13 +102,6 @@ export const login = async (req: Request, res: Response) => {
 // ==========================
 export const logout = (req: Request, res: Response) => {
   try {
-    res.clearCookie("token", {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none",
-      path: "/",
-    });
-
     res.json({ message: "Sesión cerrada exitosamente" });
     console.log("✅ Logout exitoso");
   } catch (error: any) {
@@ -123,7 +115,8 @@ export const logout = (req: Request, res: Response) => {
 // ==========================
 export const verifyToken = (req: Request, res: Response) => {
   try {
-    const token = req.cookies?.token;
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.split(" ")[1];
 
     if (!token) {
       return res.status(401).json({
