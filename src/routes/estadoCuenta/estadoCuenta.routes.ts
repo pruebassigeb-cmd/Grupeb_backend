@@ -3,6 +3,7 @@ import { getEstadoCuenta, getListaEstadoCuenta } from "../../controllers/estadoC
 
 const router = Router();
 
+//rutas
 router.get("/",           getListaEstadoCuenta);
 router.get("/:noPedido",  getEstadoCuenta);
 
