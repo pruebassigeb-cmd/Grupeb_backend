@@ -11,6 +11,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         s.no_pedido,
         s.no_cotizacion,
         s.fecha,
+        s.prioridad,
         cli.razon_social                              AS cliente,
         pr.tipo_producto                              AS tipo_producto,
         v.anticipo                                    AS anticipo_requerido,
@@ -33,13 +34,11 @@ export const getSeguimiento = async (req: Request, res: Response) => {
               AND op.no_produccion IS NOT NULL
              THEN true ELSE false END                 AS puede_pdf,
 
-        -- estados de procesos
         ext.estado_produccion_cat_idestado_produccion_cat  AS extrusion_estado_id,
         imp.estado_produccion_cat_idestado_produccion_cat  AS impresion_estado_id,
         bol.estado_produccion_cat_idestado_produccion_cat  AS bolseo_estado_id,
         asa.estado_produccion_cat_idestado_produccion_cat  AS asa_flexible_estado_id,
 
-        -- qué procesos aplican
         EXISTS (
           SELECT 1 FROM tipo_producto_plastico_proceso tppp2
           WHERE tppp2.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
@@ -61,7 +60,6 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           AND tppp2.idproceso_cat = 3
         ) AS lleva_asa_flexible,
 
-        -- datos del producto para el operador
         cfg.medida,
         cfg.altura,
         cfg.ancho,
@@ -82,11 +80,15 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         sp.bk,
         sp.foil,
         asz.tipo                        AS asa_suaje,
+
+        -- Color del Asa
+        sp.id_color,
+        ca.color                        AS color_asa_nombre,
+
         sd.cantidad                     AS cantidad_orden,
         sd.kilogramos                   AS kilogramos_orden,
         sd.modo_cantidad,
 
-        -- ── Campos de merma ────────
         op.kilos,
         op.kilos_merma,
         op.pzas,
@@ -131,6 +133,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           ON car.idcaras = sp.caras_idcaras
       LEFT JOIN asa_suaje asz
           ON asz.idsuaje = sp.idsuaje
+      LEFT JOIN color_asa ca
+          ON ca.id_color = sp.id_color
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
           AND sd.aprobado = true
@@ -163,6 +167,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         no_pedido:           row.no_pedido,
         no_cotizacion:       row.no_cotizacion ?? null,
         fecha:               row.fecha,
+        prioridad:           Boolean(row.prioridad),
         cliente:             row.cliente       || "",
         tipo_producto:       row.tipo_producto || "Plástico",
         anticipo_requerido:  Number(row.anticipo_requerido ?? 0),
@@ -179,7 +184,6 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         impresion_estado:    row.lleva_impresion    ? mapEstadoProceso(row.impresion_estado_id)    : "no-aplica",
         bolseo_estado:       row.lleva_bolseo       ? mapEstadoProceso(row.bolseo_estado_id)       : "no-aplica",
         asa_flexible_estado: row.lleva_asa_flexible ? mapEstadoProceso(row.asa_flexible_estado_id) : "no-aplica",
-        // datos del producto
         nombre_producto:  row.nombre_producto || "",
         medida:           row.medida          || "",
         altura:           row.altura          ? String(row.altura)          : "",
@@ -197,11 +201,12 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         observacion:      row.observacion || null,
         bk:               row.bk   != null ? Boolean(row.bk)   : null,
         foil:             row.foil != null ? Boolean(row.foil) : null,
-        asa_suaje:        row.asa_suaje || null,
+        asa_suaje:        row.asa_suaje        || null,
+        id_color:     row.id_color     ?? null,
+        color_asa_nombre: row.color_asa_nombre ?? null,
         cantidad_orden:   row.cantidad_orden   ? Number(row.cantidad_orden)   : null,
         kilogramos_orden: row.kilogramos_orden ? Number(row.kilogramos_orden) : null,
         modo_cantidad:    row.modo_cantidad    || "unidad",
-        // ── Campos de merma ──
         kilos:        row.kilos        != null ? Number(row.kilos)        : null,
         kilos_merma:  row.kilos_merma  != null ? Number(row.kilos_merma)  : null,
         pzas:         row.pzas         != null ? Number(row.pzas)         : null,
@@ -231,6 +236,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         s.no_pedido,
         s.no_cotizacion,
         s.fecha,
+        s.prioridad,
         cli.razon_social AS cliente,
         cli.empresa,
         cli.telefono,
@@ -278,6 +284,11 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         sp.pantones,
         sp.observacion,
         asz.tipo AS asa_suaje,
+
+        -- Color del Asa
+        sp.id_color,
+        ca.color AS color_asa_nombre,
+
         sd.cantidad,
         sd.kilogramos,
         sd.modo_cantidad,
@@ -288,15 +299,14 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         op.repeticion_kidder,
         op.repeticion_sicosa,
         op.fecha_entrega,
-        -- ── campos de merma ──
         op.kilos,
         op.kilos_merma,
         op.pzas,
         op.pzas_merma,
         op.metros_merma,
-        -- datos del proceso de extrusión (progreso real)
         ext.kilos_extruir,
         ext.metros_extruir
+
       FROM solicitud_producto sp
       LEFT JOIN orden_produccion op
           ON op.idsolicitud_producto = sp.idsolicitud_producto
@@ -318,6 +328,8 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           ON car.idcaras = sp.caras_idcaras
       LEFT JOIN asa_suaje asz
           ON asz.idsuaje = sp.idsuaje
+      LEFT JOIN color_asa ca
+          ON ca.id_color = sp.id_color
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
           AND sd.aprobado = true
@@ -383,7 +395,9 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         pantones:      r.pantones
           ? r.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
           : null,
-        asa_suaje:     r.asa_suaje   || null,
+        asa_suaje:        r.asa_suaje        || null,
+        id_color:     r.id_color     ?? null,
+        color_asa_nombre: r.color_asa_nombre ?? null,
         observacion:   r.observacion || null,
         cantidad:      r.cantidad   ? Number(r.cantidad)   : null,
         kilogramos:    r.kilogramos ? Number(r.kilogramos) : null,
@@ -395,13 +409,11 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         repeticion_kidder:    r.repeticion_kidder    ?? null,
         repeticion_sicosa:    r.repeticion_sicosa    ?? null,
         fecha_entrega:        r.fecha_entrega        ?? null,
-        // ── campos de merma ──
         kilos:        r.kilos        != null ? Number(r.kilos)        : null,
         kilos_merma:  r.kilos_merma  != null ? Number(r.kilos_merma)  : null,
         pzas:         r.pzas         != null ? Number(r.pzas)         : null,
         pzas_merma:   r.pzas_merma   != null ? Number(r.pzas_merma)   : null,
         metros_merma: r.metros_merma != null ? Number(r.metros_merma) : null,
-        // datos del proceso de extrusión (progreso real)
         kilos_extruir:  r.kilos_extruir  ? Number(r.kilos_extruir)  : null,
         metros_extruir: r.metros_extruir ? Number(r.metros_extruir) : null,
       };
@@ -411,6 +423,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       no_pedido:       pedido.no_pedido,
       no_cotizacion:   pedido.no_cotizacion ?? null,
       fecha:           pedido.fecha,
+      prioridad:       Boolean(pedido.prioridad),
       cliente:         pedido.cliente   || "",
       empresa:         pedido.empresa   || "",
       telefono:        pedido.telefono  || "",
@@ -442,28 +455,24 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
         op.idproduccion,
         op.fecha_entrega,
         op.bultos_finalizado,
-        -- Cliente
         cli.razon_social  AS cliente,
         cli.empresa,
         cli.telefono,
         cli.celular,
         cli.correo,
         cli.impresion     AS cliente_impresion,
-        -- Domicilio del cliente
         dom.domicilio     AS calle,
         dom.numero,
         dom.colonia,
         dom.codigo_postal,
         dom.poblacion,
         dom.estado,
-        -- Producto
         tpp.material_plastico_producto AS nombre_producto,
         cfg.medida,
         mp.tipo_material               AS material,
         sd.cantidad,
         sd.kilogramos,
         sd.modo_cantidad,
-        -- Cantidad real del proceso final (con merma)
         COALESCE(af.pzas_finales, bol.piezas_bolseadas) AS cantidad_real
       FROM orden_produccion op
       JOIN solicitud_producto sp
@@ -496,11 +505,9 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
 
     const pedido = pedidoRows[0];
 
-    // ── 2. Validar que los bultos estén finalizados ────────────
     if (!pedido.bultos_finalizado)
       return res.status(403).json({ error: "Los bultos aún no están finalizados" });
 
-    // ── 3. Obtener bultos de esta orden ───────────────────────
     const { rows: bultosRows } = await pool.query(`
       SELECT
         b.idbulto,
@@ -523,36 +530,31 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
     `, [idproduccion]);
 
     return res.json({
-      // Pedido
-      no_pedido:      pedido.no_pedido,
-      no_produccion:  pedido.no_produccion,
-      fecha:          pedido.fecha,
-      fecha_entrega:  pedido.fecha_entrega ?? null,
-      // Cliente
+      no_pedido:         pedido.no_pedido,
+      no_produccion:     pedido.no_produccion,
+      fecha:             pedido.fecha,
+      fecha_entrega:     pedido.fecha_entrega ?? null,
       cliente:           pedido.cliente           || "",
       empresa:           pedido.empresa           || "",
       telefono:          pedido.telefono          || "",
       celular:           pedido.celular           || "",
       correo:            pedido.correo            || "",
       cliente_impresion: pedido.cliente_impresion || "",
-      // Domicilio
-      calle:         pedido.calle         || "",
-      numero:        pedido.numero        || "",
-      colonia:       pedido.colonia       || "",
-      codigo_postal: pedido.codigo_postal || "",
-      poblacion:     pedido.poblacion     || "",
-      estado:        pedido.estado        || "",
-      // Producto
-      nombre_producto: pedido.nombre_producto || "",
-      medida:          pedido.medida          || "",
-      material:        pedido.material        || "",
-      cantidad_total:  pedido.cantidad_real != null
+      calle:             pedido.calle             || "",
+      numero:            pedido.numero            || "",
+      colonia:           pedido.colonia           || "",
+      codigo_postal:     pedido.codigo_postal      || "",
+      poblacion:         pedido.poblacion          || "",
+      estado:            pedido.estado             || "",
+      nombre_producto:   pedido.nombre_producto    || "",
+      medida:            pedido.medida             || "",
+      material:          pedido.material           || "",
+      cantidad_total:    pedido.cantidad_real != null
         ? Number(pedido.cantidad_real)
         : pedido.cantidad ? Number(pedido.cantidad) : null,
-      kilogramos:      pedido.kilogramos ? Number(pedido.kilogramos) : null,
-      modo_cantidad:   pedido.modo_cantidad   || "unidad",
-      // Bultos
-      total_bultos: bultosRows.length,
+      kilogramos:        pedido.kilogramos ? Number(pedido.kilogramos) : null,
+      modo_cantidad:     pedido.modo_cantidad      || "unidad",
+      total_bultos:      bultosRows.length,
       bultos: bultosRows.map((b: any) => ({
         idbulto:           b.idbulto,
         cantidad_unidades: Number(b.cantidad_unidades),

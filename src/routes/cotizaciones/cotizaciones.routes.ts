@@ -9,6 +9,7 @@ import {
   aprobarDetalle,
   actualizarObservacion,
 } from "../../controllers/cotizaciones/cotizaciones.controller";
+import { getColoresAsa } from "../../controllers/cotizaciones/coloresAsa.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 
 const router = Router();
@@ -27,7 +28,10 @@ const limiter = rateLimit({
 
 router.use(limiter);
 
-// ── Rutas específicas PRIMERO (evitar conflicto con /:id/estado) ──────────
+// ── Rutas específicas PRIMERO ─────────────────────────────────────────────
+// GET  /api/cotizaciones/colores-asa
+router.get("/colores-asa", authMiddleware, getColoresAsa);
+
 // PATCH /api/cotizaciones/detalle/:id/aprobar
 router.patch("/detalle/:id/aprobar", authMiddleware, aprobarDetalle);
 

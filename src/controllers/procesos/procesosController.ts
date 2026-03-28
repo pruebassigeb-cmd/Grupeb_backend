@@ -75,7 +75,7 @@ function getSiguienteProceso(procesos: number[], procesoActual: number): number 
   for (let i = idx + 1; i < procesos.length; i++) {
     const candidato = procesos[i];
     if (PROCESO_TABLA[candidato]) return candidato;
-    console.log(`⏭ Proceso cat ${candidato} sin tabla, saltando...`);
+    console.log(`Proceso cat ${candidato} sin tabla, saltando...`);
   }
   return null;
 }
@@ -106,11 +106,11 @@ export async function inicializarPrimerProceso(client: any, idproduccion: number
 }
 
 // ============================================================
-// GET /procesos/:idproduccion (MODIFICADO CON OBSERVACIONES)
+// GET /procesos/:idproduccion
 // ============================================================
 export const getProcesosOrden = async (req: Request, res: Response) => {
   try {
-    const { idproduccion } = req.params;
+    const { idproduccion } = req.params as { idproduccion: string };
 
     const { rows: ordenRows } = await pool.query(`
       SELECT
@@ -147,18 +147,17 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
       .filter(id => procesosRawRows.some((r: any) => Number(r.idproceso_cat) === id))
       .map(id => procesosRawRows.find((r: any) => Number(r.idproceso_cat) === id));
 
-    // Primero obtener todos los procesos con sus registros para poder relacionarlos
     const procesosConRegistros = await Promise.all(procesosRows.map(async (p: any) => {
       const tabla = PROCESO_TABLA[p.idproceso_cat];
 
       if (!tabla) {
         return {
-          idproceso_cat: p.idproceso_cat, 
+          idproceso_cat: p.idproceso_cat,
           nombre_proceso: p.nombre_proceso,
-          tabla: null, 
-          registro: null, 
+          tabla: null,
+          registro: null,
           estado: "no_aplica",
-          observaciones: null
+          observaciones: null,
         };
       }
 
@@ -178,30 +177,23 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
         else                                                  estado = "pendiente";
       }
 
-      return { 
-        idproceso_cat: p.idproceso_cat, 
-        nombre_proceso: p.nombre_proceso, 
-        tabla, 
-        registro, 
+      return {
+        idproceso_cat:  p.idproceso_cat,
+        nombre_proceso: p.nombre_proceso,
+        tabla,
+        registro,
         estado,
-        observaciones: registro?.observaciones || null
+        observaciones: registro?.observaciones || null,
       };
     }));
 
-    // Agregar observaciones del proceso anterior a cada proceso
     const procesosConObsAnteriores = procesosConRegistros.map((proceso, index) => {
       let observacionesProcesoAnterior = null;
-      
-      // Buscar el proceso anterior en la secuencia
       if (index > 0) {
         const procesoAnterior = procesosConRegistros[index - 1];
         observacionesProcesoAnterior = procesoAnterior?.observaciones || null;
       }
-
-      return {
-        ...proceso,
-        observaciones_proceso_anterior: observacionesProcesoAnterior
-      };
+      return { ...proceso, observaciones_proceso_anterior: observacionesProcesoAnterior };
     });
 
     let procesoActual = orden.proceso_actual;
@@ -211,30 +203,30 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
     }
 
     return res.json({
-      idproduccion:        Number(idproduccion),
-      no_produccion:       orden.no_produccion,
-      no_pedido:           orden.no_pedido,
-      proceso_actual:      procesoActual,
-      estado_id:           orden.idestado_produccion_cat,
-      estado_nombre:       orden.estado_nombre,
-      repeticion_kidder:   orden.repeticion_kidder  ?? null,
-      repeticion_sicosa:   orden.repeticion_sicosa  ?? null,
-      procesos: procesosConObsAnteriores,
+      idproduccion:      Number(idproduccion),
+      no_produccion:     orden.no_produccion,
+      no_pedido:         orden.no_pedido,
+      proceso_actual:    procesoActual,
+      estado_id:         orden.idestado_produccion_cat,
+      estado_nombre:     orden.estado_nombre,
+      repeticion_kidder: orden.repeticion_kidder ?? null,
+      repeticion_sicosa: orden.repeticion_sicosa ?? null,
+      procesos:          procesosConObsAnteriores,
     });
 
   } catch (error: any) {
-    console.error("❌ GET PROCESOS ORDEN ERROR:", error.message);
+    console.error("GET PROCESOS ORDEN ERROR:", error.message);
     return res.status(500).json({ error: "Error al obtener procesos" });
   }
 };
 
 // ============================================================
-// POST /procesos/:idproduccion/iniciar (MODIFICADO CON OBSERVACIONES NULL)
+// POST /procesos/:idproduccion/iniciar
 // ============================================================
 export const iniciarProceso = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    const { idproduccion } = req.params;
+    const { idproduccion } = req.params as { idproduccion: string };
     const { maquina, repeticion } = req.body as { maquina?: string; repeticion?: string };
 
     await client.query("BEGIN");
@@ -266,7 +258,7 @@ export const iniciarProceso = async (req: Request, res: Response) => {
     if (procesoActualCat === PROCESO.IMPRESION) {
       if (!maquina || !MAQUINAS_IMPRESION.includes(maquina as MaquinaImpresion)) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ error: "Debes seleccionar una máquina de impresión: kidder o sicosa" });
+        return res.status(400).json({ error: "Debes seleccionar una maquina de impresion: kidder o sicosa" });
       }
     }
 
@@ -275,19 +267,13 @@ export const iniciarProceso = async (req: Request, res: Response) => {
       [idproduccion]
     );
 
-    // ── EXTRUSIÓN: usa kilos_merma y metros_merma de la orden ──
     if (procesoActualCat === PROCESO.EXTRUSION) {
-
       const { rows: ordenMermaRows } = await client.query(`
-        SELECT kilos_merma, metros_merma
-        FROM orden_produccion
-        WHERE idproduccion = $1
+        SELECT kilos_merma, metros_merma FROM orden_produccion WHERE idproduccion = $1
       `, [idproduccion]);
 
       const kilos_extruir  = ordenMermaRows[0]?.kilos_merma  ?? null;
       const metros_extruir = ordenMermaRows[0]?.metros_merma ?? null;
-
-      console.log(`⚙️ Extrusión iniciada — kilos_merma: ${kilos_extruir} | metros_merma: ${metros_extruir}`);
 
       if (existeRows.length === 0) {
         await client.query(`
@@ -310,7 +296,6 @@ export const iniciarProceso = async (req: Request, res: Response) => {
         `, [ESTADO_PROD.EN_PROCESO, metros_extruir, kilos_extruir, idproduccion]);
       }
 
-    // ── IMPRESIÓN ──────────────────────────────────────────────
     } else if (procesoActualCat === PROCESO.IMPRESION) {
       const maquinaCompleta = repeticion ? `${maquina} | ${repeticion}` : (maquina ?? null);
 
@@ -320,8 +305,7 @@ export const iniciarProceso = async (req: Request, res: Response) => {
             estado_produccion_cat_idestado_produccion_cat,
             orden_produccion_idproduccion,
             fecha_creacion, fecha_inicio,
-            maquina,
-            observaciones
+            maquina, observaciones
           ) VALUES ($1, $2, NOW(), NOW(), $3, NULL)
         `, [ESTADO_PROD.EN_PROCESO, idproduccion, maquinaCompleta]);
       } else if (!existeRows[0].fecha_inicio) {
@@ -334,7 +318,6 @@ export const iniciarProceso = async (req: Request, res: Response) => {
         `, [ESTADO_PROD.EN_PROCESO, maquinaCompleta, idproduccion]);
       }
 
-    // ── RESTO DE PROCESOS ──────────────────────────────────────
     } else {
       if (existeRows.length === 0) {
         await client.query(`
@@ -375,7 +358,7 @@ export const iniciarProceso = async (req: Request, res: Response) => {
 
   } catch (error: any) {
     await client.query("ROLLBACK");
-    console.error("❌ INICIAR PROCESO ERROR:", error.message);
+    console.error("INICIAR PROCESO ERROR:", error.message);
     return res.status(500).json({ error: "Error al iniciar proceso" });
   } finally {
     client.release();
@@ -383,12 +366,12 @@ export const iniciarProceso = async (req: Request, res: Response) => {
 };
 
 // ============================================================
-// PUT /procesos/:idproduccion/finalizar (MODIFICADO CON OBSERVACIONES)
+// PUT /procesos/:idproduccion/finalizar
 // ============================================================
 export const finalizarProceso = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    const { idproduccion } = req.params;
+    const { idproduccion } = req.params as { idproduccion: string };
     const datos = req.body;
     await client.query("BEGIN");
 
@@ -423,7 +406,7 @@ export const finalizarProceso = async (req: Request, res: Response) => {
 
     if (procesoRows.length === 0 || !procesoRows[0].fecha_inicio) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "El proceso no ha sido iniciado aún" });
+      return res.status(400).json({ error: "El proceso no ha sido iniciado aun" });
     }
 
     const campos     = CAMPOS_PROCESO[tabla] ?? [];
@@ -439,7 +422,6 @@ export const finalizarProceso = async (req: Request, res: Response) => {
       }
     }
 
-    // 🔥 AGREGAR OBSERVACIONES si vienen en los datos
     if (datos.observaciones !== undefined) {
       setClauses.push(`observaciones = $${paramIdx}`);
       values.push(datos.observaciones);
@@ -463,11 +445,9 @@ export const finalizarProceso = async (req: Request, res: Response) => {
       if (procesoActualCat === PROCESO.EXTRUSION) {
         metrosSiguiente = datos.metros_extruidos ? Number(datos.metros_extruidos) : null;
         kilosSiguiente  = datos.k_para_impresion  ? Number(datos.k_para_impresion)  : null;
-        console.log(`📐 Extrusión → Impresión | metros: ${metrosSiguiente} | kilos: ${kilosSiguiente}`);
       } else if (procesoActualCat === PROCESO.IMPRESION) {
         metrosSiguiente = datos.metros_impresos ? Number(datos.metros_impresos) : null;
         kilosSiguiente  = datos.kilos_impresos  ? Number(datos.kilos_impresos)  : null;
-        console.log(`📐 Impresión → Bolseo | kilos: ${kilosSiguiente}`);
       }
 
       if (tablaSiguiente === "impresion") {
@@ -475,10 +455,7 @@ export const finalizarProceso = async (req: Request, res: Response) => {
           INSERT INTO impresion (
             estado_produccion_cat_idestado_produccion_cat,
             orden_produccion_idproduccion,
-            fecha_creacion,
-            metros_imprimir,
-            kilos_imprimir,
-            observaciones
+            fecha_creacion, metros_imprimir, kilos_imprimir, observaciones
           ) VALUES ($1, $2, NOW(), $3, $4, NULL)
           ON CONFLICT DO NOTHING
         `, [ESTADO_PROD.PENDIENTE, idproduccion, metrosSiguiente, kilosSiguiente]);
@@ -488,9 +465,7 @@ export const finalizarProceso = async (req: Request, res: Response) => {
           INSERT INTO bolseo (
             estado_produccion_cat_idestado_produccion_cat,
             orden_produccion_idproduccion,
-            fecha_creacion,
-            kilos_bolsear,
-            observaciones
+            fecha_creacion, kilos_bolsear, observaciones
           ) VALUES ($1, $2, NOW(), $3, NULL)
           ON CONFLICT DO NOTHING
         `, [ESTADO_PROD.PENDIENTE, idproduccion, kilosSiguiente]);
@@ -501,9 +476,7 @@ export const finalizarProceso = async (req: Request, res: Response) => {
           INSERT INTO asa_flexible (
             estado_produccion_cat_idestado_produccion_cat,
             orden_produccion_idproduccion,
-            fecha_creacion,
-            piezas_recibidas,
-            observaciones
+            fecha_creacion, piezas_recibidas, observaciones
           ) VALUES ($1, $2, NOW(), $3, NULL)
           ON CONFLICT DO NOTHING
         `, [ESTADO_PROD.PENDIENTE, idproduccion, piezasRecibidas]);
@@ -513,8 +486,7 @@ export const finalizarProceso = async (req: Request, res: Response) => {
           INSERT INTO ${tablaSiguiente} (
             estado_produccion_cat_idestado_produccion_cat,
             orden_produccion_idproduccion,
-            fecha_creacion,
-            observaciones
+            fecha_creacion, observaciones
           ) VALUES ($1, $2, NOW(), NULL)
           ON CONFLICT DO NOTHING
         `, [ESTADO_PROD.PENDIENTE, idproduccion]);
@@ -532,7 +504,6 @@ export const finalizarProceso = async (req: Request, res: Response) => {
         SET idestado_produccion_cat = $1, proceso_actual = NULL
         WHERE idproduccion = $2
       `, [ESTADO_PROD.TERMINADO, idproduccion]);
-      console.log(`✅ Orden ${idproduccion} completada`);
     }
 
     await client.query("COMMIT");
@@ -547,7 +518,7 @@ export const finalizarProceso = async (req: Request, res: Response) => {
 
   } catch (error: any) {
     await client.query("ROLLBACK");
-    console.error("❌ FINALIZAR PROCESO ERROR:", error.message);
+    console.error("FINALIZAR PROCESO ERROR:", error.message);
     return res.status(500).json({ error: "Error al finalizar proceso" });
   } finally {
     client.release();
@@ -560,7 +531,7 @@ export const finalizarProceso = async (req: Request, res: Response) => {
 export const resagarProceso = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    const { idproduccion } = req.params;
+    const { idproduccion } = req.params as { idproduccion: string };
     await client.query("BEGIN");
 
     const { procesoActualCat } = await getProcesoActualOrden(client, Number(idproduccion));
@@ -597,8 +568,109 @@ export const resagarProceso = async (req: Request, res: Response) => {
 
   } catch (error: any) {
     await client.query("ROLLBACK");
-    console.error("❌ RESAGAR PROCESO ERROR:", error.message);
+    console.error("RESAGAR PROCESO ERROR:", error.message);
     return res.status(500).json({ error: "Error al resagar proceso" });
+  } finally {
+    client.release();
+  }
+};
+
+// ============================================================
+// PUT /procesos/:idproduccion/editar/:tabla
+// Edita los datos de un proceso YA TERMINADO
+// ============================================================
+export const editarProceso = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const { idproduccion, tabla } = req.params as { idproduccion: string; tabla: string };
+    const datos = req.body;
+
+    const tablasValidas = ["extrusion", "impresion", "bolseo", "asa_flexible"];
+    if (!tablasValidas.includes(tabla)) {
+      return res.status(400).json({ error: `Tabla invalida: ${tabla}` });
+    }
+
+    await client.query("BEGIN");
+
+    const { rows: procesoRows } = await client.query(
+      `SELECT * FROM ${tabla} WHERE orden_produccion_idproduccion = $1`,
+      [idproduccion]
+    );
+
+    if (procesoRows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Proceso no encontrado" });
+    }
+
+    const estadoActual = Number(procesoRows[0].estado_produccion_cat_idestado_produccion_cat);
+    if (estadoActual !== ESTADO_PROD.TERMINADO) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Solo se pueden editar procesos terminados" });
+    }
+
+    const campos = CAMPOS_PROCESO[tabla] ?? [];
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let paramIdx = 1;
+
+    for (const campo of campos) {
+      if (datos[campo] !== undefined) {
+        setClauses.push(`${campo} = $${paramIdx}`);
+        values.push(datos[campo] !== "" ? datos[campo] : null);
+        paramIdx++;
+      }
+    }
+
+    if (datos.observaciones !== undefined) {
+      setClauses.push(`observaciones = $${paramIdx}`);
+      values.push(datos.observaciones || null);
+      paramIdx++;
+    }
+
+    if (tabla === "impresion" && datos.maquina !== undefined) {
+      const maquinaCompleta = datos.repeticion
+        ? `${datos.maquina} | ${datos.repeticion}`
+        : datos.maquina;
+      setClauses.push(`maquina = $${paramIdx}`);
+      values.push(maquinaCompleta);
+      paramIdx++;
+    }
+
+    if (datos.fecha_inicio !== undefined) {
+      setClauses.push(`fecha_inicio = $${paramIdx}`);
+      values.push(datos.fecha_inicio || null);
+      paramIdx++;
+    }
+
+    if (datos.fecha_fin !== undefined) {
+      setClauses.push(`fecha_fin = $${paramIdx}`);
+      values.push(datos.fecha_fin || null);
+      paramIdx++;
+    }
+
+    if (setClauses.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "No se enviaron campos para actualizar" });
+    }
+
+    values.push(idproduccion);
+    await client.query(
+      `UPDATE ${tabla} SET ${setClauses.join(", ")} WHERE orden_produccion_idproduccion = $${paramIdx}`,
+      values
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      message:      `Proceso ${tabla} actualizado`,
+      idproduccion: Number(idproduccion),
+      tabla,
+    });
+
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    console.error("EDITAR PROCESO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al editar proceso" });
   } finally {
     client.release();
   }

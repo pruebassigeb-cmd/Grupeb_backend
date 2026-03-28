@@ -21,7 +21,6 @@ function normalizarNombreEstado(nombre: string): string {
   return "Pendiente";
 }
 
-// ── Genera folio con año actual de 2 dígitos + número con padding ──
 function generarFolioCotizacion(numero: number): string {
   const yy = new Date().getFullYear().toString().slice(-2);
   return `COT${yy}${String(numero).padStart(3, "0")}`;
@@ -32,7 +31,6 @@ function generarFolioPedido(numero: number): string {
   return `P${yy}${String(numero).padStart(3, "0")}`;
 }
 
-// ── Obtiene el siguiente número secuencial para cotizaciones ──────
 async function obtenerSiguienteNumeroCotizacion(client: any): Promise<number> {
   const yy = new Date().getFullYear().toString().slice(-2);
   const { rows } = await client.query(`
@@ -130,7 +128,9 @@ async function crearVentaYDiseno(
 export const crearCotizacion = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    const { clienteId, productos, tipo = "cotizacion" } = req.body;
+    const { clienteId, productos, tipo = "cotizacion", prioridad = false } = req.body;
+    console.log("🔍 prioridad en controller:", prioridad);
+
     const tipoDocumento: TipoDocumento = tipo === "pedido" ? "pedido" : "cotizacion";
 
     if (!clienteId) return res.status(400).json({ error: "Se requiere clienteId" });
@@ -138,7 +138,6 @@ export const crearCotizacion = async (req: Request, res: Response) => {
 
     await client.query("BEGIN");
 
-    // ── Generar folio según tipo ──────────────────────────────
     let folioCotizacion: string | null = null;
     let folioPedido:     string | null = null;
 
@@ -148,7 +147,6 @@ export const crearCotizacion = async (req: Request, res: Response) => {
       folioPedido = await obtenerSiguienteFolioPedido(client);
     }
 
-    // ── FIX: INSERT usa columnas distintas según tipo para evitar NOT NULL en no_cotizacion ──
     let solRows: any[];
 
     if (tipoDocumento === "cotizacion") {
@@ -166,10 +164,10 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         `INSERT INTO solicitud (
           clientes_idclientes,
           estado_administrativo_cat_idestado_administrativo_cat,
-          estado, no_pedido
-        ) VALUES ($1, $2, $3, $4)
+          estado, no_pedido, prioridad
+        ) VALUES ($1, $2, $3, $4, $5)
         RETURNING idsolicitud, no_cotizacion, no_pedido, estado`,
-        [clienteId, ESTADO.PENDIENTE, tipoDocumento, folioPedido]
+        [clienteId, ESTADO.PENDIENTE, tipoDocumento, folioPedido, prioridad]
       ));
     }
 
@@ -184,7 +182,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         productoId, tintasId, carasId, detalles,
         observacion = null, bk = null, foil = null,
         idsuaje = null, altoRel = null, laminado = null,
-        uvBr = null, pigmentos = null, pantones = null, porKilo = null,
+        uvBr = null, pigmentos = null, pantones = null,
+        porKilo = null, colorAsaId = null,
       } = producto;
 
       if (!productoId) {
@@ -203,6 +202,7 @@ export const crearCotizacion = async (req: Request, res: Response) => {
 
       const pigmentosGuardar = typeof pigmentos === "string" && pigmentos.trim() !== "" ? pigmentos.trim() : null;
       const pantonesGuardar  = typeof pantones  === "string" && pantones.trim()  !== "" ? pantones.trim()  : null;
+      const colorAsaGuardar  = colorAsaId != null ? Number(colorAsaId) : null;
 
       const { rows: prodRows } = await client.query(
         `INSERT INTO solicitud_producto (
@@ -210,12 +210,12 @@ export const crearCotizacion = async (req: Request, res: Response) => {
           configuracion_plastico_idconfiguracion_plastico,
           tintas_idtintas, caras_idcaras,
           bk, foil, idsuaje, alto_rel, laminado, uv_br,
-          pigmentos, pantones, observacion
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+          pigmentos, pantones, observacion, id_color
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
         RETURNING idsolicitud_producto`,
         [solicitudId, productoId, tintasId, carasId,
          bk, foil, idsuaje, altoRel, laminado, uvBr,
-         pigmentosGuardar, pantonesGuardar, observacion]
+         pigmentosGuardar, pantonesGuardar, observacion, colorAsaGuardar]
       );
 
       const solicitudProductoId = prodRows[0].idsolicitud_producto;
@@ -302,9 +302,12 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           sp.tintas_idtintas,
           sp.caras_idcaras,
           sp.bk, sp.foil, sp.idsuaje, sp.alto_rel,
-          sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones, sp.observacion,
+          sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones,
+          sp.observacion, sp.id_color,
 
           asz.tipo          AS suaje_tipo,
+
+          ca.color          AS color_asa_nombre,
 
           cfg.medida        AS cfg_medida,
           cfg.altura        AS cfg_altura,
@@ -339,6 +342,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           ON sp.solicitud_idsolicitud = s.idsolicitud
       LEFT JOIN asa_suaje asz
           ON asz.idsuaje = sp.idsuaje
+      LEFT JOIN color_asa ca
+          ON ca.id_color = sp.id_color
       LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
@@ -445,8 +450,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
             caras:                 row.caras_cantidad  ?? row.caras_idcaras,
             bk:                    row.bk,
             foil:                  row.foil,
-            idsuaje:               row.idsuaje    ?? null,
-            asa_suaje:             row.suaje_tipo ?? null,
+            idsuaje:               row.idsuaje        ?? null,
+            asa_suaje:             row.suaje_tipo      ?? null,
             alto_rel:              row.alto_rel,
             laminado:              row.laminado,
             uv_br:                 row.uv_br,
@@ -456,6 +461,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
               : null,
             observacion:           row.observacion,
             por_kilo:              row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
+            id_color:          row.id_color   ?? null,
+            color_asa_nombre:      row.color_asa_nombre ?? null,
             detalles:              [],
             subtotal:              0,
           };

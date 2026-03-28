@@ -3,7 +3,6 @@ import { pool } from "../../config/db";
 
 // ============================================================
 // GET /api/seguimiento/:noPedido/orden-produccion
-// Devuelve todos los productos del pedido con su orden individual
 // ============================================================
 export const getOrdenProduccion = async (req: Request, res: Response) => {
   try {
@@ -15,6 +14,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         s.no_pedido,
         s.no_cotizacion,
         s.fecha,
+        s.prioridad,
         cli.razon_social AS cliente,
         cli.empresa,
         cli.telefono,
@@ -69,6 +69,10 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         -- Asa/Suaje
         asz.tipo AS asa_suaje,
 
+        -- Color del Asa
+        sp.id_color,
+        ca.color AS color_asa_nombre,
+
         -- Cantidad aprobada por el cliente
         sd.cantidad,
         sd.kilogramos,
@@ -87,7 +91,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         op.repeticion_sicosa,
         op.fecha_entrega,
 
-        -- ── Campos de merma ──────────────────────────────────
+        -- Campos de merma
         op.kilos,
         op.kilos_merma,
         op.pzas,
@@ -118,6 +122,8 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           ON car.idcaras = sp.caras_idcaras
       LEFT JOIN asa_suaje asz
           ON asz.idsuaje = sp.idsuaje
+      LEFT JOIN color_asa ca
+          ON ca.id_color = sp.id_color 
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
           AND sd.aprobado = true
@@ -126,6 +132,14 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       WHERE sp.solicitud_idsolicitud = $1
       ORDER BY sp.idsolicitud_producto
     `, [pedido.idsolicitud]);
+
+    // ── DEBUG: verificar que color_asa llega desde la BD ──
+    console.log("🎨 COLOR ASA DEBUG:", productos.map((r: any) => ({
+      idsolicitud_producto: r.idsolicitud_producto,
+      asa_suaje:            r.asa_suaje,
+      id_color:             r.id_color,
+      color_asa_nombre:     r.color_asa_nombre,
+    })));
 
     const productosFormateados = productos.map((r: any) => {
       const materialUpper = (r.material || "").toUpperCase();
@@ -144,32 +158,25 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       const refuerzo    = r.refuerzo      ? String(r.refuerzo)      : "";
 
       return {
-        idsolicitud_producto: r.idsolicitud_producto,
-
-        // Orden de producción
+        idsolicitud_producto:    r.idsolicitud_producto,
         no_produccion:           r.no_produccion           ?? null,
         idproduccion:            r.idproduccion            ?? null,
         fecha_produccion:        r.fecha_produccion        ?? null,
         fecha_aprobacion_diseno: r.fecha_aprobacion_diseno ?? null,
         observaciones_diseno:    r.observaciones_diseno    || null,
         tiene_orden:             !!r.no_produccion,
-
-        // Producto
-        nombre_producto: r.nombre_producto || "",
-        categoria:       r.categoria       || "",
-        material:        r.material        || "",
+        nombre_producto:         r.nombre_producto || "",
+        categoria:               r.categoria       || "",
+        material:                r.material        || "",
         calibre,
-        medida:          r.medida          || "",
-
-        // Medidas individuales
+        medida:                  r.medida          || "",
         altura,
         ancho,
-        fuelle_fondo:  fuelleFondo,
-        fuelle_lat_iz: fuelleLat,
-        fuelle_lat_de: r.fuelle_lat_de ? String(r.fuelle_lat_de) : "",
+        fuelle_fondo:            fuelleFondo,
+        fuelle_lat_iz:           fuelleLat,
+        fuelle_lat_de:           r.fuelle_lat_de ? String(r.fuelle_lat_de) : "",
         refuerzo,
-        por_kilo:      r.por_kilo ? String(r.por_kilo) : null,
-
+        por_kilo:                r.por_kilo ? String(r.por_kilo) : null,
         medidas: {
           altura,
           ancho,
@@ -179,28 +186,24 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           refuerzo,
           solapa: "",
         },
-
-        // Características
-        tintas:     r.tintas   ?? null,
-        caras:      r.caras    ?? null,
-        bk:         r.bk       ?? null,
-        foil:       r.foil     ?? null,
-        alto_rel:   r.alto_rel ?? null,
-        laminado:   r.laminado ?? null,
-        uv_br:      r.uv_br    ?? null,
-        pigmentos:  r.pigmentos || null,
-        pantones:   r.pantones
+        tintas:      r.tintas   ?? null,
+        caras:       r.caras    ?? null,
+        bk:          r.bk       ?? null,
+        foil:        r.foil     ?? null,
+        alto_rel:    r.alto_rel ?? null,
+        laminado:    r.laminado ?? null,
+        uv_br:       r.uv_br    ?? null,
+        pigmentos:   r.pigmentos || null,
+        pantones:    r.pantones
           ? r.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
           : null,
-        asa_suaje:   r.asa_suaje   || null,
-        observacion: r.observacion || null,
-
-        // Cantidad aprobada
-        cantidad:      r.cantidad   ? Number(r.cantidad)   : null,
-        kilogramos:    r.kilogramos ? Number(r.kilogramos) : null,
+        asa_suaje:        r.asa_suaje        || null,
+        id_color :     r.id_color         ?? null,
+        color_asa_nombre: r.color_asa_nombre ?? null,
+        observacion:      r.observacion      || null,
+        cantidad:    r.cantidad   ? Number(r.cantidad)   : null,
+        kilogramos:  r.kilogramos ? Number(r.kilogramos) : null,
         modo_cantidad: r.modo_cantidad || "unidad",
-
-        // Datos de extrusión guardados al crear la orden
         repeticion_extrusion: r.repeticion_extrusion ? Number(r.repeticion_extrusion) : null,
         repeticion_metro:     r.repeticion_metro     ? Number(r.repeticion_metro)     : null,
         metros:               r.metros               ? Number(r.metros)               : null,
@@ -208,23 +211,20 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         repeticion_kidder:    r.repeticion_kidder    ?? null,
         repeticion_sicosa:    r.repeticion_sicosa    ?? null,
         fecha_entrega:        r.fecha_entrega        ?? null,
-
-        // ── Campos de merma ───────────────────────────────────
         kilos:       r.kilos       != null ? Number(r.kilos)       : null,
         kilos_merma: r.kilos_merma != null ? Number(r.kilos_merma) : null,
         pzas:        r.pzas        != null ? Number(r.pzas)        : null,
         pzas_merma:  r.pzas_merma  != null ? Number(r.pzas_merma)  : null,
-
-        // Progreso real de extrusión
         kilos_extruir:  r.kilos_extruir  ? Number(r.kilos_extruir)  : null,
         metros_extruir: r.metros_extruir ? Number(r.metros_extruir) : null,
       };
     });
 
     return res.json({
-      no_pedido:       Number(pedido.no_pedido),
+      no_pedido:       pedido.no_pedido ?? "",
       no_cotizacion:   pedido.no_cotizacion ?? null,
       fecha:           pedido.fecha,
+      prioridad:       Boolean(pedido.prioridad),
       cliente:         pedido.cliente   || "",
       empresa:         pedido.empresa   || "",
       telefono:        pedido.telefono  || "",

@@ -18,6 +18,7 @@ export const getPedidos = async (req: Request, res: Response) => {
           s.no_pedido,
           s.estado          AS tipo_documento,
           s.fecha,
+          s.prioridad,
           s.clientes_idclientes,
           s.estado_administrativo_cat_idestado_administrativo_cat,
 
@@ -29,7 +30,6 @@ export const getPedidos = async (req: Request, res: Response) => {
 
           est.nombre        AS estado_nombre,
 
-          -- ✅ FIX: subquery en lugar de JOIN para evitar multiplicación de filas
           (
             SELECT d.estado_administrativo_cat_idestado_administrativo_cat
             FROM diseno d
@@ -43,9 +43,12 @@ export const getPedidos = async (req: Request, res: Response) => {
           sp.tintas_idtintas,
           sp.caras_idcaras,
           sp.bk, sp.foil, sp.idsuaje, sp.alto_rel,
-          sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones, sp.observacion,
+          sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones,
+          sp.observacion, sp.id_color,
 
           asz.tipo          AS suaje_tipo,
+
+          ca.color          AS color_asa_nombre,
 
           cfg.medida        AS cfg_medida,
           cfg.altura        AS cfg_altura,
@@ -80,6 +83,8 @@ export const getPedidos = async (req: Request, res: Response) => {
           ON sp.solicitud_idsolicitud = s.idsolicitud
       LEFT JOIN asa_suaje asz
           ON asz.idsuaje = sp.idsuaje
+      LEFT JOIN color_asa ca
+          ON ca.id_color = sp.id_color
       LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
@@ -112,6 +117,7 @@ export const getPedidos = async (req: Request, res: Response) => {
           no_cotizacion:    row.no_cotizacion ?? null,
           es_directo:       row.no_cotizacion === null,
           fecha:            row.fecha,
+          prioridad:        row.prioridad ?? false,
           estado_id:        row.estado_administrativo_cat_idestado_administrativo_cat,
           estado:           normalizarNombreEstado(row.estado_nombre || ""),
           diseno_estado_id: row.diseno_estado_id ?? 1,
@@ -180,8 +186,8 @@ export const getPedidos = async (req: Request, res: Response) => {
             caras:                 row.caras_cantidad  ?? row.caras_idcaras,
             bk:                    row.bk,
             foil:                  row.foil,
-            idsuaje:               row.idsuaje    ?? null,
-            asa_suaje:             row.suaje_tipo ?? null,
+            idsuaje:               row.idsuaje        ?? null,
+            asa_suaje:             row.suaje_tipo      ?? null,
             alto_rel:              row.alto_rel,
             laminado:              row.laminado,
             uv_br:                 row.uv_br,
@@ -191,6 +197,8 @@ export const getPedidos = async (req: Request, res: Response) => {
               : null,
             observacion:           row.observacion,
             por_kilo:              row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
+            id_color:          row.id_color    ?? null,
+            color_asa_nombre:      row.color_asa_nombre ?? null,
             detalles:              [],
             subtotal:              0,
           };

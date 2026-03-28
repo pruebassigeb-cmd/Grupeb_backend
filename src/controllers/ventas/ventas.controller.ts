@@ -232,7 +232,6 @@ async function generarOrdenesPendientes(client: any, solicitudId: number): Promi
     const noProduccion = await generarNoProduccion(client);
     const datosOrden   = await prepararDatosOrden(client, prod.idsolicitud_producto);
 
-    // ✅ 18 columnas, 16 parámetros $n (NOW() y NOW()+INTERVAL no son $n)
     await client.query(
       `INSERT INTO orden_produccion (
         estado_administrativo_cat_idestado_administrativo_cat,
@@ -255,27 +254,27 @@ async function generarOrdenesPendientes(client: any, solicitudId: number): Promi
         repeticion_sicosa
       ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [
-        ESTADO.PENDIENTE,                   // $1
-        noProduccion,                       // $2
-        solicitudId,                        // $3
-        prod.idsolicitud_producto,          // $4
-        ESTADO.PENDIENTE,                   // $5
-        datosOrden.repeticion_extrusion,    // $6
-        datosOrden.repeticion_metro,        // $7
-        datosOrden.metros,                  // $8
-        datosOrden.metros_merma,            // $9
-        datosOrden.ancho_bobina,            // $10
-        datosOrden.kilos,                   // $11
-        datosOrden.kilos_merma,             // $12
-        datosOrden.pzas,                    // $13
-        datosOrden.pzas_merma,              // $14
-        datosOrden.repeticion_kidder,       // $15
-        datosOrden.repeticion_sicosa,       // $16
+        ESTADO.PENDIENTE,
+        noProduccion,
+        solicitudId,
+        prod.idsolicitud_producto,
+        ESTADO.PENDIENTE,
+        datosOrden.repeticion_extrusion,
+        datosOrden.repeticion_metro,
+        datosOrden.metros,
+        datosOrden.metros_merma,
+        datosOrden.ancho_bobina,
+        datosOrden.kilos,
+        datosOrden.kilos_merma,
+        datosOrden.pzas,
+        datosOrden.pzas_merma,
+        datosOrden.repeticion_kidder,
+        datosOrden.repeticion_sicosa,
       ]
     );
 
     ordenesCreadas.push(noProduccion);
-    console.log(`✅ Orden ${noProduccion} creada con metros_merma incluido`);
+    console.log(`✅ Orden ${noProduccion} creada`);
   }
 
   return ordenesCreadas;
@@ -295,7 +294,8 @@ export const getVentas = async (req: Request, res: Response) => {
         est.nombre AS estado_nombre,
         s.no_pedido, s.no_cotizacion,
         s.fecha    AS fecha_pedido,
-        cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo
+        cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
+        cli.impresion
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
       JOIN clientes cli  ON cli.idclientes = s.clientes_idclientes
@@ -324,7 +324,8 @@ export const getVentaById = async (req: Request, res: Response) => {
         v.estado_administrativo_cat_idestado_administrativo_cat AS estado_id,
         est.nombre AS estado_nombre,
         s.no_pedido, s.no_cotizacion, s.fecha AS fecha_pedido,
-        cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo
+        cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
+        cli.impresion
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
       JOIN clientes cli  ON cli.idclientes = s.clientes_idclientes
@@ -365,7 +366,8 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
         v.estado_administrativo_cat_idestado_administrativo_cat AS estado_id,
         est.nombre AS estado_nombre,
         s.no_pedido, s.no_cotizacion, s.fecha AS fecha_pedido,
-        cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo
+        cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
+        cli.impresion
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
       JOIN clientes cli  ON cli.idclientes = s.clientes_idclientes
@@ -541,6 +543,69 @@ export const eliminarPago = async (req: Request, res: Response) => {
     await client.query("ROLLBACK");
     console.error("❌ ELIMINAR PAGO ERROR:", error.message);
     return res.status(500).json({ error: "Error al eliminar pago" });
+  } finally {
+    client.release();
+  }
+};
+
+// ============================================================
+// AUTORIZAR ANTICIPO POR CRÉDITO (sin movimiento de dinero)
+// ============================================================
+export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+
+    await client.query("BEGIN");
+
+    const { rows: ventaRows } = await client.query(
+      `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud
+       FROM ventas v WHERE v.idventas = $1`,
+      [id]
+    );
+
+    if (ventaRows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Venta no encontrada" });
+    }
+
+    const venta    = ventaRows[0];
+    const anticipo = Number(venta.anticipo);
+    const abono    = Number(venta.abono);
+
+    if (abono >= anticipo) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "El anticipo ya está cubierto" });
+    }
+
+    // Marcar abono = anticipo sin insertar pago real
+    // El saldo se mantiene igual (el dinero sigue debiendo)
+    await client.query(
+      `UPDATE ventas
+       SET abono  = $1,
+           estado_administrativo_cat_idestado_administrativo_cat = $2
+       WHERE idventas = $3`,
+      [anticipo, ESTADO.ANTICIPO_PAGADO, id]
+    );
+
+    // Generar órdenes de producción pendientes
+    const ordenesGeneradas = await generarOrdenesPendientes(client, venta.solicitud_idsolicitud);
+
+    await client.query("COMMIT");
+
+    return res.json({
+      message:           "Anticipo autorizado por crédito",
+      abono_total:       anticipo,
+      saldo:             Number(venta.saldo),
+      estado_id:         ESTADO.ANTICIPO_PAGADO,
+      anticipo_cubierto: true,
+      ordenes_generadas: ordenesGeneradas,
+    });
+
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    console.error("❌ AUTORIZAR ANTICIPO CRÉDITO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al autorizar anticipo por crédito" });
   } finally {
     client.release();
   }

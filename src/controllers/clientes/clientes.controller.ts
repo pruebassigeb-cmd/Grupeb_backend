@@ -9,7 +9,6 @@ export const createCliente = async (req: Request, res: Response) => {
 
   try {
     const {
-      // Datos generales del cliente (ya sanitizados por el middleware)
       empresa,
       correo,
       telefono,
@@ -20,12 +19,10 @@ export const createCliente = async (req: Request, res: Response) => {
       regimen_fiscal_idregimen_fiscal,
       metodo_pago_idmetodo_pago,
       forma_pago_idforma_pago,
-      // Datos de facturación
       rfc,
       correo_facturacion,
       uso_cfdi,
       moneda,
-      // Datos de domicilio
       domicilio,
       numero,
       colonia,
@@ -36,23 +33,10 @@ export const createCliente = async (req: Request, res: Response) => {
 
     console.log("📝 Creando nuevo cliente:", { empresa, correo });
 
-    // Iniciar transacción
     await client.query("BEGIN");
 
-    // Verificar correo único
-    const existeCorreo = await client.query(
-      "SELECT 1 FROM clientes WHERE correo = $1 LIMIT 1",
-      [correo]
-    );
-
-    if ((existeCorreo.rowCount ?? 0) > 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "El correo ya está registrado",
-      });
-    }
-
-    // 1. Insertar CLIENTE primero (sin FK de domicilio y facturación)
+    // 1. Insertar CLIENTE
+    // Las tres FK pueden ser null si el usuario no seleccionó nada
     const resultCliente = await client.query(
       `INSERT INTO clientes (
         regimen_fiscal_idregimen_fiscal,
@@ -69,25 +53,25 @@ export const createCliente = async (req: Request, res: Response) => {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
       RETURNING idclientes, empresa, correo, telefono, fecha`,
       [
-        regimen_fiscal_idregimen_fiscal,
-        metodo_pago_idmetodo_pago,
-        forma_pago_idforma_pago,
-        empresa,
-        correo,
-        telefono || null,
-        atencion || null,
+        regimen_fiscal_idregimen_fiscal || null,
+        metodo_pago_idmetodo_pago       || null,
+        forma_pago_idforma_pago         || null,
+        empresa      || null,
+        correo       || null,
+        telefono     || null,
+        atencion     || null,
         razon_social || null,
-        impresion || null,
-        celular || null,
+        impresion    || null,
+        celular      || null,
       ]
     );
 
     const nuevoCliente = resultCliente.rows[0];
-    const idclientes = nuevoCliente.idclientes;
+    const idclientes   = nuevoCliente.idclientes;
 
     console.log("✅ Cliente creado:", { id: idclientes, empresa: nuevoCliente.empresa });
 
-    // 2. Insertar DOMICILIO (si se proporcionan datos) con FK al cliente
+    // 2. Insertar DOMICILIO (solo si hay algún dato)
     let iddomicilio = null;
     if (domicilio || numero || colonia || codigo_postal || poblacion || estado) {
       const resultDomicilio = await client.query(
@@ -96,19 +80,19 @@ export const createCliente = async (req: Request, res: Response) => {
          RETURNING iddomicilio`,
         [
           idclientes,
-          domicilio || null,
-          numero || null,
-          colonia || null,
+          domicilio     || null,
+          numero        || null,
+          colonia       || null,
           codigo_postal || null,
-          poblacion || null,
-          estado || null,
+          poblacion     || null,
+          estado        || null,
         ]
       );
       iddomicilio = resultDomicilio.rows[0].iddomicilio;
       console.log("✅ Domicilio creado:", iddomicilio);
     }
 
-    // 3. Insertar DATOS_FACTURACION (si se proporcionan datos) con FK al cliente
+    // 3. Insertar DATOS_FACTURACION (solo si hay algún dato)
     let iddatos_facturacion = null;
     if (rfc || correo_facturacion || uso_cfdi || moneda) {
       const resultFacturacion = await client.query(
@@ -128,21 +112,19 @@ export const createCliente = async (req: Request, res: Response) => {
     res.status(201).json({
       message: "Cliente creado exitosamente",
       cliente: {
-        id: nuevoCliente.idclientes,
-        empresa: nuevoCliente.empresa,
-        correo: nuevoCliente.correo,
-        telefono: nuevoCliente.telefono,
-        fecha: nuevoCliente.fecha,
-        domicilio_id: iddomicilio,
+        id:            nuevoCliente.idclientes,
+        empresa:       nuevoCliente.empresa,
+        correo:        nuevoCliente.correo,
+        telefono:      nuevoCliente.telefono,
+        fecha:         nuevoCliente.fecha,
+        domicilio_id:  iddomicilio,
         facturacion_id: iddatos_facturacion,
       },
     });
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ CREATE CLIENTE ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al procesar la solicitud",
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
   }
@@ -182,10 +164,10 @@ export const getClientes = async (req: Request, res: Response) => {
         d.estado
       FROM clientes c
       LEFT JOIN regimen_fiscal rf ON c.regimen_fiscal_idregimen_fiscal = rf.idregimen_fiscal
-      LEFT JOIN metodo_pago mp ON c.metodo_pago_idmetodo_pago = mp.idmetodo_pago
-      LEFT JOIN forma_pago fp ON c.forma_pago_idforma_pago = fp.idforma_pago
+      LEFT JOIN metodo_pago    mp ON c.metodo_pago_idmetodo_pago       = mp.idmetodo_pago
+      LEFT JOIN forma_pago     fp ON c.forma_pago_idforma_pago         = fp.idforma_pago
       LEFT JOIN datos_facturacion df ON df.clientes_idclientes = c.idclientes
-      LEFT JOIN domicilio d ON d.clientes_idclientes = c.idclientes
+      LEFT JOIN domicilio          d  ON d.clientes_idclientes  = c.idclientes
       ORDER BY c.idclientes DESC
       LIMIT 1000
     `);
@@ -193,9 +175,7 @@ export const getClientes = async (req: Request, res: Response) => {
     res.json(result.rows);
   } catch (error: any) {
     console.error("❌ GET CLIENTES ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al obtener clientes",
-    });
+    res.status(500).json({ error: "Error al obtener clientes" });
   }
 };
 
@@ -207,8 +187,7 @@ export const getClienteById = async (req: Request, res: Response) => {
     const { id } = req.params;
 
     const result = await pool.query(
-      `
-      SELECT 
+      `SELECT 
         c.idclientes,
         c.empresa,
         c.correo,
@@ -239,28 +218,23 @@ export const getClienteById = async (req: Request, res: Response) => {
         d.estado
       FROM clientes c
       LEFT JOIN regimen_fiscal rf ON c.regimen_fiscal_idregimen_fiscal = rf.idregimen_fiscal
-      LEFT JOIN metodo_pago mp ON c.metodo_pago_idmetodo_pago = mp.idmetodo_pago
-      LEFT JOIN forma_pago fp ON c.forma_pago_idforma_pago = fp.idforma_pago
+      LEFT JOIN metodo_pago    mp ON c.metodo_pago_idmetodo_pago       = mp.idmetodo_pago
+      LEFT JOIN forma_pago     fp ON c.forma_pago_idforma_pago         = fp.idforma_pago
       LEFT JOIN datos_facturacion df ON df.clientes_idclientes = c.idclientes
-      LEFT JOIN domicilio d ON d.clientes_idclientes = c.idclientes
+      LEFT JOIN domicilio          d  ON d.clientes_idclientes  = c.idclientes
       WHERE c.idclientes = $1
-      LIMIT 1
-    `,
+      LIMIT 1`,
       [id]
     );
 
     if ((result.rowCount ?? 0) === 0) {
-      return res.status(404).json({
-        error: "Cliente no encontrado",
-      });
+      return res.status(404).json({ error: "Cliente no encontrado" });
     }
 
     res.json(result.rows[0]);
   } catch (error: any) {
     console.error("❌ GET CLIENTE BY ID ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al obtener cliente",
-    });
+    res.status(500).json({ error: "Error al obtener cliente" });
   }
 };
 
@@ -271,8 +245,7 @@ export const searchClientes = async (req: Request, res: Response) => {
   try {
     const { query } = req.query;
 
-    // Si no hay query, devolver últimos 50 clientes
-    if (!query || typeof query !== 'string' || query.trim() === '') {
+    if (!query || typeof query !== "string" || query.trim() === "") {
       const result = await pool.query(`
         SELECT 
           c.idclientes,
@@ -287,16 +260,13 @@ export const searchClientes = async (req: Request, res: Response) => {
         ORDER BY c.idclientes DESC
         LIMIT 50
       `);
-
       return res.json(result.rows);
     }
 
-    // Búsqueda con filtros (nombre, empresa, teléfono, correo)
     const searchTerm = `%${query.trim()}%`;
-    
+
     const result = await pool.query(
-      `
-      SELECT 
+      `SELECT 
         c.idclientes,
         c.empresa,
         c.correo,
@@ -307,23 +277,20 @@ export const searchClientes = async (req: Request, res: Response) => {
         c.impresion
       FROM clientes c
       WHERE 
-        c.atencion ILIKE $1 OR
-        c.empresa ILIKE $1 OR
-        c.telefono ILIKE $1 OR
-        c.celular ILIKE $1 OR
-        c.correo ILIKE $1
+        c.atencion  ILIKE $1 OR
+        c.empresa   ILIKE $1 OR
+        c.telefono  ILIKE $1 OR
+        c.celular   ILIKE $1 OR
+        c.correo    ILIKE $1
       ORDER BY c.idclientes DESC
-      LIMIT 50
-    `,
+      LIMIT 50`,
       [searchTerm]
     );
 
     res.json(result.rows);
   } catch (error: any) {
     console.error("❌ SEARCH CLIENTES ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al buscar clientes",
-    });
+    res.status(500).json({ error: "Error al buscar clientes" });
   }
 };
 
@@ -336,7 +303,6 @@ export const updateCliente = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const {
-      // Datos generales del cliente (ya sanitizados por el middleware)
       empresa,
       correo,
       telefono,
@@ -347,12 +313,10 @@ export const updateCliente = async (req: Request, res: Response) => {
       regimen_fiscal_idregimen_fiscal,
       metodo_pago_idmetodo_pago,
       forma_pago_idforma_pago,
-      // Datos de facturación
       rfc,
       correo_facturacion,
       uso_cfdi,
       moneda,
-      // Datos de domicilio
       domicilio,
       numero,
       colonia,
@@ -365,20 +329,6 @@ export const updateCliente = async (req: Request, res: Response) => {
 
     await client.query("BEGIN");
 
-    // Verificar correo único (excepto el mismo cliente)
-    const existeCorreo = await client.query(
-      "SELECT 1 FROM clientes WHERE correo = $1 AND idclientes != $2 LIMIT 1",
-      [correo, id]
-    );
-
-    if ((existeCorreo.rowCount ?? 0) > 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "El correo ya está registrado",
-      });
-    }
-
-    // Obtener cliente actual para verificar que existe
     const clienteActual = await client.query(
       "SELECT idclientes FROM clientes WHERE idclientes = $1 LIMIT 1",
       [id]
@@ -386,18 +336,14 @@ export const updateCliente = async (req: Request, res: Response) => {
 
     if ((clienteActual.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(404).json({
-        error: "Cliente no encontrado",
-      });
+      return res.status(404).json({ error: "Cliente no encontrado" });
     }
 
-    // Verificar si ya tiene domicilio
     const domicilioExistente = await client.query(
       "SELECT iddomicilio FROM domicilio WHERE clientes_idclientes = $1 LIMIT 1",
       [id]
     );
 
-    // Verificar si ya tiene datos de facturación
     const facturacionExistente = await client.query(
       "SELECT iddatos_facturacion FROM datos_facturacion WHERE clientes_idclientes = $1 LIMIT 1",
       [id]
@@ -407,7 +353,6 @@ export const updateCliente = async (req: Request, res: Response) => {
     let iddomicilio = null;
     if (domicilio || numero || colonia || codigo_postal || poblacion || estado) {
       if ((domicilioExistente.rowCount ?? 0) > 0) {
-        // Actualizar domicilio existente
         iddomicilio = domicilioExistente.rows[0].iddomicilio;
         await client.query(
           `UPDATE domicilio 
@@ -415,30 +360,29 @@ export const updateCliente = async (req: Request, res: Response) => {
                codigo_postal = $4, poblacion = $5, estado = $6
            WHERE iddomicilio = $7`,
           [
-            domicilio || null,
-            numero || null,
-            colonia || null,
+            domicilio     || null,
+            numero        || null,
+            colonia       || null,
             codigo_postal || null,
-            poblacion || null,
-            estado || null,
+            poblacion     || null,
+            estado        || null,
             iddomicilio,
           ]
         );
         console.log("✅ Domicilio actualizado:", iddomicilio);
       } else {
-        // Crear nuevo domicilio CON FK al cliente
         const resultDomicilio = await client.query(
           `INSERT INTO domicilio (clientes_idclientes, domicilio, numero, colonia, codigo_postal, poblacion, estado)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING iddomicilio`,
           [
             id,
-            domicilio || null,
-            numero || null,
-            colonia || null,
+            domicilio     || null,
+            numero        || null,
+            colonia       || null,
             codigo_postal || null,
-            poblacion || null,
-            estado || null,
+            poblacion     || null,
+            estado        || null,
           ]
         );
         iddomicilio = resultDomicilio.rows[0].iddomicilio;
@@ -450,7 +394,6 @@ export const updateCliente = async (req: Request, res: Response) => {
     let iddatos_facturacion = null;
     if (rfc || correo_facturacion || uso_cfdi || moneda) {
       if ((facturacionExistente.rowCount ?? 0) > 0) {
-        // Actualizar facturación existente
         iddatos_facturacion = facturacionExistente.rows[0].iddatos_facturacion;
         await client.query(
           `UPDATE datos_facturacion 
@@ -460,7 +403,6 @@ export const updateCliente = async (req: Request, res: Response) => {
         );
         console.log("✅ Datos de facturación actualizados:", iddatos_facturacion);
       } else {
-        // Crear nueva facturación CON FK al cliente
         const resultFacturacion = await client.query(
           `INSERT INTO datos_facturacion (clientes_idclientes, rfc, correo_facturacion, uso_cfdi, moneda)
            VALUES ($1, $2, $3, $4, $5)
@@ -475,24 +417,29 @@ export const updateCliente = async (req: Request, res: Response) => {
     // 3. ACTUALIZAR CLIENTE
     const resultCliente = await client.query(
       `UPDATE clientes 
-       SET empresa = $1, correo = $2, telefono = $3, atencion = $4,
-           razon_social = $5, impresion = $6, celular = $7,
+       SET empresa       = $1,
+           correo        = $2,
+           telefono      = $3,
+           atencion      = $4,
+           razon_social  = $5,
+           impresion     = $6,
+           celular       = $7,
            regimen_fiscal_idregimen_fiscal = $8,
-           metodo_pago_idmetodo_pago = $9,
-           forma_pago_idforma_pago = $10
+           metodo_pago_idmetodo_pago       = $9,
+           forma_pago_idforma_pago         = $10
        WHERE idclientes = $11
        RETURNING idclientes, empresa, correo, telefono, fecha`,
       [
-        empresa,
-        correo,
-        telefono || null,
-        atencion || null,
+        empresa      || null,
+        correo       || null,
+        telefono     || null,
+        atencion     || null,
         razon_social || null,
-        impresion || null,
-        celular || null,
-        regimen_fiscal_idregimen_fiscal,
-        metodo_pago_idmetodo_pago,
-        forma_pago_idforma_pago,
+        impresion    || null,
+        celular      || null,
+        regimen_fiscal_idregimen_fiscal || null,
+        metodo_pago_idmetodo_pago       || null,
+        forma_pago_idforma_pago         || null,
         id,
       ]
     );
@@ -506,19 +453,17 @@ export const updateCliente = async (req: Request, res: Response) => {
     res.json({
       message: "Cliente actualizado exitosamente",
       cliente: {
-        id: clienteActualizado.idclientes,
-        empresa: clienteActualizado.empresa,
-        correo: clienteActualizado.correo,
+        id:       clienteActualizado.idclientes,
+        empresa:  clienteActualizado.empresa,
+        correo:   clienteActualizado.correo,
         telefono: clienteActualizado.telefono,
-        fecha: clienteActualizado.fecha,
+        fecha:    clienteActualizado.fecha,
       },
     });
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ UPDATE CLIENTE ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al procesar la solicitud",
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
   }
@@ -535,7 +480,6 @@ export const deleteCliente = async (req: Request, res: Response) => {
 
     await client.query("BEGIN");
 
-    // Verificar que el cliente existe
     const clienteActual = await client.query(
       "SELECT idclientes FROM clientes WHERE idclientes = $1 LIMIT 1",
       [id]
@@ -543,47 +487,36 @@ export const deleteCliente = async (req: Request, res: Response) => {
 
     if ((clienteActual.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(404).json({
-        error: "Cliente no encontrado",
-      });
+      return res.status(404).json({ error: "Cliente no encontrado" });
     }
 
-    // 1. Eliminar domicilio si existe (por FK clientes_idclientes)
     const resultDomicilio = await client.query(
       "DELETE FROM domicilio WHERE clientes_idclientes = $1 RETURNING iddomicilio",
       [id]
     );
-
     if ((resultDomicilio.rowCount ?? 0) > 0) {
       console.log("✅ Domicilio eliminado:", resultDomicilio.rows[0].iddomicilio);
     }
 
-    // 2. Eliminar datos de facturación si existen (por FK clientes_idclientes)
     const resultFacturacion = await client.query(
       "DELETE FROM datos_facturacion WHERE clientes_idclientes = $1 RETURNING iddatos_facturacion",
       [id]
     );
-
     if ((resultFacturacion.rowCount ?? 0) > 0) {
       console.log("✅ Datos de facturación eliminados:", resultFacturacion.rows[0].iddatos_facturacion);
     }
 
-    // 3. Eliminar cliente
     await client.query("DELETE FROM clientes WHERE idclientes = $1", [id]);
 
     await client.query("COMMIT");
 
     console.log("✅ Cliente eliminado:", id);
 
-    res.json({
-      message: "Cliente eliminado exitosamente",
-    });
+    res.json({ message: "Cliente eliminado exitosamente" });
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ DELETE CLIENTE ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al procesar la solicitud",
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
   }
@@ -596,34 +529,12 @@ export const createClienteLigero = async (req: Request, res: Response) => {
   const client = await pool.connect();
 
   try {
-    const {
-      nombre,
-      telefono,
-      correo,
-      empresa,
-    } = req.body;
+    const { nombre, telefono, correo, empresa } = req.body;
 
     console.log("📝 Creando cliente ligero para cotización:", { nombre, correo });
 
     await client.query("BEGIN");
 
-    // Verificar si el correo ya existe (opcional pero recomendado)
-    if (correo) {
-      const existeCorreo = await client.query(
-        "SELECT 1 FROM clientes WHERE correo = $1 LIMIT 1",
-        [correo]
-      );
-
-      if ((existeCorreo.rowCount ?? 0) > 0) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: "El correo ya está registrado",
-        });
-      }
-    }
-
-    // Insertar cliente mínimo (solo campos requeridos para cotización)
-    // Usar valores por defecto para los campos requeridos en BD
     const resultCliente = await client.query(
       `INSERT INTO clientes (
         regimen_fiscal_idregimen_fiscal,
@@ -637,13 +548,13 @@ export const createClienteLigero = async (req: Request, res: Response) => {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
       RETURNING idclientes, empresa, correo, telefono, atencion`,
       [
-        1, // Régimen fiscal por defecto (debes tener un ID válido)
-        1, // Método de pago por defecto
-        1, // Forma de pago por defecto
-        empresa || null,
-        correo || null,
+        null, // FK opcionales
+        null,
+        null,
+        empresa  || null,
+        correo   || null,
         telefono || null,
-        nombre, // El nombre va en "atención"
+        nombre   || null,
       ]
     );
 
@@ -656,19 +567,17 @@ export const createClienteLigero = async (req: Request, res: Response) => {
     res.status(201).json({
       message: "Cliente creado exitosamente",
       cliente: {
-        id: nuevoCliente.idclientes,
-        nombre: nuevoCliente.atencion,
-        empresa: nuevoCliente.empresa,
-        correo: nuevoCliente.correo,
+        id:       nuevoCliente.idclientes,
+        nombre:   nuevoCliente.atencion,
+        empresa:  nuevoCliente.empresa,
+        correo:   nuevoCliente.correo,
         telefono: nuevoCliente.telefono,
       },
     });
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ CREATE CLIENTE LIGERO ERROR:", error.message);
-    res.status(500).json({
-      error: "Error al procesar la solicitud",
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
   }
