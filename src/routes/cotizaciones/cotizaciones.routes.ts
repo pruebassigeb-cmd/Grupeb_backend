@@ -8,47 +8,93 @@ import {
   eliminarCotizacion,
   aprobarDetalle,
   actualizarObservacion,
+  aprobarHerramental,
 } from "../../controllers/cotizaciones/cotizaciones.controller";
-import { getColoresAsa } from "../../controllers/cotizaciones/coloresAsa.controller";
-import { authMiddleware } from "../../middlewares/auth.middleware";
+import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
+import { preventSQLInjection } from "../../middlewares/validation.middleware";
 
 const router = Router();
 
 router.use(
-  helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false })
+  helmet({
+    contentSecurityPolicy:     false,
+    crossOriginEmbedderPolicy: false,
+  })
 );
 
-const limiter = rateLimit({
+const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
-  message: { error: "Demasiadas solicitudes. Intenta más tarde." },
+  max:      100,
+  message:  { error: "Demasiadas solicitudes. Intenta más tarde." },
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders:   false,
 });
 
-router.use(limiter);
+const writeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max:      30,
+  message:  { error: "Demasiadas operaciones. Intenta más tarde." },
+  standardHeaders: true,
+  legacyHeaders:   false,
+});
 
-// ── Rutas específicas PRIMERO ─────────────────────────────────────────────
-// GET  /api/cotizaciones/colores-asa
-router.get("/colores-asa", authMiddleware, getColoresAsa);
+router.use(generalLimiter);
 
-// PATCH /api/cotizaciones/detalle/:id/aprobar
-router.patch("/detalle/:id/aprobar", authMiddleware, aprobarDetalle);
+const PERMISO = "Crear/Editar/Aprobar/Rechazar Cotizaciones";
 
-// PATCH /api/cotizaciones/producto/:id/observacion
-router.patch("/producto/:id/observacion", authMiddleware, actualizarObservacion);
-
-// ── Rutas generales ───────────────────────────────────────────────────────
-// GET    /api/cotizaciones
+// ── GETs — cualquier autenticado ──────────────────────────
 router.get("/", authMiddleware, getCotizaciones);
 
-// POST   /api/cotizaciones
-router.post("/", authMiddleware, crearCotizacion);
+// ── Escritura — requiere permiso ──────────────────────────
+router.post(
+  "/",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  writeLimiter,
+  preventSQLInjection,
+  crearCotizacion
+);
 
-// PATCH  /api/cotizaciones/:id/estado
-router.patch("/:id/estado", authMiddleware, actualizarEstadoCotizacion);
+router.patch(
+  "/:id/estado",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  writeLimiter,
+  preventSQLInjection,
+  actualizarEstadoCotizacion
+);
 
-// DELETE /api/cotizaciones/:id
-router.delete("/:id", authMiddleware, eliminarCotizacion);
+router.patch(
+  "/:id/detalle/:idDetalle/aprobar",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  writeLimiter,
+  aprobarDetalle
+);
+
+router.patch(
+  "/:id/herramental/:idH/aprobar",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  writeLimiter,
+  aprobarHerramental
+);
+
+router.patch(
+  "/:id/producto/:idP/observacion",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  writeLimiter,
+  preventSQLInjection,
+  actualizarObservacion
+);
+
+router.delete(
+  "/:id",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  writeLimiter,
+  eliminarCotizacion
+);
 
 export default router;

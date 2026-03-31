@@ -73,6 +73,10 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         sp.id_color,
         ca.color AS color_asa_nombre,
 
+        -- Medida del Troquel
+        sp.id_medidatro,
+        mt.medida AS medida_troquel,
+
         -- Cantidad aprobada por el cliente
         sd.cantidad,
         sd.kilogramos,
@@ -123,7 +127,9 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       LEFT JOIN asa_suaje asz
           ON asz.idsuaje = sp.idsuaje
       LEFT JOIN color_asa ca
-          ON ca.id_color = sp.id_color 
+          ON ca.id_color = sp.id_color
+      LEFT JOIN medidas_troquel mt
+          ON mt.id_medidatro = sp.id_medidatro
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
           AND sd.aprobado = true
@@ -132,14 +138,6 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       WHERE sp.solicitud_idsolicitud = $1
       ORDER BY sp.idsolicitud_producto
     `, [pedido.idsolicitud]);
-
-    // ── DEBUG: verificar que color_asa llega desde la BD ──
-    console.log("🎨 COLOR ASA DEBUG:", productos.map((r: any) => ({
-      idsolicitud_producto: r.idsolicitud_producto,
-      asa_suaje:            r.asa_suaje,
-      id_color:             r.id_color,
-      color_asa_nombre:     r.color_asa_nombre,
-    })));
 
     const productosFormateados = productos.map((r: any) => {
       const materialUpper = (r.material || "").toUpperCase();
@@ -198,8 +196,10 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           ? r.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
           : null,
         asa_suaje:        r.asa_suaje        || null,
-        id_color :     r.id_color         ?? null,
+        id_color:         r.id_color         ?? null,
         color_asa_nombre: r.color_asa_nombre ?? null,
+        id_medidatro:     r.id_medidatro     ?? null,
+        medida_troquel:   r.medida_troquel   ?? null,
         observacion:      r.observacion      || null,
         cantidad:    r.cantidad   ? Number(r.cantidad)   : null,
         kilogramos:  r.kilogramos ? Number(r.kilogramos) : null,

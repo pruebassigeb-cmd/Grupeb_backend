@@ -10,6 +10,41 @@ import validator from "validator";
 const JWT_EXPIRATION = "8h";
 
 // ==========================
+// HELPER — obtener privilegios del usuario
+// ==========================
+async function obtenerPrivilegios(
+  userId: number,
+  rolId: number,
+  accesoTotal: boolean
+): Promise<string[]> {
+  if (accesoTotal) return [];
+
+  // ¿Tiene privilegios personalizados?
+  const { rows: custom } = await pool.query(
+    `SELECT p.privilegio
+     FROM privilegios_has_usuarios pu
+     JOIN privilegios p ON p.idprivilegios = pu.privilegios_idprivilegios
+     WHERE pu.usuarios_idusuario = $1`,
+    [userId]
+  );
+
+  if (custom.length > 0) {
+    return custom.map((r: any) => r.privilegio);
+  }
+
+  // Si no tiene custom, usar los del rol
+  const { rows: rolPrivs } = await pool.query(
+    `SELECT p.privilegio
+     FROM roles_has_privilegios rp
+     JOIN privilegios p ON p.idprivilegios = rp.privilegios_idprivilegios
+     WHERE rp.roles_idroles = $1`,
+    [rolId]
+  );
+
+  return rolPrivs.map((r: any) => r.privilegio);
+}
+
+// ==========================
 // LOGIN
 // ==========================
 export const login = async (req: Request, res: Response) => {
@@ -31,10 +66,12 @@ export const login = async (req: Request, res: Response) => {
     }
 
     const codigoSanitizado = codigo.replace(/\D/g, "");
-    const correoSanitizado = validator.normalizeEmail(correo) || correo.toLowerCase().trim();
+    const correoSanitizado =
+      validator.normalizeEmail(correo) || correo.toLowerCase().trim();
 
     const result = await pool.query(
-      `SELECT u.idusuario, u.nombre, u.apellido, u.correo, u.codigo, 
+      `SELECT u.idusuario, u.nombre, u.apellido, u.correo, u.codigo,
+              u.roles_idroles,
               r.nombre as rol, r.acceso_total
        FROM usuarios u
        LEFT JOIN roles r ON u.roles_idroles = r.idroles
@@ -60,37 +97,51 @@ export const login = async (req: Request, res: Response) => {
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
       console.error("❌ JWT_SECRET no configurado");
-      return res.status(500).json({ error: "Error de configuración del servidor" });
+      return res
+        .status(500)
+        .json({ error: "Error de configuración del servidor" });
     }
+
+    // ── Obtener privilegios ───────────────────────────────────
+    const privilegios = await obtenerPrivilegios(
+      usuario.idusuario,
+      usuario.roles_idroles,
+      usuario.acceso_total
+    );
 
     const token = jwt.sign(
       {
-        id: usuario.idusuario,
-        correo: usuario.correo,
-        rol: usuario.rol,
+        id:           usuario.idusuario,
+        correo:       usuario.correo,
+        rol:          usuario.rol,
         acceso_total: usuario.acceso_total,
+        privilegios,
       },
       jwtSecret,
       {
-        expiresIn: JWT_EXPIRATION,
+        expiresIn:  JWT_EXPIRATION,
         algorithm: "HS256",
       }
     );
 
-    // Devolver token en el body
     res.json({
       token,
       usuario: {
-        id: usuario.idusuario,
-        nombre: usuario.nombre,
-        apellido: usuario.apellido,
-        correo: usuario.correo,
-        rol: usuario.rol,
+        id:           usuario.idusuario,
+        nombre:       usuario.nombre,
+        apellido:     usuario.apellido,
+        correo:       usuario.correo,
+        rol:          usuario.rol,
         acceso_total: usuario.acceso_total,
+        privilegios,
       },
     });
 
-    console.log("✅ Login exitoso:", { id: usuario.idusuario, rol: usuario.rol });
+    console.log("✅ Login exitoso:", {
+      id:  usuario.idusuario,
+      rol: usuario.rol,
+      privilegios: privilegios.length,
+    });
   } catch (error: any) {
     console.error("❌ LOGIN ERROR:", error.message);
     res.status(500).json({ error: "Error al procesar la solicitud" });
@@ -120,14 +171,16 @@ export const verifyToken = (req: Request, res: Response) => {
 
     if (!token) {
       return res.status(401).json({
-        error: "No autenticado",
+        error:           "No autenticado",
         isAuthenticated: false,
       });
     }
 
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
-      return res.status(500).json({ error: "Error de configuración del servidor" });
+      return res
+        .status(500)
+        .json({ error: "Error de configuración del servidor" });
     }
 
     const decoded = jwt.verify(token, jwtSecret) as any;
@@ -135,17 +188,126 @@ export const verifyToken = (req: Request, res: Response) => {
     res.json({
       isAuthenticated: true,
       usuario: {
-        id: decoded.id,
-        correo: decoded.correo,
-        rol: decoded.rol,
+        id:           decoded.id,
+        correo:       decoded.correo,
+        rol:          decoded.rol,
         acceso_total: decoded.acceso_total,
+        privilegios:  decoded.privilegios ?? [],
       },
     });
   } catch (error: any) {
     console.error("❌ TOKEN VERIFICATION ERROR:", error.message);
     res.status(401).json({
-      error: "Token inválido o expirado",
+      error:           "Token inválido o expirado",
       isAuthenticated: false,
     });
+  }
+};
+
+// ==========================
+// VERIFICAR OPERADOR DE PLANTA
+// Valida que un operador tenga el privilegio para un proceso
+// específico sin crear una sesión completa
+// ==========================
+export const verificarOperador = async (req: Request, res: Response) => {
+  try {
+    const { correo, codigo, proceso } = req.body;
+
+    // proceso: "extrusion" | "impresion" | "bolseo" | "asa_flexible"
+    const PROCESO_PRIVILEGIO: Record<string, string> = {
+      extrusion:    "Operar Extrusión",
+      impresion:    "Operar Impresión",
+      bolseo:       "Operar Bolseo",
+      asa_flexible: "Operar Asa Flexible",
+    };
+
+    if (!correo || !codigo || !proceso) {
+      return res.status(400).json({ error: "Correo, código y proceso son requeridos" });
+    }
+
+    if (!PROCESO_PRIVILEGIO[proceso]) {
+      return res.status(400).json({ error: "Proceso inválido" });
+    }
+
+    if (!/^\d{5}$/.test(codigo)) {
+      return res.status(401).json({ error: "Credenciales inválidas" });
+    }
+
+    if (!validator.isEmail(correo)) {
+      return res.status(401).json({ error: "Credenciales inválidas" });
+    }
+
+    const correoSanitizado =
+      validator.normalizeEmail(correo) || correo.toLowerCase().trim();
+
+    // Buscar usuario
+    const { rows } = await pool.query(
+      `SELECT u.idusuario, u.codigo, u.nombre, u.apellido,
+              u.roles_idroles, r.acceso_total
+       FROM usuarios u
+       LEFT JOIN roles r ON u.roles_idroles = r.idroles
+       WHERE LOWER(u.correo) = LOWER($1)
+       LIMIT 1`,
+      [correoSanitizado]
+    );
+
+    if (rows.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      return res.status(401).json({ error: "Credenciales inválidas" });
+    }
+
+    const usuario = rows[0];
+
+    const isMatch = await bcrypt.compare(codigo, usuario.codigo);
+    if (!isMatch) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      return res.status(401).json({ error: "Credenciales inválidas" });
+    }
+
+    // Si tiene acceso total, puede operar cualquier proceso
+    if (usuario.acceso_total) {
+      return res.json({
+        autorizado: true,
+        operador: {
+          id:      usuario.idusuario,
+          nombre:  usuario.nombre,
+          apellido: usuario.apellido,
+        },
+      });
+    }
+
+    // Verificar privilegio específico del proceso
+    const privilegioRequerido = PROCESO_PRIVILEGIO[proceso];
+
+    const { rows: privRows } = await pool.query(
+      `SELECT 1
+       FROM privilegios_has_usuarios pu
+       JOIN privilegios p ON p.idprivilegios = pu.privilegios_idprivilegios
+       WHERE pu.usuarios_idusuario = $1
+         AND p.privilegio = $2
+       LIMIT 1`,
+      [usuario.idusuario, privilegioRequerido]
+    );
+
+    if (privRows.length === 0) {
+      return res.status(403).json({
+        autorizado: false,
+        error: `No tienes permiso para operar ${proceso}`,
+      });
+    }
+
+    console.log(`✅ Operador verificado: ${usuario.nombre} → ${proceso}`);
+
+    return res.json({
+      autorizado: true,
+      operador: {
+        id:       usuario.idusuario,
+        nombre:   usuario.nombre,
+        apellido: usuario.apellido,
+      },
+    });
+  } catch (error: any) {
+    console.error("❌ VERIFICAR OPERADOR ERROR:", error.message);
+    return res.status(500).json({ error: "Error al verificar operador" });
   }
 };

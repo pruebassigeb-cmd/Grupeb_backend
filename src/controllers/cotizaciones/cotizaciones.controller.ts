@@ -65,9 +65,6 @@ async function obtenerSiguienteFolioPedido(client: any): Promise<string> {
   return generarFolioPedido(numero);
 }
 
-// ============================================================
-// CREAR VENTA Y DISEÑO
-// ============================================================
 async function crearVentaYDiseno(
   client:      any,
   solicitudId: number,
@@ -183,7 +180,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         observacion = null, bk = null, foil = null,
         idsuaje = null, altoRel = null, laminado = null,
         uvBr = null, pigmentos = null, pantones = null,
-        porKilo = null, colorAsaId = null,
+        porKilo = null, colorAsaId = null, idMedidaTroquel = null,
+        herramental_descripcion = null, herramental_precio = null,
       } = producto;
 
       if (!productoId) {
@@ -200,9 +198,10 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         return res.status(400).json({ error: `El producto ID ${productoId} no tiene cantidades válidas` });
       }
 
-      const pigmentosGuardar = typeof pigmentos === "string" && pigmentos.trim() !== "" ? pigmentos.trim() : null;
-      const pantonesGuardar  = typeof pantones  === "string" && pantones.trim()  !== "" ? pantones.trim()  : null;
-      const colorAsaGuardar  = colorAsaId != null ? Number(colorAsaId) : null;
+      const pigmentosGuardar     = typeof pigmentos  === "string" && pigmentos.trim()  !== "" ? pigmentos.trim()  : null;
+      const pantonesGuardar      = typeof pantones   === "string" && pantones.trim()   !== "" ? pantones.trim()   : null;
+      const colorAsaGuardar      = colorAsaId     != null ? Number(colorAsaId)     : null;
+      const medidaTroquelGuardar = idMedidaTroquel != null ? Number(idMedidaTroquel) : null;
 
       const { rows: prodRows } = await client.query(
         `INSERT INTO solicitud_producto (
@@ -210,16 +209,36 @@ export const crearCotizacion = async (req: Request, res: Response) => {
           configuracion_plastico_idconfiguracion_plastico,
           tintas_idtintas, caras_idcaras,
           bk, foil, idsuaje, alto_rel, laminado, uv_br,
-          pigmentos, pantones, observacion, id_color
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          pigmentos, pantones, observacion, id_color, id_medidatro
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
         RETURNING idsolicitud_producto`,
         [solicitudId, productoId, tintasId, carasId,
          bk, foil, idsuaje, altoRel, laminado, uvBr,
-         pigmentosGuardar, pantonesGuardar, observacion, colorAsaGuardar]
+         pigmentosGuardar, pantonesGuardar, observacion,
+         colorAsaGuardar, medidaTroquelGuardar]
       );
 
       const solicitudProductoId = prodRows[0].idsolicitud_producto;
-      const porKiloNum = porKilo ? Number(porKilo) : 0;
+
+      // ── Herramental (solo si tiene precio) ───────────────────────────────
+      const herramentalPrecioNum = herramental_precio != null ? Number(herramental_precio) : null;
+      if (herramentalPrecioNum != null && herramentalPrecioNum > 0) {
+        await client.query(
+          `INSERT INTO herramental (idsolicitud_producto, herramental_descripcion, herramental_precio)
+           VALUES ($1, $2, $3)`,
+          [
+            solicitudProductoId,
+            typeof herramental_descripcion === "string" && herramental_descripcion.trim() !== ""
+              ? herramental_descripcion.trim()
+              : null,
+            herramentalPrecioNum,
+          ]
+        );
+        subtotalTotal += herramentalPrecioNum;
+        console.log(`✅ Herramental $${herramentalPrecioNum} agregado al producto ${solicitudProductoId}`);
+      }
+
+      const porKiloNum    = porKilo ? Number(porKilo) : 0;
       const aprobadoValor = tipoDocumento === "pedido" ? true : null;
 
       for (const d of detallesValidos) {
@@ -303,11 +322,14 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           sp.caras_idcaras,
           sp.bk, sp.foil, sp.idsuaje, sp.alto_rel,
           sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones,
-          sp.observacion, sp.id_color,
+          sp.observacion,
+          sp.id_color,
+          sp.id_medidatro,
 
           asz.tipo          AS suaje_tipo,
 
           ca.color          AS color_asa_nombre,
+          mt.medida         AS medida_troquel,
 
           cfg.medida        AS cfg_medida,
           cfg.altura        AS cfg_altura,
@@ -331,7 +353,12 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           sd.precio_total,
           sd.aprobado,
           sd.kilogramos,
-          sd.modo_cantidad
+          sd.modo_cantidad,
+
+          h.id_herramental,
+          h.herramental_descripcion,
+          h.herramental_precio,
+          h.aprobado         AS herramental_aprobado
 
       FROM solicitud s
       LEFT JOIN clientes cli
@@ -344,6 +371,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           ON asz.idsuaje = sp.idsuaje
       LEFT JOIN color_asa ca
           ON ca.id_color = sp.id_color
+      LEFT JOIN medidas_troquel mt
+          ON mt.id_medidatro = sp.id_medidatro
       LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
@@ -358,6 +387,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           ON car.idcaras = sp.caras_idcaras
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
+      LEFT JOIN herramental h
+          ON h.idsolicitud_producto = sp.idsolicitud_producto
 
       WHERE s.no_cotizacion IS NOT NULL
         AND (
@@ -436,35 +467,41 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           })();
 
           producto = {
-            idsolicitud:           row.idsolicitud,
-            idsolicitud_producto:  row.idsolicitud_producto,
-            idcotizacion_producto: row.idsolicitud_producto,
-            producto_id:           row.configuracion_plastico_idconfiguracion_plastico,
-            nombre:                nombreCompleto,
-            material:              row.material_nombre || "",
-            calibre:               calibreResuelto,
-            calibre_bopp:          row.calibre_bopp ? String(row.calibre_bopp) : null,
-            medidasFormateadas:    row.cfg_medida    || "",
+            idsolicitud:              row.idsolicitud,
+            idsolicitud_producto:     row.idsolicitud_producto,
+            idcotizacion_producto:    row.idsolicitud_producto,
+            producto_id:              row.configuracion_plastico_idconfiguracion_plastico,
+            nombre:                   nombreCompleto,
+            material:                 row.material_nombre || "",
+            calibre:                  calibreResuelto,
+            calibre_bopp:             row.calibre_bopp ? String(row.calibre_bopp) : null,
+            medidasFormateadas:       row.cfg_medida    || "",
             medidas,
-            tintas:                row.tintas_cantidad ?? row.tintas_idtintas,
-            caras:                 row.caras_cantidad  ?? row.caras_idcaras,
-            bk:                    row.bk,
-            foil:                  row.foil,
-            idsuaje:               row.idsuaje        ?? null,
-            asa_suaje:             row.suaje_tipo      ?? null,
-            alto_rel:              row.alto_rel,
-            laminado:              row.laminado,
-            uv_br:                 row.uv_br,
-            pigmentos:             row.pigmentos || null,
-            pantones:              row.pantones
+            tintas:                   row.tintas_cantidad ?? row.tintas_idtintas,
+            caras:                    row.caras_cantidad  ?? row.caras_idcaras,
+            bk:                       row.bk,
+            foil:                     row.foil,
+            idsuaje:                  row.idsuaje        ?? null,
+            asa_suaje:                row.suaje_tipo      ?? null,
+            alto_rel:                 row.alto_rel,
+            laminado:                 row.laminado,
+            uv_br:                    row.uv_br,
+            pigmentos:                row.pigmentos || null,
+            pantones:                 row.pantones
               ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
               : null,
-            observacion:           row.observacion,
-            por_kilo:              row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
-            id_color:          row.id_color   ?? null,
-            color_asa_nombre:      row.color_asa_nombre ?? null,
-            detalles:              [],
-            subtotal:              0,
+            observacion:              row.observacion,
+            por_kilo:                 row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
+            id_color:                 row.id_color        ?? null,
+            color_asa_nombre:         row.color_asa_nombre ?? null,
+            id_medidatro:             row.id_medidatro    ?? null,
+            medida_troquel:           row.medida_troquel  ?? null,
+            herramental_descripcion:  row.herramental_descripcion ?? null,
+            herramental_precio:       row.herramental_precio != null ? Number(row.herramental_precio) : null,
+            herramental_aprobado:     row.herramental_aprobado ?? null,
+            herramental_id:           row.id_herramental ?? null,
+            detalles:                 [],
+            subtotal:                 0,
           };
           agrupadas[noCot].productos.push(producto);
         }
@@ -485,7 +522,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
 
     for (const noCot in agrupadas) {
       agrupadas[noCot].total = agrupadas[noCot].productos.reduce(
-        (sum: number, p: any) => sum + p.subtotal, 0
+        (sum: number, p: any) => sum + p.subtotal + (p.herramental_precio ?? 0), 0
       );
     }
 
@@ -554,19 +591,27 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
       );
 
       const { rows: subtotalRows } = await client.query(
-        `SELECT COALESCE(SUM(sd.precio_total), 0) AS subtotal
-         FROM solicitud_detalle sd
-         JOIN solicitud_producto sp
-           ON sp.idsolicitud_producto = sd.solicitud_producto_id
+        `SELECT
+           COALESCE(SUM(sd.precio_total), 0)                              AS subtotal_detalles,
+           COALESCE(SUM(CASE WHEN h.aprobado = true THEN h.herramental_precio ELSE 0 END), 0) AS subtotal_herramental
+         FROM solicitud_producto sp
+         LEFT JOIN solicitud_detalle sd
+           ON sd.solicitud_producto_id = sp.idsolicitud_producto
+         LEFT JOIN herramental h
+           ON h.idsolicitud_producto = sp.idsolicitud_producto
          WHERE sp.solicitud_idsolicitud = $1`,
         [doc.idsolicitud]
       );
+
+      const subtotalTotal =
+        Number(subtotalRows[0].subtotal_detalles) +
+        Number(subtotalRows[0].subtotal_herramental);
 
       await crearVentaYDiseno(
         client,
         doc.idsolicitud,
         folioPedidoAsignado,
-        Number(subtotalRows[0].subtotal)
+        subtotalTotal
       );
 
     } else {
@@ -623,6 +668,10 @@ export const eliminarCotizacion = async (req: Request, res: Response) => {
     const productoIds: number[] = prodRows.map((r: any) => r.idsolicitud_producto);
 
     if (productoIds.length > 0) {
+      await client.query(
+        `DELETE FROM herramental WHERE idsolicitud_producto = ANY($1::int[])`,
+        [productoIds]
+      );
       await client.query(
         `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = ANY($1::int[])`,
         [productoIds]
@@ -691,5 +740,30 @@ export const actualizarObservacion = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("❌ Error al actualizar observación:", error.message);
     return res.status(500).json({ error: "Error al actualizar observación" });
+  }
+};
+
+// ============================================================
+// APROBAR / RECHAZAR HERRAMENTAL
+// ============================================================
+export const aprobarHerramental = async (req: Request, res: Response) => {
+  try {
+    const { id }       = req.params;
+    const { aprobado } = req.body;
+
+    if (typeof aprobado !== "boolean")
+      return res.status(400).json({ error: "El campo aprobado debe ser true o false" });
+
+    const { rowCount } = await pool.query(
+      `UPDATE herramental SET aprobado = $1 WHERE id_herramental = $2`,
+      [aprobado, id]
+    );
+
+    if (rowCount === 0) return res.status(404).json({ error: "Herramental no encontrado" });
+    return res.json({ message: aprobado ? "Aprobado" : "Rechazado", aprobado });
+
+  } catch (error: any) {
+    console.error("❌ Error al aprobar/rechazar herramental:", error.message);
+    return res.status(500).json({ error: "Error al actualizar aprobación de herramental" });
   }
 };

@@ -32,13 +32,8 @@ async function obtenerMerma(client: any, kilos: number, tintasId: number): Promi
         AND ($2 <= k.kg_max OR k.kg_max IS NULL)
       LIMIT 1
     `, [tintasId, kilos]);
-    if (rows.length === 0) {
-      console.warn(`⚠️ No se encontró tarifa de merma para ${kilos} kg / tintas_id=${tintasId} — se usará 0%`);
-      return 0;
-    }
-    const merma = Number(rows[0].merma_porcentaje);
-    console.log(`📊 Merma para ${kilos} kg + tintas_id=${tintasId} → ${merma}%`);
-    return merma;
+    if (rows.length === 0) return 0;
+    return Number(rows[0].merma_porcentaje);
   } catch (err: any) {
     console.warn("⚠️ obtenerMerma error:", err.message);
     return 0;
@@ -173,8 +168,6 @@ async function prepararDatosOrden(client: any, idsolicitudProducto: number) {
   const pzas        = cantidad > 0 ? cantidad : null;
   const pzas_merma  = pzas ? Math.round(pzas * factorMerma) : null;
 
-  console.log(`🧮 Merma [${idsolicitudProducto}] tintas_id=${tintasId} → ${mermaPct}% | kilos: ${kilos} → ${kilos_merma} | pzas: ${pzas} → ${pzas_merma}`);
-
   if (cantidad <= 0) {
     return {
       repeticion_extrusion: null, repeticion_metro: null,
@@ -195,11 +188,7 @@ async function prepararDatosOrden(client: any, idsolicitudProducto: number) {
   });
 
   const metros_merma = parseFloat((ext.metros * factorMerma).toFixed(1));
-
-  console.log(`📐 Orden [${idsolicitudProducto}] → rep=${ext.repeticion_extrusion} | metros=${ext.metros} | metros_merma=${metros_merma} | bobina=${ext.ancho_bobina}`);
-
   const rodillos = await buscarRepeticionRodillos(client, ext.repeticion_extrusion);
-  console.log(`🎡 Rodillos → KIDDER: ${rodillos.kidder} | SICOSA: ${rodillos.sicosa}`);
 
   return {
     repeticion_extrusion: ext.repeticion_extrusion,
@@ -235,41 +224,17 @@ async function generarOrdenesPendientes(client: any, solicitudId: number): Promi
     await client.query(
       `INSERT INTO orden_produccion (
         estado_administrativo_cat_idestado_administrativo_cat,
-        no_produccion,
-        fecha,
-        fecha_entrega,
-        idsolicitud,
-        idsolicitud_producto,
-        idestado_produccion_cat,
-        repeticion_extrusion,
-        repeticion_metro,
-        metros,
-        metros_merma,
-        ancho_bobina,
-        kilos,
-        kilos_merma,
-        pzas,
-        pzas_merma,
-        repeticion_kidder,
-        repeticion_sicosa
+        no_produccion, fecha, fecha_entrega,
+        idsolicitud, idsolicitud_producto, idestado_produccion_cat,
+        repeticion_extrusion, repeticion_metro, metros, metros_merma, ancho_bobina,
+        kilos, kilos_merma, pzas, pzas_merma, repeticion_kidder, repeticion_sicosa
       ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [
-        ESTADO.PENDIENTE,
-        noProduccion,
-        solicitudId,
-        prod.idsolicitud_producto,
-        ESTADO.PENDIENTE,
-        datosOrden.repeticion_extrusion,
-        datosOrden.repeticion_metro,
-        datosOrden.metros,
-        datosOrden.metros_merma,
-        datosOrden.ancho_bobina,
-        datosOrden.kilos,
-        datosOrden.kilos_merma,
-        datosOrden.pzas,
-        datosOrden.pzas_merma,
-        datosOrden.repeticion_kidder,
-        datosOrden.repeticion_sicosa,
+        ESTADO.PENDIENTE, noProduccion, solicitudId, prod.idsolicitud_producto, ESTADO.PENDIENTE,
+        datosOrden.repeticion_extrusion, datosOrden.repeticion_metro,
+        datosOrden.metros, datosOrden.metros_merma, datosOrden.ancho_bobina,
+        datosOrden.kilos, datosOrden.kilos_merma, datosOrden.pzas, datosOrden.pzas_merma,
+        datosOrden.repeticion_kidder, datosOrden.repeticion_sicosa,
       ]
     );
 
@@ -279,6 +244,17 @@ async function generarOrdenesPendientes(client: any, solicitudId: number): Promi
 
   return ordenesCreadas;
 }
+
+// ── Subconsulta reutilizable para herramental_total ───────────────────────
+const SUBQ_HERRAMENTAL = `
+  COALESCE((
+    SELECT SUM(h.herramental_precio)
+    FROM solicitud_producto sp2
+    JOIN herramental h ON h.idsolicitud_producto = sp2.idsolicitud_producto
+    WHERE sp2.solicitud_idsolicitud = s.idsolicitud
+      AND h.aprobado = true
+  ), 0) AS herramental_total
+`;
 
 // ============================================================
 // OBTENER TODAS LAS VENTAS
@@ -295,7 +271,8 @@ export const getVentas = async (req: Request, res: Response) => {
         s.no_pedido, s.no_cotizacion,
         s.fecha    AS fecha_pedido,
         cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
-        cli.impresion
+        cli.impresion,
+        ${SUBQ_HERRAMENTAL}
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
       JOIN clientes cli  ON cli.idclientes = s.clientes_idclientes
@@ -325,7 +302,8 @@ export const getVentaById = async (req: Request, res: Response) => {
         est.nombre AS estado_nombre,
         s.no_pedido, s.no_cotizacion, s.fecha AS fecha_pedido,
         cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
-        cli.impresion
+        cli.impresion,
+        ${SUBQ_HERRAMENTAL}
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
       JOIN clientes cli  ON cli.idclientes = s.clientes_idclientes
@@ -367,7 +345,8 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
         est.nombre AS estado_nombre,
         s.no_pedido, s.no_cotizacion, s.fecha AS fecha_pedido,
         cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
-        cli.impresion
+        cli.impresion,
+        ${SUBQ_HERRAMENTAL}
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
       JOIN clientes cli  ON cli.idclientes = s.clientes_idclientes
@@ -549,7 +528,7 @@ export const eliminarPago = async (req: Request, res: Response) => {
 };
 
 // ============================================================
-// AUTORIZAR ANTICIPO POR CRÉDITO (sin movimiento de dinero)
+// AUTORIZAR ANTICIPO POR CRÉDITO
 // ============================================================
 export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -578,24 +557,21 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "El anticipo ya está cubierto" });
     }
 
-    // Marcar abono = anticipo sin insertar pago real
-    // El saldo se mantiene igual (el dinero sigue debiendo)
+    // Solo cambia el estado — abono y saldo NO se modifican
     await client.query(
       `UPDATE ventas
-       SET abono  = $1,
-           estado_administrativo_cat_idestado_administrativo_cat = $2
-       WHERE idventas = $3`,
-      [anticipo, ESTADO.ANTICIPO_PAGADO, id]
+       SET estado_administrativo_cat_idestado_administrativo_cat = $1
+       WHERE idventas = $2`,
+      [ESTADO.ANTICIPO_PAGADO, id]
     );
 
-    // Generar órdenes de producción pendientes
     const ordenesGeneradas = await generarOrdenesPendientes(client, venta.solicitud_idsolicitud);
 
     await client.query("COMMIT");
 
     return res.json({
       message:           "Anticipo autorizado por crédito",
-      abono_total:       anticipo,
+      abono_total:       abono,
       saldo:             Number(venta.saldo),
       estado_id:         ESTADO.ANTICIPO_PAGADO,
       anticipo_cubierto: true,

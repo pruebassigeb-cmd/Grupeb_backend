@@ -1,29 +1,42 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import { getPedidos, eliminarPedido } from "../../controllers/pedidos/pedidos.controller";
-import { authMiddleware } from "../../middlewares/auth.middleware";
+import {
+  getPedidos,
+  eliminarPedido,
+} from "../../controllers/pedidos/pedidos.controller";
+import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 
 const router = Router();
 
 router.use(
-  helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false })
+  helmet({
+    contentSecurityPolicy:     false,
+    crossOriginEmbedderPolicy: false,
+  })
 );
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
-  message: { error: "Demasiadas solicitudes. Intenta más tarde." },
+  max:      200,
+  message:  { error: "Demasiadas solicitudes. Intenta más tarde." },
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders:   false,
 });
 
 router.use(limiter);
 
-// GET  /api/pedidos
+const PERMISO = "Crear/Editar/Eliminar Pedidos";
+
+// ── GET — cualquier autenticado ───────────────────────────
 router.get("/", authMiddleware, getPedidos);
 
-// DELETE /api/pedidos/:id   (id = no_pedido)
-router.delete("/:id", authMiddleware, eliminarPedido);
+// ── Escritura — requiere permiso ──────────────────────────
+router.delete(
+  "/:id",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  eliminarPedido
+);
 
 export default router;

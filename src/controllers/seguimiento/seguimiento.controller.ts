@@ -17,6 +17,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         v.anticipo                                    AS anticipo_requerido,
         v.abono                                       AS anticipo_pagado,
         CASE WHEN v.abono >= v.anticipo
+              OR v.estado_administrativo_cat_idestado_administrativo_cat IN (2, 6)
              THEN true ELSE false END                 AS anticipo_cubierto,
         CASE WHEN v.saldo <= 0.01
              THEN true ELSE false END                 AS pago_completo,
@@ -29,7 +30,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         op.no_produccion,
         op.idproduccion,
 
-        CASE WHEN v.abono >= v.anticipo
+        CASE WHEN (v.abono >= v.anticipo OR v.estado_administrativo_cat_idestado_administrativo_cat IN (2, 6))
               AND dp.estado_administrativo_cat_idestado_administrativo_cat = 3
               AND op.no_produccion IS NOT NULL
              THEN true ELSE false END                 AS puede_pdf,
@@ -85,6 +86,10 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         sp.id_color,
         ca.color                        AS color_asa_nombre,
 
+        -- Medida del Troquel
+        sp.id_medidatro,
+        mt.medida                       AS medida_troquel,
+
         sd.cantidad                     AS cantidad_orden,
         sd.kilogramos                   AS kilogramos_orden,
         sd.modo_cantidad,
@@ -135,6 +140,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           ON asz.idsuaje = sp.idsuaje
       LEFT JOIN color_asa ca
           ON ca.id_color = sp.id_color
+      LEFT JOIN medidas_troquel mt
+          ON mt.id_medidatro = sp.id_medidatro
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
           AND sd.aprobado = true
@@ -202,8 +209,10 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         bk:               row.bk   != null ? Boolean(row.bk)   : null,
         foil:             row.foil != null ? Boolean(row.foil) : null,
         asa_suaje:        row.asa_suaje        || null,
-        id_color:     row.id_color     ?? null,
+        id_color:         row.id_color         ?? null,
         color_asa_nombre: row.color_asa_nombre ?? null,
+        id_medidatro:     row.id_medidatro     ?? null,
+        medida_troquel:   row.medida_troquel   ?? null,
         cantidad_orden:   row.cantidad_orden   ? Number(row.cantidad_orden)   : null,
         kilogramos_orden: row.kilogramos_orden ? Number(row.kilogramos_orden) : null,
         modo_cantidad:    row.modo_cantidad    || "unidad",
@@ -255,11 +264,13 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
     const { rows: productos } = await pool.query(`
       SELECT
         sp.idsolicitud_producto,
+
+        -- Orden de producción
         op.idproduccion,
         op.no_produccion,
-        op.fecha          AS fecha_produccion,
-        dp.fecha_aprobacion AS fecha_aprobacion_diseno,
-        dp.observaciones    AS observaciones_diseno,
+        op.fecha            AS fecha_produccion,
+
+        -- Producto
         tpp.material_plastico_producto  AS nombre_producto,
         pr.tipo_producto                AS categoria,
         mp.tipo_material                AS material,
@@ -273,6 +284,8 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         cfg.fuelle_latDe                AS fuelle_lat_de,
         cfg.refuerzo,
         cfg.por_kilo,
+
+        -- Características
         t.cantidad   AS tintas,
         car.cantidad AS caras,
         sp.bk,
@@ -283,15 +296,28 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         sp.pigmentos,
         sp.pantones,
         sp.observacion,
+
+        -- Asa/Suaje
         asz.tipo AS asa_suaje,
 
         -- Color del Asa
         sp.id_color,
         ca.color AS color_asa_nombre,
 
+        -- Medida del Troquel
+        sp.id_medidatro,
+        mt.medida AS medida_troquel,
+
+        -- Cantidad aprobada por el cliente
         sd.cantidad,
         sd.kilogramos,
         sd.modo_cantidad,
+
+        -- Fecha aprobación diseño
+        dp.fecha_aprobacion AS fecha_aprobacion_diseno,
+        dp.observaciones    AS observaciones_diseno,
+
+        -- Datos de extrusión calculados al crear la orden
         op.repeticion_extrusion,
         op.repeticion_metro,
         op.metros,
@@ -299,11 +325,14 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         op.repeticion_kidder,
         op.repeticion_sicosa,
         op.fecha_entrega,
+
+        -- Campos de merma
         op.kilos,
         op.kilos_merma,
         op.pzas,
         op.pzas_merma,
-        op.metros_merma,
+
+        -- Progreso real de extrusión
         ext.kilos_extruir,
         ext.metros_extruir
 
@@ -330,6 +359,8 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           ON asz.idsuaje = sp.idsuaje
       LEFT JOIN color_asa ca
           ON ca.id_color = sp.id_color
+      LEFT JOIN medidas_troquel mt
+          ON mt.id_medidatro = sp.id_medidatro
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
           AND sd.aprobado = true
@@ -384,23 +415,25 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           refuerzo,
           solapa: "",
         },
-        tintas:        r.tintas   ?? null,
-        caras:         r.caras    ?? null,
-        bk:            r.bk       ?? null,
-        foil:          r.foil     ?? null,
-        alto_rel:      r.alto_rel ?? null,
-        laminado:      r.laminado ?? null,
-        uv_br:         r.uv_br    ?? null,
-        pigmentos:     r.pigmentos || null,
-        pantones:      r.pantones
+        tintas:      r.tintas   ?? null,
+        caras:       r.caras    ?? null,
+        bk:          r.bk       ?? null,
+        foil:        r.foil     ?? null,
+        alto_rel:    r.alto_rel ?? null,
+        laminado:    r.laminado ?? null,
+        uv_br:       r.uv_br    ?? null,
+        pigmentos:   r.pigmentos || null,
+        pantones:    r.pantones
           ? r.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
           : null,
         asa_suaje:        r.asa_suaje        || null,
-        id_color:     r.id_color     ?? null,
+        id_color:         r.id_color         ?? null,
         color_asa_nombre: r.color_asa_nombre ?? null,
-        observacion:   r.observacion || null,
-        cantidad:      r.cantidad   ? Number(r.cantidad)   : null,
-        kilogramos:    r.kilogramos ? Number(r.kilogramos) : null,
+        id_medidatro:     r.id_medidatro     ?? null,
+        medida_troquel:   r.medida_troquel   ?? null,
+        observacion:      r.observacion      || null,
+        cantidad:    r.cantidad   ? Number(r.cantidad)   : null,
+        kilogramos:  r.kilogramos ? Number(r.kilogramos) : null,
         modo_cantidad: r.modo_cantidad || "unidad",
         repeticion_extrusion: r.repeticion_extrusion ? Number(r.repeticion_extrusion) : null,
         repeticion_metro:     r.repeticion_metro     ? Number(r.repeticion_metro)     : null,
@@ -409,18 +442,17 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         repeticion_kidder:    r.repeticion_kidder    ?? null,
         repeticion_sicosa:    r.repeticion_sicosa    ?? null,
         fecha_entrega:        r.fecha_entrega        ?? null,
-        kilos:        r.kilos        != null ? Number(r.kilos)        : null,
-        kilos_merma:  r.kilos_merma  != null ? Number(r.kilos_merma)  : null,
-        pzas:         r.pzas         != null ? Number(r.pzas)         : null,
-        pzas_merma:   r.pzas_merma   != null ? Number(r.pzas_merma)   : null,
-        metros_merma: r.metros_merma != null ? Number(r.metros_merma) : null,
+        kilos:       r.kilos       != null ? Number(r.kilos)       : null,
+        kilos_merma: r.kilos_merma != null ? Number(r.kilos_merma) : null,
+        pzas:        r.pzas        != null ? Number(r.pzas)        : null,
+        pzas_merma:  r.pzas_merma  != null ? Number(r.pzas_merma)  : null,
         kilos_extruir:  r.kilos_extruir  ? Number(r.kilos_extruir)  : null,
         metros_extruir: r.metros_extruir ? Number(r.metros_extruir) : null,
       };
     });
 
     return res.json({
-      no_pedido:       pedido.no_pedido,
+      no_pedido:       pedido.no_pedido ?? "",
       no_cotizacion:   pedido.no_cotizacion ?? null,
       fecha:           pedido.fecha,
       prioridad:       Boolean(pedido.prioridad),

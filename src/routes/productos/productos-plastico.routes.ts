@@ -7,9 +7,9 @@ import {
   getProductoPlasticoById,
   updateProductoPlastico,
   checkProductoDuplicado,
-  //deleteProductoPlastico,
+  // deleteProductoPlastico,
 } from "../../controllers/productos/productos-plastico.controller";
-import { authMiddleware } from "../../middlewares/auth.middleware";
+import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 import {
   validateId,
   preventSQLInjection,
@@ -19,78 +19,62 @@ import {
 
 const router = Router();
 
-// ==========================
-// HELMET
-// ==========================
 router.use(
   helmet({
-    contentSecurityPolicy: false,
+    contentSecurityPolicy:     false,
     crossOriginEmbedderPolicy: false,
   })
 );
 
-// ==========================
-// RATE LIMITING
-// ==========================
 const createLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hora
-  max: 100, // 100 productos por hora
-  message: {
-    error: "Demasiados productos creados. Intenta más tarde.",
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
+  windowMs: 60 * 60 * 1000,
+  max:      100,
+  message:  { error: "Demasiados productos creados. Intenta más tarde." },
+  standardHeaders:        true,
+  legacyHeaders:          false,
   skipSuccessfulRequests: false,
 });
 
 const updateDeleteLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 150, // 150 operaciones por 15 minutos
-  message: {
-    error: "Demasiadas operaciones. Intenta más tarde.",
-  },
+  windowMs: 15 * 60 * 1000,
+  max:      150,
+  message:  { error: "Demasiadas operaciones. Intenta más tarde." },
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders:   false,
 });
 
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 200, // 200 solicitudes por 15 minutos
-  message: {
-    error: "Demasiadas solicitudes. Intenta más tarde.",
-  },
+  windowMs: 15 * 60 * 1000,
+  max:      200,
+  message:  { error: "Demasiadas solicitudes. Intenta más tarde." },
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders:   false,
 });
 
 router.use(generalLimiter);
 
-// ==========================
-// RUTAS PROTEGIDAS
-// ==========================
+const PERMISO = "Dar de alta productos";
 
-// Crear producto plástico - Con validación completa
+// ── GETs — cualquier autenticado ──────────────────────────
+router.get("/check-duplicado", authMiddleware, checkProductoDuplicado);
+router.get("/",                authMiddleware, getProductosPlastico);
+router.get("/:id",             authMiddleware, validateId, getProductoPlasticoById);
+
+// ── Escritura — requiere permiso ──────────────────────────
 router.post(
   "/",
   authMiddleware,
+  checkPermiso(PERMISO),
   createLimiter,
   preventSQLInjection,
   validateCreateProductoPlastico,
   createProductoPlastico
 );
 
-// Obtener todos los productos plástico
-router.get("/", authMiddleware, getProductosPlastico);
-// En tus rutas de productos
-router.get('/check-duplicado', checkProductoDuplicado);
-
-// Obtener producto por ID
-router.get("/:id", authMiddleware, validateId, getProductoPlasticoById);
-
-// Actualizar producto - Con validación completa
 router.put(
   "/:id",
   authMiddleware,
+  checkPermiso(PERMISO),
   updateDeleteLimiter,
   preventSQLInjection,
   validateId,
@@ -98,13 +82,13 @@ router.put(
   updateProductoPlastico
 );
 
-// Eliminar producto
 router.delete(
   "/:id",
   authMiddleware,
+  checkPermiso(PERMISO),
   updateDeleteLimiter,
   validateId,
-  //deleteProductoPlastico
+  // deleteProductoPlastico
 );
 
 export default router;

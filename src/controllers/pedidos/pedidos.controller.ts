@@ -44,11 +44,14 @@ export const getPedidos = async (req: Request, res: Response) => {
           sp.caras_idcaras,
           sp.bk, sp.foil, sp.idsuaje, sp.alto_rel,
           sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones,
-          sp.observacion, sp.id_color,
+          sp.observacion,
+          sp.id_color,
+          sp.id_medidatro,
 
           asz.tipo          AS suaje_tipo,
 
           ca.color          AS color_asa_nombre,
+          mt.medida         AS medida_troquel,
 
           cfg.medida        AS cfg_medida,
           cfg.altura        AS cfg_altura,
@@ -72,7 +75,12 @@ export const getPedidos = async (req: Request, res: Response) => {
           sd.precio_total,
           sd.aprobado,
           sd.kilogramos,
-          sd.modo_cantidad
+          sd.modo_cantidad,
+
+          h.id_herramental,
+          h.herramental_descripcion,
+          h.herramental_precio,
+          h.aprobado         AS herramental_aprobado
 
       FROM solicitud s
       LEFT JOIN clientes cli
@@ -85,6 +93,8 @@ export const getPedidos = async (req: Request, res: Response) => {
           ON asz.idsuaje = sp.idsuaje
       LEFT JOIN color_asa ca
           ON ca.id_color = sp.id_color
+      LEFT JOIN medidas_troquel mt
+          ON mt.id_medidatro = sp.id_medidatro
       LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
@@ -99,6 +109,8 @@ export const getPedidos = async (req: Request, res: Response) => {
           ON car.idcaras = sp.caras_idcaras
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
+      LEFT JOIN herramental h
+          ON h.idsolicitud_producto = sp.idsolicitud_producto
 
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
@@ -172,35 +184,41 @@ export const getPedidos = async (req: Request, res: Response) => {
           })();
 
           producto = {
-            idsolicitud:           row.idsolicitud,
-            idsolicitud_producto:  row.idsolicitud_producto,
-            idcotizacion_producto: row.idsolicitud_producto,
-            producto_id:           row.configuracion_plastico_idconfiguracion_plastico,
-            nombre:                nombreCompleto,
-            material:              row.material_nombre || "",
-            calibre:               calibreResuelto,
-            calibre_bopp:          row.calibre_bopp ? String(row.calibre_bopp) : null,
-            medidasFormateadas:    row.cfg_medida    || "",
+            idsolicitud:             row.idsolicitud,
+            idsolicitud_producto:    row.idsolicitud_producto,
+            idcotizacion_producto:   row.idsolicitud_producto,
+            producto_id:             row.configuracion_plastico_idconfiguracion_plastico,
+            nombre:                  nombreCompleto,
+            material:                row.material_nombre || "",
+            calibre:                 calibreResuelto,
+            calibre_bopp:            row.calibre_bopp ? String(row.calibre_bopp) : null,
+            medidasFormateadas:      row.cfg_medida    || "",
             medidas,
-            tintas:                row.tintas_cantidad ?? row.tintas_idtintas,
-            caras:                 row.caras_cantidad  ?? row.caras_idcaras,
-            bk:                    row.bk,
-            foil:                  row.foil,
-            idsuaje:               row.idsuaje        ?? null,
-            asa_suaje:             row.suaje_tipo      ?? null,
-            alto_rel:              row.alto_rel,
-            laminado:              row.laminado,
-            uv_br:                 row.uv_br,
-            pigmentos:             row.pigmentos || null,
-            pantones:              row.pantones
+            tintas:                  row.tintas_cantidad ?? row.tintas_idtintas,
+            caras:                   row.caras_cantidad  ?? row.caras_idcaras,
+            bk:                      row.bk,
+            foil:                    row.foil,
+            idsuaje:                 row.idsuaje        ?? null,
+            asa_suaje:               row.suaje_tipo      ?? null,
+            alto_rel:                row.alto_rel,
+            laminado:                row.laminado,
+            uv_br:                   row.uv_br,
+            pigmentos:               row.pigmentos || null,
+            pantones:                row.pantones
               ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
               : null,
-            observacion:           row.observacion,
-            por_kilo:              row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
-            id_color:          row.id_color    ?? null,
-            color_asa_nombre:      row.color_asa_nombre ?? null,
-            detalles:              [],
-            subtotal:              0,
+            observacion:             row.observacion,
+            por_kilo:                row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
+            id_color:                row.id_color        ?? null,
+            color_asa_nombre:        row.color_asa_nombre ?? null,
+            id_medidatro:            row.id_medidatro    ?? null,
+            medida_troquel:          row.medida_troquel  ?? null,
+            herramental_descripcion: row.herramental_descripcion ?? null,
+            herramental_precio:      row.herramental_precio != null ? Number(row.herramental_precio) : null,
+            herramental_aprobado:    row.herramental_aprobado ?? null,
+            herramental_id:          row.id_herramental ?? null,
+            detalles:                [],
+            subtotal:                0,
           };
           agrupados[noPedido].productos.push(producto);
         }
@@ -221,7 +239,7 @@ export const getPedidos = async (req: Request, res: Response) => {
 
     for (const noPedido in agrupados) {
       agrupados[noPedido].total = agrupados[noPedido].productos.reduce(
-        (sum: number, p: any) => sum + p.subtotal, 0
+        (sum: number, p: any) => sum + p.subtotal + (p.herramental_precio ?? 0), 0
       );
     }
 
@@ -286,6 +304,10 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     const productoIds: number[] = prodRows.map((r: any) => r.idsolicitud_producto);
 
     if (productoIds.length > 0) {
+      await client.query(
+        `DELETE FROM herramental WHERE idsolicitud_producto = ANY($1::int[])`,
+        [productoIds]
+      );
       await client.query(
         `DELETE FROM diseno_producto WHERE solicitud_producto_idsolicitud_producto = ANY($1::int[])`,
         [productoIds]

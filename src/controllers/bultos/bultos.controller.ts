@@ -427,3 +427,81 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
     return res.status(500).json({ error: "Error al obtener datos de etiqueta" });
   }
 };
+
+// ─────────────────────────────────────────────
+// PUT /api/seguimiento/:idproduccion/bultos/:idbulto
+// ─────────────────────────────────────────────
+export const editarBulto = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const idproduccion = Number(req.params.idproduccion);
+    const idbulto      = Number(req.params.idbulto);
+
+    const cantidad_unidades = req.body.cantidad_unidades != null
+      ? Number(req.body.cantidad_unidades) : null;
+    const peso  = req.body.peso  != null ? Number(req.body.peso)  : null;
+    const alto  = req.body.alto  != null ? Number(req.body.alto)  : null;
+    const largo = req.body.largo != null ? Number(req.body.largo) : null;
+    const ancho = req.body.ancho != null ? Number(req.body.ancho) : null;
+
+    if (!cantidad_unidades || cantidad_unidades <= 0) {
+      return res.status(400).json({ error: "La cantidad de unidades debe ser mayor a 0" });
+    }
+
+    // Verificar que el bulto pertenece a esta orden
+    const { rows } = await pool.query(
+      `SELECT b.idbulto FROM bultos b
+       WHERE b.idbulto = $1
+         AND (
+           b.bolseo_idbolseo IN (
+             SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = $2
+           )
+           OR
+           b.asa_flexible_idasa_flexible IN (
+             SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $2
+           )
+         )`,
+      [idbulto, idproduccion]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Bulto no encontrado" });
+    }
+
+    const { rows: updated } = await pool.query(
+      `UPDATE bultos
+       SET cantidad_unidades = $1,
+           peso  = $2,
+           alto  = $3,
+           largo = $4,
+           ancho = $5
+       WHERE idbulto = $6
+       RETURNING idbulto, cantidad_unidades, fecha_creacion, peso, alto, largo, ancho`,
+      [cantidad_unidades, peso, alto, largo, ancho, idbulto]
+    );
+
+    const r = updated[0];
+    // Determinar proceso_origen
+    const { rows: origenRows } = await pool.query(
+      `SELECT
+         CASE WHEN asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
+              ELSE 'bolseo' END AS proceso_origen
+       FROM bultos WHERE idbulto = $1`,
+      [idbulto]
+    );
+
+    return res.json({
+      idbulto:           Number(r.idbulto),
+      cantidad_unidades: Number(r.cantidad_unidades),
+      fecha_creacion:    r.fecha_creacion,
+      proceso_origen:    origenRows[0]?.proceso_origen ?? "bolseo",
+      peso:  r.peso  != null ? Number(r.peso)  : null,
+      alto:  r.alto  != null ? Number(r.alto)  : null,
+      largo: r.largo != null ? Number(r.largo) : null,
+      ancho: r.ancho != null ? Number(r.ancho) : null,
+    });
+
+  } catch (error: any) {
+    console.error("❌ EDITAR BULTO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al editar bulto" });
+  }
+};

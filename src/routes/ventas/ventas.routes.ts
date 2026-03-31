@@ -8,23 +8,38 @@ import {
   getMetodosPago,
   autorizarAnticipoCredito,
 } from "../../controllers/ventas/ventas.controller";
-import { authMiddleware } from "../../middlewares/auth.middleware";
+import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 
 const router = Router();
 
-// Catálogo de métodos de pago
-router.get("/metodos-pago", authMiddleware, getMetodosPago);
+const PERMISO = "Editar Anticipo y Liquidacion";
 
-// Ventas
-router.get("/",                         authMiddleware, getVentas);
-router.get("/:id",                      authMiddleware, getVentaById);
-router.get("/pedido/:noPedido",         authMiddleware, getVentaByPedido);
+// ── GETs — cualquier autenticado ──────────────────────────
+router.get("/metodos-pago",       authMiddleware, getMetodosPago);
+router.get("/",                   authMiddleware, getVentas);
+router.get("/pedido/:noPedido",   authMiddleware, getVentaByPedido);
+router.get("/:id",                authMiddleware, getVentaById);
 
-// Pagos
-router.post("/:id/pagos",              authMiddleware, registrarPago);
-router.delete("/pagos/:id",            authMiddleware, eliminarPago);
+// ── Escritura — requiere permiso ──────────────────────────
+router.post(
+  "/:id/pagos",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  registrarPago
+);
 
-// Anticipo por crédito
-router.post("/:id/anticipo-credito",   authMiddleware, autorizarAnticipoCredito);
+router.delete(
+  "/pagos/:id",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  eliminarPago
+);
+
+router.post(
+  "/:id/anticipo-credito",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  autorizarAnticipoCredito
+);
 
 export default router;

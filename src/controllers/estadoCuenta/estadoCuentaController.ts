@@ -87,14 +87,13 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     const { noPedido } = req.params;
     const IVA = 0.16;
 
-    // Estados
     const ESTADO_PENDIENTE       = 1;
     const ESTADO_ANTICIPO_PAGADO = 2;
     const ESTADO_PAGADO          = 6;
 
     await client.query("BEGIN");
 
-    // ── 1. Datos base — subtotal/iva/total NUNCA se tocan ─────
+    // ── 1. Datos base ─────────────────────────────────────────
     const { rows: pedidoRows } = await client.query(`
       SELECT
         s.idsolicitud, s.no_pedido, s.no_cotizacion, s.fecha,
@@ -124,10 +123,8 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
     const pedido = pedidoRows[0];
     console.log(`\n🧾 ===== ESTADO CUENTA — PEDIDO #${noPedido} =====`);
-    console.log(`   idsolicitud=${pedido.idsolicitud} | idventas=${pedido.idventas}`);
-    console.log(`   total_original=${pedido.total_original} | abono=${pedido.abono}`);
 
-    // ── 2. Productos con su configuración ─────────────────────
+    // ── 2. Productos con configuración + herramental ──────────
     const { rows: prodRows } = await client.query(`
       SELECT
         sp.idsolicitud_producto,
@@ -149,7 +146,11 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
           WHERE tppp.idtipo_producto_plastico =
             cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
             AND tppp.idproceso_cat = 3
-        ) AS tiene_asa_flexible
+        ) AS tiene_asa_flexible,
+        h.id_herramental,
+        h.herramental_descripcion,
+        h.herramental_precio,
+        h.aprobado AS herramental_aprobado
       FROM solicitud_producto sp
       JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
@@ -162,13 +163,9 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
           AND sd.aprobado = true
       LEFT JOIN tintas t   ON t.idtintas  = sp.tintas_idtintas
       LEFT JOIN caras car  ON car.idcaras = sp.caras_idcaras
+      LEFT JOIN herramental h ON h.idsolicitud_producto = sp.idsolicitud_producto
       WHERE sp.solicitud_idsolicitud = $1
     `, [pedido.idsolicitud]);
-
-    console.log(`\n📦 Productos encontrados: ${prodRows.length}`);
-    prodRows.forEach((p: any, i: number) => {
-      console.log(`   [${i}] idsolicitud_producto=${p.idsolicitud_producto} | tintas_idtintas=${p.tintas_idtintas} | caras_idcaras=${p.caras_idcaras} | por_kilo=${p.por_kilo} | cantidad_original=${p.cantidad_original} | precio_total_original=${p.precio_total_original}`);
-    });
 
     if (prodRows.length === 0) {
       await client.query("ROLLBACK");
@@ -217,11 +214,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       }
     }));
 
-    console.log(`\n🏭 Cantidad real por producto:`);
-    productosConReal.forEach((p: any, i: number) => {
-      console.log(`   [${i}] idsolicitud_producto=${p.idsolicitud_producto} | cantidad_real=${p.cantidad_real} | no_produccion=${p.no_produccion} | motivo_null=${p.motivo_null}`);
-    });
-
     // ── 4. Verificar que todos tengan cantidad real ────────────
     const incompletos = productosConReal.filter(p => p.cantidad_real === null);
     if (incompletos.length > 0) {
@@ -237,7 +229,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       });
     }
 
-    // ── 5. Cargar tarifas — parsear numerics explícitamente ───
+    // ── 5. Cargar tarifas ─────────────────────────────────────
     const { rows: tarifasRaw } = await client.query(`
       SELECT
         tp.idtarifas_produccion, tp.tintas_idtintas,
@@ -261,17 +253,9 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       kg_max:                  t.kg_max != null ? Number(t.kg_max) : null,
     }));
 
-    console.log(`\n📊 Tarifas cargadas: ${tarifas.length}`);
-    console.log(`   Muestra (primeras 5):`, tarifas.slice(0, 5).map(t => ({
-      tintas_idtintas: t.tintas_idtintas,
-      caras_idcaras:   t.caras_idcaras,
-      kg_min:          t.kg_min,
-      kg_max:          t.kg_max,
-      precio:          t.precio,
-    })));
-
     // ── 6. Recalcular precio por producto ──────────────────────
-    let nuevoSubtotal = 0;
+    let nuevoSubtotal     = 0;
+    let herramentalTotal  = 0;
 
     const productos = productosConReal.map((prod: any) => {
       const porKilo    = Number(prod.por_kilo)        || 0;
@@ -281,42 +265,46 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       const cantOrig   = Number(prod.cantidad_original);
       const precioOrig = Number(prod.precio_total_original);
 
-      console.log(`\n📦 Producto [${prod.idsolicitud_producto}]`);
-      console.log(`   porKilo=${porKilo} | tintasId=${tintasId} | carasId=${carasId}`);
-      console.log(`   cantReal=${cantReal} | cantOrig=${cantOrig} | precioOrig=${precioOrig}`);
-
       const calculo = calcularPrecioReal(cantReal, porKilo, tintasId, carasId, tarifas);
 
       const precio_total_real    = calculo ? Number(calculo.costo_total.toFixed(2))     : precioOrig;
       const precio_unitario_real = calculo ? Number(calculo.precio_unitario.toFixed(6)) : 0;
       const peso_kg_real         = calculo ? Number(calculo.peso_kg.toFixed(4))         : 0;
 
-      console.log(`   calculo=${calculo ? "OK" : "NULL (usando precioOrig)"} | precio_total_real=${precio_total_real}`);
-
       nuevoSubtotal += precio_total_real;
 
-      console.log(`📦 [${prod.idsolicitud_producto}] cantReal=${cantReal} | porKilo=${porKilo} | precio_total_real=${precio_total_real}`);
+      // ── Herramental aprobado ────────────────────────────────
+      const herrPrecio   = prod.herramental_aprobado === true && prod.herramental_precio != null
+        ? Number(prod.herramental_precio)
+        : null;
+      if (herrPrecio != null) {
+        nuevoSubtotal    += herrPrecio;
+        herramentalTotal += herrPrecio;
+      }
+
+      console.log(`📦 [${prod.idsolicitud_producto}] cantReal=${cantReal} | precio_total_real=${precio_total_real} | herramental=${herrPrecio ?? 0}`);
 
       return {
-        idsolicitud_producto:  prod.idsolicitud_producto,
-        no_produccion:         prod.no_produccion,
-        nombre:                [prod.tipo_producto, prod.medida, prod.material].filter(Boolean).join(" "),
-        // ── campos agregados para PDF simple ─────────────────
-        medida:                prod.medida    ?? null,
-        material:              prod.material  ?? null,
-        impresion:             pedido.impresion ?? null,
-        // ─────────────────────────────────────────────────────
-        tintas:                prod.tintas_num,
-        caras:                 prod.caras_num,
-        modo_cantidad:         prod.modo_cantidad,
-        cantidad_original:     cantOrig,
-        precio_total_original: precioOrig,
-        cantidad_real:         cantReal,
+        idsolicitud_producto:    prod.idsolicitud_producto,
+        no_produccion:           prod.no_produccion,
+        nombre:                  [prod.tipo_producto, prod.medida, prod.material].filter(Boolean).join(" "),
+        medida:                  prod.medida    ?? null,
+        material:                prod.material  ?? null,
+        impresion:               pedido.impresion ?? null,
+        tintas:                  prod.tintas_num,
+        caras:                   prod.caras_num,
+        modo_cantidad:           prod.modo_cantidad,
+        cantidad_original:       cantOrig,
+        precio_total_original:   precioOrig,
+        cantidad_real:           cantReal,
         peso_kg_real,
         precio_unitario_real,
         precio_total_real,
-        diferencia_piezas:     cantReal - cantOrig,
-        diferencia_precio:     Number((precio_total_real - precioOrig).toFixed(2)),
+        diferencia_piezas:       cantReal - cantOrig,
+        diferencia_precio:       Number((precio_total_real - precioOrig).toFixed(2)),
+        herramental_descripcion: prod.herramental_descripcion ?? null,
+        herramental_precio:      prod.herramental_precio != null ? Number(prod.herramental_precio) : null,
+        herramental_aprobado:    prod.herramental_aprobado ?? null,
       };
     });
 
@@ -330,9 +318,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     const totalOriginal   = Number(pedido.total_original);
     const diferenciaTotal = Number((nuevoTotal - totalOriginal).toFixed(2));
 
-    console.log(`\n💰 TOTALES FINALES pedido #${noPedido}`);
-    console.log(`   nuevoSubtotal=${nuevoSubtotal} | nuevoIva=${nuevoIva} | nuevoTotal=${nuevoTotal}`);
-    console.log(`   totalOriginal=${totalOriginal} | diferenciaTotal=${diferenciaTotal} | nuevoSaldo=${nuevoSaldo}`);
+    console.log(`\n💰 TOTALES pedido #${noPedido}: subtotal=${nuevoSubtotal} | herramental=${herramentalTotal} | iva=${nuevoIva} | total=${nuevoTotal} | saldo=${nuevoSaldo}`);
 
     // ── 8. Determinar nuevo estado ────────────────────────────
     let nuevoEstado: number;
@@ -340,10 +326,8 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     else if (abonoActual >= Number(pedido.anticipo)) nuevoEstado = ESTADO_ANTICIPO_PAGADO;
     else                                             nuevoEstado = ESTADO_PENDIENTE;
 
-    console.log(`\n🏷️  Nuevo estado → ${nuevoEstado} (saldo=${nuevoSaldo} | abono=${abonoActual} | anticipo=${pedido.anticipo})`);
-
-    // ── 9. Guardar en BD — NUNCA toca subtotal/iva/total originales ──
-    const updateResult = await client.query(`
+    // ── 9. Guardar en BD ──────────────────────────────────────
+    await client.query(`
       UPDATE ventas
       SET subtotal_real    = $1,
           iva_real         = $2,
@@ -354,11 +338,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       WHERE idventas = $7
     `, [nuevoSubtotal, nuevoIva, nuevoTotal, nuevoSaldo, diferenciaTotal, nuevoEstado, pedido.idventas]);
 
-    console.log(`\n💾 UPDATE ventas → rows afectadas: ${updateResult.rowCount} | idventas=${pedido.idventas}`);
-    console.log(`   subtotal_real=${nuevoSubtotal} | iva_real=${nuevoIva} | total_real=${nuevoTotal} | diferencia_total=${diferenciaTotal} | estado=${nuevoEstado}`);
-
     await client.query("COMMIT");
-    console.log(`✅ COMMIT exitoso — pedido #${noPedido}`);
 
     return res.json({
       no_pedido:     pedido.no_pedido,
@@ -371,32 +351,26 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
       productos,
 
-      // ✅ Original — de ventas.subtotal/iva/total, NUNCA modificado
       subtotal_original: Number(pedido.subtotal_original),
       iva_original:      Number(pedido.iva_original),
       total_original:    totalOriginal,
 
-      // ✅ Real — guardado en ventas.subtotal_real/iva_real/total_real
-      subtotal_real: nuevoSubtotal,
-      iva_real:      nuevoIva,
-      total_real:    nuevoTotal,
+      subtotal_real:    nuevoSubtotal,
+      iva_real:         nuevoIva,
+      total_real:       nuevoTotal,
+      herramental_total: Number(herramentalTotal.toFixed(2)),
 
-      // Pagos
       anticipo: Number(pedido.anticipo),
       abono:    abonoActual,
       saldo:    nuevoSaldo,
 
-      // ✅ Guardado en BD — total_real - total_original
       diferencia_total: diferenciaTotal,
-
-      // ✅ Estado actualizado
-      estado_id: nuevoEstado,
+      estado_id:        nuevoEstado,
     });
 
   } catch (error: any) {
     await client.query("ROLLBACK");
-    console.error("❌ ESTADO CUENTA ERROR:", error.message);
-    console.error("❌ STACK:", error.stack);
+    console.error("❌ ESTADO CUENTA ERROR:", error.message, error.stack);
     return res.status(500).json({ error: "Error al obtener estado de cuenta" });
   } finally {
     client.release();
@@ -450,4 +424,4 @@ export const getListaEstadoCuenta = async (req: Request, res: Response) => {
     console.error("❌ LISTA ESTADO CUENTA ERROR:", error.message);
     return res.status(500).json({ error: "Error al obtener lista de estado de cuenta" });
   }
-}; //hola
+};

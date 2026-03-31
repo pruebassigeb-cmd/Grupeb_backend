@@ -152,12 +152,12 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
 
       if (!tabla) {
         return {
-          idproceso_cat: p.idproceso_cat,
+          idproceso_cat:  p.idproceso_cat,
           nombre_proceso: p.nombre_proceso,
-          tabla: null,
-          registro: null,
-          estado: "no_aplica",
-          observaciones: null,
+          tabla:          null,
+          registro:       null,
+          estado:         "no_aplica",
+          observaciones:  null,
         };
       }
 
@@ -443,11 +443,11 @@ export const finalizarProceso = async (req: Request, res: Response) => {
       let kilosSiguiente:  number | null = null;
 
       if (procesoActualCat === PROCESO.EXTRUSION) {
-        metrosSiguiente = datos.metros_extruidos ? Number(datos.metros_extruidos) : null;
+        metrosSiguiente = datos.metros_extruidos  ? Number(datos.metros_extruidos)  : null;
         kilosSiguiente  = datos.k_para_impresion  ? Number(datos.k_para_impresion)  : null;
       } else if (procesoActualCat === PROCESO.IMPRESION) {
-        metrosSiguiente = datos.metros_impresos ? Number(datos.metros_impresos) : null;
-        kilosSiguiente  = datos.kilos_impresos  ? Number(datos.kilos_impresos)  : null;
+        metrosSiguiente = datos.metros_impresos   ? Number(datos.metros_impresos)   : null;
+        kilosSiguiente  = datos.kilos_impresos    ? Number(datos.kilos_impresos)    : null;
       }
 
       if (tablaSiguiente === "impresion") {
@@ -577,7 +577,8 @@ export const resagarProceso = async (req: Request, res: Response) => {
 
 // ============================================================
 // PUT /procesos/:idproduccion/editar/:tabla
-// Edita los datos de un proceso YA TERMINADO
+// Edita los datos de un proceso YA TERMINADO y propaga
+// los cambios al siguiente proceso si ya fue creado
 // ============================================================
 export const editarProceso = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -658,6 +659,56 @@ export const editarProceso = async (req: Request, res: Response) => {
       `UPDATE ${tabla} SET ${setClauses.join(", ")} WHERE orden_produccion_idproduccion = $${paramIdx}`,
       values
     );
+
+    // ── Propagar cambios al siguiente proceso ──────────────
+    if (tabla === "extrusion") {
+      // extrusion → impresion: kilos_imprimir y metros_imprimir
+      const kilosSiguiente  = datos.k_para_impresion !== undefined ? datos.k_para_impresion  : null;
+      const metrosSiguiente = datos.metros_extruidos !== undefined ? datos.metros_extruidos  : null;
+
+      if (kilosSiguiente !== null || metrosSiguiente !== null) {
+        const impClauses: string[] = [];
+        const impValues:  any[]    = [];
+        let   impIdx = 1;
+
+        if (kilosSiguiente !== null) {
+          impClauses.push(`kilos_imprimir = $${impIdx++}`);
+          impValues.push(kilosSiguiente);
+        }
+        if (metrosSiguiente !== null) {
+          impClauses.push(`metros_imprimir = $${impIdx++}`);
+          impValues.push(metrosSiguiente);
+        }
+
+        impValues.push(idproduccion);
+        await client.query(
+          `UPDATE impresion SET ${impClauses.join(", ")}
+           WHERE orden_produccion_idproduccion = $${impIdx}`,
+          impValues
+        );
+      }
+
+    } else if (tabla === "impresion") {
+      // impresion → bolseo: kilos_bolsear
+      if (datos.kilos_impresos !== undefined && datos.kilos_impresos !== null && datos.kilos_impresos !== "") {
+        await client.query(
+          `UPDATE bolseo SET kilos_bolsear = $1
+           WHERE orden_produccion_idproduccion = $2`,
+          [datos.kilos_impresos, idproduccion]
+        );
+      }
+
+    } else if (tabla === "bolseo") {
+      // bolseo → asa_flexible: piezas_recibidas
+      if (datos.piezas_bolseadas !== undefined && datos.piezas_bolseadas !== null && datos.piezas_bolseadas !== "") {
+        await client.query(
+          `UPDATE asa_flexible SET piezas_recibidas = $1
+           WHERE orden_produccion_idproduccion = $2`,
+          [datos.piezas_bolseadas, idproduccion]
+        );
+      }
+    }
+    // ── fin propagación ────────────────────────────────────
 
     await client.query("COMMIT");
 
