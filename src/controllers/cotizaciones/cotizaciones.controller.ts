@@ -200,7 +200,7 @@ export const crearCotizacion = async (req: Request, res: Response) => {
 
       const pigmentosGuardar     = typeof pigmentos  === "string" && pigmentos.trim()  !== "" ? pigmentos.trim()  : null;
       const pantonesGuardar      = typeof pantones   === "string" && pantones.trim()   !== "" ? pantones.trim()   : null;
-      const colorAsaGuardar      = colorAsaId     != null ? Number(colorAsaId)     : null;
+      const colorAsaGuardar      = colorAsaId      != null ? Number(colorAsaId)      : null;
       const medidaTroquelGuardar = idMedidaTroquel != null ? Number(idMedidaTroquel) : null;
 
       const { rows: prodRows } = await client.query(
@@ -220,7 +220,6 @@ export const crearCotizacion = async (req: Request, res: Response) => {
 
       const solicitudProductoId = prodRows[0].idsolicitud_producto;
 
-      // ── Herramental (solo si tiene precio) ───────────────────────────────
       const herramentalPrecioNum = herramental_precio != null ? Number(herramental_precio) : null;
       if (herramentalPrecioNum != null && herramentalPrecioNum > 0) {
         await client.query(
@@ -308,13 +307,24 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           s.clientes_idclientes,
           s.estado_administrativo_cat_idestado_administrativo_cat,
 
-          cli.razon_social  AS cliente_nombre,
+          cli.atencion      AS cliente_nombre,
           cli.empresa       AS cliente_empresa,
           cli.telefono      AS cliente_telefono,
+          cli.celular       AS cliente_celular,
           cli.correo        AS cliente_correo,
           cli.impresion     AS cliente_impresion,
+          cli.razon_social  AS cliente_razon_social,
 
           est.nombre        AS estado_nombre,
+
+          df.rfc            AS cliente_rfc,
+
+          dom.domicilio     AS cliente_domicilio,
+          dom.numero        AS cliente_numero,
+          dom.colonia       AS cliente_colonia,
+          dom.codigo_postal AS cliente_codigo_postal,
+          dom.poblacion     AS cliente_poblacion,
+          dom.estado        AS cliente_estado,
 
           sp.idsolicitud_producto,
           sp.configuracion_plastico_idconfiguracion_plastico,
@@ -358,13 +368,17 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           h.id_herramental,
           h.herramental_descripcion,
           h.herramental_precio,
-          h.aprobado         AS herramental_aprobado
+          h.aprobado        AS herramental_aprobado
 
       FROM solicitud s
       LEFT JOIN clientes cli
           ON cli.idclientes = s.clientes_idclientes
       LEFT JOIN estado_administrativo_cat est
           ON est.idestado_administrativo_cat = s.estado_administrativo_cat_idestado_administrativo_cat
+      LEFT JOIN datos_facturacion df
+          ON df.clientes_idclientes = cli.idclientes
+      LEFT JOIN domicilio dom
+          ON dom.clientes_idclientes = cli.idclientes
       LEFT JOIN solicitud_producto sp
           ON sp.solicitud_idsolicitud = s.idsolicitud
       LEFT JOIN asa_suaje asz
@@ -417,11 +431,22 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           estado_id:      row.estado_administrativo_cat_idestado_administrativo_cat,
           estado:         normalizarNombreEstado(row.estado_nombre || ""),
           cliente_id:     row.clientes_idclientes,
-          cliente:        row.cliente_nombre    || "",
-          telefono:       row.cliente_telefono  || "",
-          correo:         row.cliente_correo    || "",
-          impresion:      row.cliente_impresion || null,
-          empresa:        row.cliente_empresa   || "",
+          cliente:        row.cliente_nombre       || "",
+          telefono:       row.cliente_telefono     || "",
+          correo:         row.cliente_correo       || "",
+          impresion:      row.cliente_impresion    || null,
+          empresa:        row.cliente_empresa      || "",
+          // ── Campos nuevos de cliente ──────────────────────────────────────
+          celular:        row.cliente_celular      || null,
+          razon_social:   row.cliente_razon_social || null,
+          rfc:            row.cliente_rfc          || null,
+          domicilio:      row.cliente_domicilio    || null,
+          numero:         row.cliente_numero       || null,
+          colonia:        row.cliente_colonia      || null,
+          codigo_postal:  row.cliente_codigo_postal || null,
+          poblacion:      row.cliente_poblacion    || null,
+          estado_cliente: row.cliente_estado       || null,
+          // ─────────────────────────────────────────────────────────────────
           productos:      [],
           total:          0,
         };
@@ -481,8 +506,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
             caras:                    row.caras_cantidad  ?? row.caras_idcaras,
             bk:                       row.bk,
             foil:                     row.foil,
-            idsuaje:                  row.idsuaje        ?? null,
-            asa_suaje:                row.suaje_tipo      ?? null,
+            idsuaje:                  row.idsuaje         ?? null,
+            asa_suaje:                row.suaje_tipo       ?? null,
             alto_rel:                 row.alto_rel,
             laminado:                 row.laminado,
             uv_br:                    row.uv_br,
@@ -492,10 +517,10 @@ export const getCotizaciones = async (req: Request, res: Response) => {
               : null,
             observacion:              row.observacion,
             por_kilo:                 row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
-            id_color:                 row.id_color        ?? null,
-            color_asa_nombre:         row.color_asa_nombre ?? null,
-            id_medidatro:             row.id_medidatro    ?? null,
-            medida_troquel:           row.medida_troquel  ?? null,
+            id_color:                 row.id_color         ?? null,
+            color_asa_nombre:         row.color_asa_nombre  ?? null,
+            id_medidatro:             row.id_medidatro     ?? null,
+            medida_troquel:           row.medida_troquel   ?? null,
             herramental_descripcion:  row.herramental_descripcion ?? null,
             herramental_precio:       row.herramental_precio != null ? Number(row.herramental_precio) : null,
             herramental_aprobado:     row.herramental_aprobado ?? null,
@@ -592,7 +617,7 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
 
       const { rows: subtotalRows } = await client.query(
         `SELECT
-           COALESCE(SUM(sd.precio_total), 0)                              AS subtotal_detalles,
+           COALESCE(SUM(sd.precio_total), 0) AS subtotal_detalles,
            COALESCE(SUM(CASE WHEN h.aprobado = true THEN h.herramental_precio ELSE 0 END), 0) AS subtotal_herramental
          FROM solicitud_producto sp
          LEFT JOIN solicitud_detalle sd
@@ -701,15 +726,15 @@ export const eliminarCotizacion = async (req: Request, res: Response) => {
 // ============================================================
 export const aprobarDetalle = async (req: Request, res: Response) => {
   try {
-    const { id }       = req.params;
-    const { aprobado } = req.body;
+    const { idDetalle } = req.params;
+    const { aprobado }  = req.body;
 
     if (typeof aprobado !== "boolean")
       return res.status(400).json({ error: "El campo aprobado debe ser true o false" });
 
     const { rowCount } = await pool.query(
       `UPDATE solicitud_detalle SET aprobado = $1 WHERE idsolicitud_detalle = $2`,
-      [aprobado, id]
+      [aprobado, idDetalle]
     );
 
     if (rowCount === 0) return res.status(404).json({ error: "Detalle no encontrado" });
@@ -726,12 +751,12 @@ export const aprobarDetalle = async (req: Request, res: Response) => {
 // ============================================================
 export const actualizarObservacion = async (req: Request, res: Response) => {
   try {
-    const { id }          = req.params;
+    const { idP }         = req.params;
     const { observacion } = req.body;
 
     const { rowCount } = await pool.query(
       `UPDATE solicitud_producto SET observacion = $1 WHERE idsolicitud_producto = $2`,
-      [observacion || null, id]
+      [observacion || null, idP]
     );
 
     if (rowCount === 0) return res.status(404).json({ error: "Producto no encontrado" });
@@ -748,7 +773,7 @@ export const actualizarObservacion = async (req: Request, res: Response) => {
 // ============================================================
 export const aprobarHerramental = async (req: Request, res: Response) => {
   try {
-    const { id }       = req.params;
+    const { idH }      = req.params;
     const { aprobado } = req.body;
 
     if (typeof aprobado !== "boolean")
@@ -756,7 +781,7 @@ export const aprobarHerramental = async (req: Request, res: Response) => {
 
     const { rowCount } = await pool.query(
       `UPDATE herramental SET aprobado = $1 WHERE id_herramental = $2`,
-      [aprobado, id]
+      [aprobado, idH]
     );
 
     if (rowCount === 0) return res.status(404).json({ error: "Herramental no encontrado" });

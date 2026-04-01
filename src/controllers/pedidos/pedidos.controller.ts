@@ -22,13 +22,24 @@ export const getPedidos = async (req: Request, res: Response) => {
           s.clientes_idclientes,
           s.estado_administrativo_cat_idestado_administrativo_cat,
 
-          cli.razon_social  AS cliente_nombre,
+          cli.atencion      AS cliente_nombre,
           cli.empresa       AS cliente_empresa,
           cli.telefono      AS cliente_telefono,
+          cli.celular       AS cliente_celular,
           cli.correo        AS cliente_correo,
           cli.impresion     AS cliente_impresion,
+          cli.razon_social  AS cliente_razon_social,
 
           est.nombre        AS estado_nombre,
+
+          df.rfc            AS cliente_rfc,
+
+          dom.domicilio     AS cliente_domicilio,
+          dom.numero        AS cliente_numero,
+          dom.colonia       AS cliente_colonia,
+          dom.codigo_postal AS cliente_codigo_postal,
+          dom.poblacion     AS cliente_poblacion,
+          dom.estado        AS cliente_estado,
 
           (
             SELECT d.estado_administrativo_cat_idestado_administrativo_cat
@@ -87,6 +98,10 @@ export const getPedidos = async (req: Request, res: Response) => {
           ON cli.idclientes = s.clientes_idclientes
       LEFT JOIN estado_administrativo_cat est
           ON est.idestado_administrativo_cat = s.estado_administrativo_cat_idestado_administrativo_cat
+      LEFT JOIN datos_facturacion df
+          ON df.clientes_idclientes = cli.idclientes
+      LEFT JOIN domicilio dom
+          ON dom.clientes_idclientes = cli.idclientes
       LEFT JOIN solicitud_producto sp
           ON sp.solicitud_idsolicitud = s.idsolicitud
       LEFT JOIN asa_suaje asz
@@ -118,10 +133,10 @@ export const getPedidos = async (req: Request, res: Response) => {
       ORDER BY s.no_pedido DESC, sp.idsolicitud_producto, sd.idsolicitud_detalle
     `);
 
-    const agrupados: Record<number, any> = {};
+    const agrupados: Record<string, any> = {};
 
     for (const row of rows) {
-      const noPedido: number = row.no_pedido;
+      const noPedido: string = row.no_pedido;
 
       if (!agrupados[noPedido]) {
         agrupados[noPedido] = {
@@ -134,11 +149,20 @@ export const getPedidos = async (req: Request, res: Response) => {
           estado:           normalizarNombreEstado(row.estado_nombre || ""),
           diseno_estado_id: row.diseno_estado_id ?? 1,
           cliente_id:       row.clientes_idclientes,
-          cliente:          row.cliente_nombre    || "",
-          telefono:         row.cliente_telefono  || "",
-          correo:           row.cliente_correo    || "",
-          impresion:        row.cliente_impresion || null,
-          empresa:          row.cliente_empresa   || "",
+          cliente:          row.cliente_nombre        || "",
+          telefono:         row.cliente_telefono      || "",
+          correo:           row.cliente_correo        || "",
+          impresion:        row.cliente_impresion     || null,
+          empresa:          row.cliente_empresa       || "",
+          celular:          row.cliente_celular       || null,
+          razon_social:     row.cliente_razon_social  || null,
+          rfc:              row.cliente_rfc           || null,
+          domicilio:        row.cliente_domicilio     || null,
+          numero:           row.cliente_numero        || null,
+          colonia:          row.cliente_colonia       || null,
+          codigo_postal:    row.cliente_codigo_postal || null,
+          poblacion:        row.cliente_poblacion     || null,
+          estado_cliente:   row.cliente_estado        || null,
           productos:        [],
           total:            0,
         };
@@ -335,7 +359,7 @@ export const eliminarPedido = async (req: Request, res: Response) => {
 
     return res.json({
       message:          "Pedido cancelado y eliminado exitosamente",
-      no_pedido:        Number(id),
+      no_pedido:        id,
       no_cotizacion:    noCotizacion,
       tenia_cotizacion: noCotizacion !== null,
     });

@@ -10,8 +10,15 @@ import {
   actualizarObservacion,
   aprobarHerramental,
 } from "../../controllers/cotizaciones/cotizaciones.controller";
-import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
+import { getColoresAsa }     from "../../controllers/cotizaciones/coloresAsa.controller";
+import { getMedidasTroquel } from "../../controllers/cotizaciones/medidasTroquel.controller";
+import {
+  authMiddleware,
+  checkPermiso,
+  type AuthRequest,
+} from "../../middlewares/auth.middleware";
 import { preventSQLInjection } from "../../middlewares/validation.middleware";
+import type { Response, NextFunction } from "express";
 
 const router = Router();
 
@@ -40,16 +47,45 @@ const writeLimiter = rateLimit({
 
 router.use(generalLimiter);
 
-const PERMISO = "Crear/Editar/Aprobar/Rechazar Cotizaciones";
+const PERMISO         = "Crear/Editar/Aprobar/Rechazar Cotizaciones";
+const PERMISO_URGENTE = "Orden Urgente";
 
-// ── GETs — cualquier autenticado ──────────────────────────
-router.get("/", authMiddleware, getCotizaciones);
+// Middleware inline — valida "Orden Urgente" solo si prioridad = true en un pedido
+const checkOrdenUrgente = (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  const { prioridad, tipo } = req.body;
+
+  // Solo aplica cuando es pedido con prioridad = true
+  if (tipo !== "pedido" || !prioridad) return next();
+
+  const user = req.user;
+  if (!user) return res.status(401).json({ error: "No autenticado" });
+  if (user.acceso_total) return next();
+
+  const tienePermiso = (user.privilegios ?? []).includes(PERMISO_URGENTE);
+  if (!tienePermiso) {
+    return res.status(403).json({
+      error: "No tienes permiso para crear órdenes urgentes",
+    });
+  }
+
+  next();
+};
+
+// ── GETs catálogos — cualquier autenticado ────────────────
+router.get("/",                authMiddleware, getCotizaciones);
+router.get("/colores-asa",     authMiddleware, getColoresAsa);
+router.get("/medidas-troquel", authMiddleware, getMedidasTroquel);
 
 // ── Escritura — requiere permiso ──────────────────────────
 router.post(
   "/",
   authMiddleware,
   checkPermiso(PERMISO),
+  checkOrdenUrgente,      // ← valida prioridad solo si tipo=pedido y prioridad=true
   writeLimiter,
   preventSQLInjection,
   crearCotizacion
@@ -64,8 +100,9 @@ router.patch(
   actualizarEstadoCotizacion
 );
 
+// ── Detalle, herramental y observación — IDs directos ─────
 router.patch(
-  "/:id/detalle/:idDetalle/aprobar",
+  "/detalle/:idDetalle/aprobar",
   authMiddleware,
   checkPermiso(PERMISO),
   writeLimiter,
@@ -73,7 +110,7 @@ router.patch(
 );
 
 router.patch(
-  "/:id/herramental/:idH/aprobar",
+  "/herramental/:idH/aprobar",
   authMiddleware,
   checkPermiso(PERMISO),
   writeLimiter,
@@ -81,7 +118,7 @@ router.patch(
 );
 
 router.patch(
-  "/:id/producto/:idP/observacion",
+  "/producto/:idP/observacion",
   authMiddleware,
   checkPermiso(PERMISO),
   writeLimiter,

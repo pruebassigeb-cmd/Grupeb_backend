@@ -12,13 +12,14 @@ import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware"
 
 const router = Router();
 
-const PERMISO = "Editar Anticipo y Liquidacion";
+const PERMISO         = "Editar Anticipo y Liquidacion";
+const PERMISO_CREDITO = "Autorizar Anticipo por Credito";
 
 // ── GETs — cualquier autenticado ──────────────────────────
-router.get("/metodos-pago",       authMiddleware, getMetodosPago);
-router.get("/",                   authMiddleware, getVentas);
-router.get("/pedido/:noPedido",   authMiddleware, getVentaByPedido);
-router.get("/:id",                authMiddleware, getVentaById);
+router.get("/metodos-pago",     authMiddleware, getMetodosPago);
+router.get("/",                 authMiddleware, getVentas);
+router.get("/pedido/:noPedido", authMiddleware, getVentaByPedido);
+router.get("/:id",              authMiddleware, getVentaById);
 
 // ── Escritura — requiere permiso ──────────────────────────
 router.post(
@@ -35,10 +36,11 @@ router.delete(
   eliminarPago
 );
 
+// Autorizar anticipo por crédito — privilegio propio
 router.post(
   "/:id/anticipo-credito",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkPermiso(PERMISO_CREDITO),
   autorizarAnticipoCredito
 );
 
