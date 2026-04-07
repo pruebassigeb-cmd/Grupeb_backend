@@ -13,6 +13,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         s.fecha,
         s.prioridad,
         cli.razon_social                              AS cliente,
+        cli.impresion                                 AS impresion,
         pr.tipo_producto                              AS tipo_producto,
         v.anticipo                                    AS anticipo_requerido,
         v.abono                                       AS anticipo_pagado,
@@ -177,6 +178,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         prioridad:           Boolean(row.prioridad),
         cliente:             row.cliente       || "",
         tipo_producto:       row.tipo_producto || "Plástico",
+        // ✅ FIX: era row.cliente_impresion (undefined), ahora es row.impresion
+        impresion:           row.impresion     || "",
         anticipo_requerido:  Number(row.anticipo_requerido ?? 0),
         anticipo_pagado:     Number(row.anticipo_pagado    ?? 0),
         anticipo_cubierto:   Boolean(row.anticipo_cubierto),
@@ -250,7 +253,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         cli.empresa,
         cli.telefono,
         cli.correo,
-        cli.impresion
+        cli.impresion AS cliente_impresion
       FROM solicitud s
       LEFT JOIN clientes cli ON cli.idclientes = s.clientes_idclientes
       WHERE s.no_pedido = $1 AND s.estado = 'pedido'
@@ -460,7 +463,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       empresa:         pedido.empresa   || "",
       telefono:        pedido.telefono  || "",
       correo:          pedido.correo    || "",
-      impresion:       pedido.impresion ?? null,
+      impresion:       pedido.cliente_impresion ?? null,
       productos:       productosFormateados,
       total_productos: productosFormateados.length,
       con_orden:       productosFormateados.filter((p: any) => p.tiene_orden).length,
