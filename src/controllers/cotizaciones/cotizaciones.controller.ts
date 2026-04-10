@@ -9,7 +9,7 @@ const ESTADO = {
 } as const;
 
 const IVA                 = 0.16;
-const ANTICIPO_PORCENTAJE = 0.50;
+const ANTICIPO_PORCENTAJE = 0.40;
 
 type TipoDocumento = "cotizacion" | "pedido";
 

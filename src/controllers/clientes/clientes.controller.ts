@@ -277,11 +277,13 @@ export const searchClientes = async (req: Request, res: Response) => {
         c.impresion
       FROM clientes c
       WHERE 
-        c.atencion  ILIKE $1 OR
-        c.empresa   ILIKE $1 OR
-        c.telefono  ILIKE $1 OR
-        c.celular   ILIKE $1 OR
-        c.correo    ILIKE $1
+        c.idclientes::text ILIKE $1 OR
+        c.atencion   ILIKE $1 OR
+        c.empresa    ILIKE $1 OR
+        c.telefono   ILIKE $1 OR
+        c.celular    ILIKE $1 OR
+        c.correo     ILIKE $1 OR
+        c.impresion  ILIKE $1
       ORDER BY c.idclientes DESC
       LIMIT 50`,
       [searchTerm]

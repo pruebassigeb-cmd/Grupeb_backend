@@ -10,6 +10,9 @@ const ESTADO = {
   PAGADO:          6,
 } as const;
 
+// ── aquí está el único cambio de porcentaje que hay en este controller ──
+const ANTICIPO_PORCENTAJE = 0.40;
+
 async function generarNoProduccion(client: any): Promise<string> {
   const anio = new Date().getFullYear().toString().slice(-2);
   const { rows } = await client.query(
@@ -245,7 +248,6 @@ async function generarOrdenesPendientes(client: any, solicitudId: number): Promi
   return ordenesCreadas;
 }
 
-// ── Subconsulta reutilizable para herramental_total ───────────────────────
 const SUBQ_HERRAMENTAL = `
   COALESCE((
     SELECT SUM(h.herramental_precio)
@@ -380,10 +382,23 @@ export const registrarPago = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    const { metodoPagoId, monto, observacion = null } = req.body;
+    const { metodoPagoId, monto, observacion = null, fecha = null } = req.body;
 
     if (!metodoPagoId) return res.status(400).json({ error: "Se requiere metodoPagoId" });
     if (!monto || Number(monto) <= 0) return res.status(400).json({ error: "El monto debe ser mayor a 0" });
+
+    // Validar fecha si viene — debe ser una fecha válida y no futura
+    let fechaPago: Date | null = null;
+    if (fecha) {
+      const parsed = new Date(fecha);
+      if (isNaN(parsed.getTime())) {
+        return res.status(400).json({ error: "La fecha proporcionada no es válida" });
+      }
+      if (parsed > new Date()) {
+        return res.status(400).json({ error: "No se puede registrar un pago con fecha futura" });
+      }
+      fechaPago = parsed;
+    }
 
     await client.query("BEGIN");
 
@@ -415,12 +430,13 @@ export const registrarPago = async (req: Request, res: Response) => {
     if (nuevoSaldo <= 0)             nuevoEstado = ESTADO.PAGADO;
     else if (nuevoAbono >= anticipo) nuevoEstado = ESTADO.ANTICIPO_PAGADO;
 
+    // Si viene fecha manual la usamos, si no NOW()
     await client.query(
       `INSERT INTO venta_pago (
         ventas_idventas, metodo_pago_idmetodo_pago,
         monto, es_anticipo, observacion, fecha
-      ) VALUES ($1, $2, $3, $4, $5, NOW())`,
-      [id, metodoPagoId, montoNum, esAnticipoReal, observacion]
+      ) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, metodoPagoId, montoNum, esAnticipoReal, observacion, fechaPago ?? new Date()]
     );
 
     await client.query(
@@ -557,7 +573,6 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "El anticipo ya está cubierto" });
     }
 
-    // Solo cambia el estado — abono y saldo NO se modifican
     await client.query(
       `UPDATE ventas
        SET estado_administrativo_cat_idestado_administrativo_cat = $1

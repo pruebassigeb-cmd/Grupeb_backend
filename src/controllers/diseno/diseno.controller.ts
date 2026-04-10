@@ -20,11 +20,15 @@ async function generarNoProduccion(client: any): Promise<string> {
 
 async function anticipoPagado(client: any, solicitudId: number): Promise<boolean> {
   const { rows } = await client.query(
-    `SELECT anticipo, abono FROM ventas WHERE solicitud_idsolicitud = $1`,
+    `SELECT anticipo, abono, estado_administrativo_cat_idestado_administrativo_cat AS estado_id
+     FROM ventas WHERE solicitud_idsolicitud = $1`,
     [solicitudId]
   );
   if (rows.length === 0) return false;
-  return Number(rows[0].abono) >= Number(rows[0].anticipo);
+  const abono    = Number(rows[0].abono);
+  const anticipo = Number(rows[0].anticipo);
+  const estadoId = Number(rows[0].estado_id);
+  return abono >= anticipo || estadoId === 2 || estadoId === 6;
 }
 
 async function obtenerMerma(client: any, kilos: number, tintasId: number): Promise<number> {
