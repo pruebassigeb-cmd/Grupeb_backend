@@ -178,7 +178,6 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         prioridad:           Boolean(row.prioridad),
         cliente:             row.cliente       || "",
         tipo_producto:       row.tipo_producto || "Plástico",
-        // ✅ FIX: era row.cliente_impresion (undefined), ahora es row.impresion
         impresion:           row.impresion     || "",
         anticipo_requerido:  Number(row.anticipo_requerido ?? 0),
         anticipo_pagado:     Number(row.anticipo_pagado    ?? 0),
@@ -196,12 +195,12 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         asa_flexible_estado: row.lleva_asa_flexible ? mapEstadoProceso(row.asa_flexible_estado_id) : "no-aplica",
         nombre_producto:  row.nombre_producto || "",
         medida:           row.medida          || "",
-        altura:           row.altura          ? String(row.altura)          : "",
-        ancho:            row.ancho           ? String(row.ancho)           : "",
-        fuelle_fondo:     row.fuelle_fondo    ? String(row.fuelle_fondo)    : "",
-        fuelle_lat_iz:    row.fuelle_lat_iz   ? String(row.fuelle_lat_iz)   : "",
-        fuelle_lat_de:    row.fuelle_lat_de   ? String(row.fuelle_lat_de)   : "",
-        refuerzo:         row.refuerzo        ? String(row.refuerzo)        : "",
+        altura:           row.altura        != null ? String(row.altura)        : "",
+        ancho:            row.ancho         != null ? String(row.ancho)         : "",
+        fuelle_fondo:     row.fuelle_fondo  != null ? String(row.fuelle_fondo)  : "",
+        fuelle_lat_iz:    row.fuelle_lat_iz != null ? String(row.fuelle_lat_iz) : "",
+        fuelle_lat_de:    row.fuelle_lat_de != null ? String(row.fuelle_lat_de) : "",
+        refuerzo:         row.refuerzo      != null ? String(row.refuerzo)      : "",
         material:         row.material        || "",
         calibre,
         tintas:           row.tintas    != null ? Number(row.tintas)    : null,
@@ -383,11 +382,11 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ? (r.calibre_bopp ? String(r.calibre_bopp) : "")
         : (r.calibre_numero && Number(r.calibre_numero) !== 0 ? String(r.calibre_numero) : "");
 
-      const altura      = r.altura        ? String(r.altura)        : "";
-      const ancho       = r.ancho         ? String(r.ancho)         : "";
-      const fuelleFondo = r.fuelle_fondo  ? String(r.fuelle_fondo)  : "";
-      const fuelleLat   = r.fuelle_lat_iz ? String(r.fuelle_lat_iz) : "";
-      const refuerzo    = r.refuerzo      ? String(r.refuerzo)      : "";
+      const altura      = r.altura        != null ? String(r.altura)        : "";
+      const ancho       = r.ancho         != null ? String(r.ancho)         : "";
+      const fuelleFondo = r.fuelle_fondo  != null ? String(r.fuelle_fondo)  : "";
+      const fuelleLat   = r.fuelle_lat_iz != null ? String(r.fuelle_lat_iz) : "";
+      const refuerzo    = r.refuerzo      != null ? String(r.refuerzo)      : "";
 
       return {
         idsolicitud_producto:    r.idsolicitud_producto,
@@ -406,7 +405,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ancho,
         fuelle_fondo:            fuelleFondo,
         fuelle_lat_iz:           fuelleLat,
-        fuelle_lat_de:           r.fuelle_lat_de ? String(r.fuelle_lat_de) : "",
+        fuelle_lat_de:           r.fuelle_lat_de != null ? String(r.fuelle_lat_de) : "",
         refuerzo,
         por_kilo:                r.por_kilo ? String(r.por_kilo) : null,
         medidas: {
@@ -491,6 +490,7 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
         op.fecha_entrega,
         op.bultos_finalizado,
         cli.razon_social  AS cliente,
+        cli.atencion,
         cli.empresa,
         cli.telefono,
         cli.celular,
@@ -570,25 +570,26 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
       fecha:             pedido.fecha,
       fecha_entrega:     pedido.fecha_entrega ?? null,
       cliente:           pedido.cliente           || "",
-      empresa:           pedido.empresa           || "",
-      telefono:          pedido.telefono          || "",
-      celular:           pedido.celular           || "",
-      correo:            pedido.correo            || "",
-      cliente_impresion: pedido.cliente_impresion || "",
-      calle:             pedido.calle             || "",
-      numero:            pedido.numero            || "",
-      colonia:           pedido.colonia           || "",
-      codigo_postal:     pedido.codigo_postal      || "",
-      poblacion:         pedido.poblacion          || "",
-      estado:            pedido.estado             || "",
-      nombre_producto:   pedido.nombre_producto    || "",
-      medida:            pedido.medida             || "",
-      material:          pedido.material           || "",
+      atencion:          pedido.atencion           || null,
+      empresa:           pedido.empresa            || "",
+      telefono:          pedido.telefono           || "",
+      celular:           pedido.celular            || "",
+      correo:            pedido.correo             || "",
+      cliente_impresion: pedido.cliente_impresion  || "",
+      calle:             pedido.calle              || "",
+      numero:            pedido.numero             || "",
+      colonia:           pedido.colonia            || "",
+      codigo_postal:     pedido.codigo_postal       || "",
+      poblacion:         pedido.poblacion           || "",
+      estado:            pedido.estado              || "",
+      nombre_producto:   pedido.nombre_producto     || "",
+      medida:            pedido.medida              || "",
+      material:          pedido.material            || "",
       cantidad_total:    pedido.cantidad_real != null
         ? Number(pedido.cantidad_real)
         : pedido.cantidad ? Number(pedido.cantidad) : null,
       kilogramos:        pedido.kilogramos ? Number(pedido.kilogramos) : null,
-      modo_cantidad:     pedido.modo_cantidad      || "unidad",
+      modo_cantidad:     pedido.modo_cantidad       || "unidad",
       total_bultos:      bultosRows.length,
       bultos: bultosRows.map((b: any) => ({
         idbulto:           b.idbulto,

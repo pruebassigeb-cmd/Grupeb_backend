@@ -1,83 +1,6 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
-interface TarifaProduccion {
-  idtarifas_produccion:    number;
-  tintas_idtintas:         number;
-  kilogramos_idkilogramos: number;
-  caras_idcaras:           number;
-  precio:                  number;
-  merma_porcentaje:        number;
-  kg:                      number;
-  kg_min:                  number | null;
-  kg_max:                  number | null;
-}
-
-const buscarTarifa = (
-  tarifas:     TarifaProduccion[],
-  tintasId:    number,
-  carasId:     number,
-  pesoTotalKg: number
-): TarifaProduccion | null => {
-  const pesoRedondeado = Math.round(pesoTotalKg * 100) / 100;
-
-  console.log(`\n🔎 buscarTarifa → tintasId=${tintasId} | carasId=${carasId} | peso=${pesoRedondeado}`);
-
-  const resultado = tarifas.find(
-    t =>
-      t.tintas_idtintas === tintasId &&
-      t.caras_idcaras   === carasId  &&
-      pesoRedondeado >= (t.kg_min ?? 0) &&
-      (t.kg_max === null || pesoRedondeado <= t.kg_max)
-  ) ?? null;
-
-  if (!resultado) {
-    const porTintas = tarifas.filter(t => t.tintas_idtintas === tintasId);
-    const porCaras  = tarifas.filter(t => t.caras_idcaras   === carasId);
-    console.log(`  ❌ Sin match. Por tintas=${tintasId}: ${porTintas.length} tarifa(s) | Por caras=${carasId}: ${porCaras.length} tarifa(s)`);
-    if (porTintas.length > 0) {
-      console.log(`  📋 Tarifas disponibles para tintas=${tintasId}:`, porTintas.map(t => ({
-        caras_idcaras: t.caras_idcaras,
-        kg_min: t.kg_min,
-        kg_max: t.kg_max,
-        precio: t.precio,
-      })));
-    }
-  } else {
-    console.log(`  ✅ Tarifa encontrada → precio=${resultado.precio} | kg_min=${resultado.kg_min} | kg_max=${resultado.kg_max}`);
-  }
-
-  return resultado;
-};
-
-const calcularPrecioReal = (
-  cantidadReal: number,
-  porKilo:      number,
-  tintasId:     number,
-  carasId:      number,
-  tarifas:      TarifaProduccion[]
-): { precio_unitario: number; costo_total: number; peso_kg: number } | null => {
-  console.log(`\n💡 calcularPrecioReal → cantReal=${cantidadReal} | porKilo=${porKilo} | tintasId=${tintasId} | carasId=${carasId}`);
-
-  if (cantidadReal <= 0 || porKilo <= 0 || !tarifas.length) {
-    console.log(`  ⚠️ Guard falló → cantidadReal=${cantidadReal} porKilo=${porKilo} tarifas.length=${tarifas.length}`);
-    return null;
-  }
-
-  const peso_kg = cantidadReal / porKilo;
-  console.log(`  ⚖️ peso_kg = ${cantidadReal} / ${porKilo} = ${peso_kg}`);
-
-  const tarifa = buscarTarifa(tarifas, tintasId, carasId, peso_kg);
-  if (!tarifa) return null;
-
-  const precio = Number(tarifa.precio);
-  return {
-    precio_unitario: precio,
-    costo_total:     peso_kg * precio,
-    peso_kg,
-  };
-};
-
 // ============================================================
 // GET /estado-cuenta/:noPedido
 // ============================================================
@@ -229,52 +152,36 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       });
     }
 
-    // ── 5. Cargar tarifas ─────────────────────────────────────
-    const { rows: tarifasRaw } = await client.query(`
-      SELECT
-        tp.idtarifas_produccion, tp.tintas_idtintas,
-        tp.kilogramos_idkilogramos, tp.caras_idcaras,
-        tp.precio, tp.merma_porcentaje,
-        k.kg, k.kg_min, k.kg_max
-      FROM tarifas_produccion tp
-      JOIN kilogramos k ON k.idkilogramos = tp.kilogramos_idkilogramos
-      ORDER BY k.kg_min ASC
-    `);
-
-    const tarifas: TarifaProduccion[] = tarifasRaw.map((t: any) => ({
-      idtarifas_produccion:    Number(t.idtarifas_produccion),
-      tintas_idtintas:         Number(t.tintas_idtintas),
-      kilogramos_idkilogramos: Number(t.kilogramos_idkilogramos),
-      caras_idcaras:           Number(t.caras_idcaras),
-      precio:                  Number(t.precio),
-      merma_porcentaje:        Number(t.merma_porcentaje),
-      kg:                      Number(t.kg),
-      kg_min:                  t.kg_min != null ? Number(t.kg_min) : null,
-      kg_max:                  t.kg_max != null ? Number(t.kg_max) : null,
-    }));
-
-    // ── 6. Recalcular precio por producto ──────────────────────
-    let nuevoSubtotal     = 0;
-    let herramentalTotal  = 0;
+    // ── 5. Calcular precio real por producto ──────────────────
+    // CORRECCIÓN: se usa el precio unitario original (precio_total / cantidad)
+    // en lugar de recalcular desde la tarifa automática.
+    // Esto respeta el precio manual ingresado por el asesor de ventas.
+    let nuevoSubtotal    = 0;
+    let herramentalTotal = 0;
 
     const productos = productosConReal.map((prod: any) => {
-      const porKilo    = Number(prod.por_kilo)        || 0;
-      const tintasId   = Number(prod.tintas_idtintas);
-      const carasId    = Number(prod.caras_idcaras);
+      const porKilo    = Number(prod.por_kilo) || 0;
       const cantReal   = Number(prod.cantidad_real);
       const cantOrig   = Number(prod.cantidad_original);
       const precioOrig = Number(prod.precio_total_original);
 
-      const calculo = calcularPrecioReal(cantReal, porKilo, tintasId, carasId, tarifas);
+      // Precio unitario real = el que el asesor registró (manual o automático)
+      const precio_unitario_original = cantOrig > 0
+        ? precioOrig / cantOrig
+        : 0;
 
-      const precio_total_real    = calculo ? Number(calculo.costo_total.toFixed(2))     : precioOrig;
-      const precio_unitario_real = calculo ? Number(calculo.precio_unitario.toFixed(6)) : 0;
-      const peso_kg_real         = calculo ? Number(calculo.peso_kg.toFixed(4))         : 0;
+      // Total real = precio unitario original × cantidad real de producción
+      const precio_total_real = Number((precio_unitario_original * cantReal).toFixed(2));
+
+      // Kg reales según la cantidad producida
+      const peso_kg_real = porKilo > 0
+        ? Number((cantReal / porKilo).toFixed(4))
+        : 0;
 
       nuevoSubtotal += precio_total_real;
 
       // ── Herramental aprobado ────────────────────────────────
-      const herrPrecio   = prod.herramental_aprobado === true && prod.herramental_precio != null
+      const herrPrecio = prod.herramental_aprobado === true && prod.herramental_precio != null
         ? Number(prod.herramental_precio)
         : null;
       if (herrPrecio != null) {
@@ -282,7 +189,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
         herramentalTotal += herrPrecio;
       }
 
-      console.log(`📦 [${prod.idsolicitud_producto}] cantReal=${cantReal} | precio_total_real=${precio_total_real} | herramental=${herrPrecio ?? 0}`);
+      console.log(`📦 [${prod.idsolicitud_producto}] cantOrig=${cantOrig} | precioOrig=${precioOrig} | precioUnit=${precio_unitario_original.toFixed(4)} | cantReal=${cantReal} | precio_total_real=${precio_total_real} | herramental=${herrPrecio ?? 0}`);
 
       return {
         idsolicitud_producto:    prod.idsolicitud_producto,
@@ -298,7 +205,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
         precio_total_original:   precioOrig,
         cantidad_real:           cantReal,
         peso_kg_real,
-        precio_unitario_real,
+        precio_unitario_real:    Number(precio_unitario_original.toFixed(6)),
         precio_total_real,
         diferencia_piezas:       cantReal - cantOrig,
         diferencia_precio:       Number((precio_total_real - precioOrig).toFixed(2)),
@@ -308,7 +215,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       };
     });
 
-    // ── 7. Calcular totales reales ─────────────────────────────
+    // ── 6. Calcular totales reales ─────────────────────────────
     nuevoSubtotal    = Number(nuevoSubtotal.toFixed(2));
     const nuevoIva   = Number((nuevoSubtotal * IVA).toFixed(2));
     const nuevoTotal = Number((nuevoSubtotal + nuevoIva).toFixed(2));
@@ -320,13 +227,13 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
     console.log(`\n💰 TOTALES pedido #${noPedido}: subtotal=${nuevoSubtotal} | herramental=${herramentalTotal} | iva=${nuevoIva} | total=${nuevoTotal} | saldo=${nuevoSaldo}`);
 
-    // ── 8. Determinar nuevo estado ────────────────────────────
+    // ── 7. Determinar nuevo estado ────────────────────────────
     let nuevoEstado: number;
     if (nuevoSaldo <= 0)                             nuevoEstado = ESTADO_PAGADO;
     else if (abonoActual >= Number(pedido.anticipo)) nuevoEstado = ESTADO_ANTICIPO_PAGADO;
     else                                             nuevoEstado = ESTADO_PENDIENTE;
 
-    // ── 9. Guardar en BD ──────────────────────────────────────
+    // ── 8. Guardar en BD ──────────────────────────────────────
     await client.query(`
       UPDATE ventas
       SET subtotal_real    = $1,
@@ -355,9 +262,9 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       iva_original:      Number(pedido.iva_original),
       total_original:    totalOriginal,
 
-      subtotal_real:    nuevoSubtotal,
-      iva_real:         nuevoIva,
-      total_real:       nuevoTotal,
+      subtotal_real:     nuevoSubtotal,
+      iva_real:          nuevoIva,
+      total_real:        nuevoTotal,
       herramental_total: Number(herramentalTotal.toFixed(2)),
 
       anticipo: Number(pedido.anticipo),

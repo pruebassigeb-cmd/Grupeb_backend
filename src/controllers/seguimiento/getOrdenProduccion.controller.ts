@@ -149,11 +149,12 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ? (r.calibre_bopp ? String(r.calibre_bopp) : "")
         : (r.calibre_numero && Number(r.calibre_numero) !== 0 ? String(r.calibre_numero) : "");
 
-      const altura      = r.altura        ? String(r.altura)        : "";
-      const ancho       = r.ancho         ? String(r.ancho)         : "";
-      const fuelleFondo = r.fuelle_fondo  ? String(r.fuelle_fondo)  : "";
-      const fuelleLat   = r.fuelle_lat_iz ? String(r.fuelle_lat_iz) : "";
-      const refuerzo    = r.refuerzo      ? String(r.refuerzo)      : "";
+      // ── FIX: != null para preservar valor 0 ──
+      const altura      = r.altura        != null ? String(r.altura)        : "";
+      const ancho       = r.ancho         != null ? String(r.ancho)         : "";
+      const fuelleFondo = r.fuelle_fondo  != null ? String(r.fuelle_fondo)  : "";
+      const fuelleLat   = r.fuelle_lat_iz != null ? String(r.fuelle_lat_iz) : "";
+      const refuerzo    = r.refuerzo      != null ? String(r.refuerzo)      : "";
 
       return {
         idsolicitud_producto:    r.idsolicitud_producto,
@@ -172,7 +173,8 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ancho,
         fuelle_fondo:            fuelleFondo,
         fuelle_lat_iz:           fuelleLat,
-        fuelle_lat_de:           r.fuelle_lat_de ? String(r.fuelle_lat_de) : "",
+        // ── FIX: != null para preservar valor 0 ──
+        fuelle_lat_de:           r.fuelle_lat_de != null ? String(r.fuelle_lat_de) : "",
         refuerzo,
         por_kilo:                r.por_kilo ? String(r.por_kilo) : null,
         medidas: {

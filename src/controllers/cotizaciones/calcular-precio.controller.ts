@@ -8,7 +8,6 @@ interface TarifaProduccion {
   idtarifas_produccion: number;
   tintas_idtintas: number;
   kilogramos_idkilogramos: number;
-  caras_idcaras: number;
   precio: number;
   merma_porcentaje: number;
   kg: number;
@@ -30,21 +29,18 @@ interface ResultadoCalculo {
 }
 
 // ============================================
-// BUSCAR TARIFA CORRECTA
+// BUSCAR TARIFA CORRECTA (sin caras)
 // ============================================
 const buscarTarifa = (
   tarifas: TarifaProduccion[],
   tintasId: number,
-  carasId: number,
   pesoTotalKg: number
 ): TarifaProduccion | null => {
-  // ✅ Redondear a 2 decimales para eliminar ruido de punto flotante
   const pesoRedondeado = Math.round(pesoTotalKg * 100) / 100;
 
   const tarifa = tarifas.find(
     (t) =>
       t.tintas_idtintas === tintasId &&
-      t.caras_idcaras === carasId &&
       pesoRedondeado >= (t.kg_min ?? 0) &&
       (t.kg_max === null || pesoRedondeado <= t.kg_max)
   );
@@ -54,13 +50,13 @@ const buscarTarifa = (
       pesoTotalKg,
       pesoRedondeado,
       tintasId,
-      carasId,
     });
     return null;
   }
 
   return tarifa;
 };
+
 // ============================================
 // CALCULAR PRECIO UNITARIO (BACKEND)
 // ============================================
@@ -68,28 +64,18 @@ const calcularPrecioUnitarioBackend = (
   cantidad: number,
   porKilo: number,
   tintasId: number,
-  carasId: number,
   tarifas: TarifaProduccion[]
 ): ResultadoCalculo | null => {
   if (cantidad <= 0 || porKilo <= 0 || !tarifas.length) return null;
 
-  // 1️⃣ Calcular peso total
   const peso_total_kg = cantidad / porKilo;
 
-  // 2️⃣ Buscar tarifa según rango definido en BD
-  const tarifa = buscarTarifa(tarifas, tintasId, carasId, peso_total_kg);
+  const tarifa = buscarTarifa(tarifas, tintasId, peso_total_kg);
   if (!tarifa) return null;
 
-  // 3️⃣ Calcular costos base
   const costo_produccion = peso_total_kg * tarifa.precio;
-
-  // ⚠️ Merma solo informativa
   const costo_merma = costo_produccion * (tarifa.merma_porcentaje / 100);
-
-  // ✅ El costo total NO incluye merma
   const costo_total = costo_produccion;
-
-  // ✅ Precio unitario limpio
   const precio_unitario = costo_produccion / cantidad;
 
   console.log("💰 Cálculo producción (BACKEND):", {
@@ -97,7 +83,6 @@ const calcularPrecioUnitarioBackend = (
     peso_total_kg: peso_total_kg.toFixed(2) + " kg",
     rango_aplicado: `${tarifa.kg_min ?? 0} - ${tarifa.kg_max ?? "∞"} kg`,
     tintas: tintasId,
-    caras: carasId,
     precio_kg: "$" + tarifa.precio,
     merma: tarifa.merma_porcentaje + "%",
     costo_produccion: "$" + costo_produccion.toFixed(2),
@@ -125,12 +110,11 @@ const calcularPrecioUnitarioBackend = (
 // ============================================
 export const calcularPrecioPreview = async (req: Request, res: Response) => {
   try {
-    const { cantidad, porKilo, tintasId, carasId } = req.body;
+    const { cantidad, porKilo, tintasId } = req.body;
 
-    // Validaciones
-    if (!cantidad || !porKilo || !tintasId || !carasId) {
+    if (!cantidad || !porKilo || !tintasId) {
       return res.status(400).json({
-        error: "Se requieren: cantidad, porKilo, tintasId, carasId",
+        error: "Se requieren: cantidad, porKilo, tintasId",
       });
     }
 
@@ -140,13 +124,11 @@ export const calcularPrecioPreview = async (req: Request, res: Response) => {
       });
     }
 
-    // 🔥 Obtener todas las tarifas con JOIN a kilogramos
     const { rows: tarifasRows } = await pool.query<TarifaProduccion>(`
       SELECT 
         tp.idtarifas_produccion,
         tp.tintas_idtintas,
         tp.kilogramos_idkilogramos,
-        tp.caras_idcaras,
         tp.precio,
         tp.merma_porcentaje,
         k.kg,
@@ -164,14 +146,10 @@ export const calcularPrecioPreview = async (req: Request, res: Response) => {
       });
     }
 
-    console.log(`✅ Tarifas cargadas: ${tarifasRows.length}`);
-
-    // 🔥 Calcular precio
     const resultado = calcularPrecioUnitarioBackend(
       Number(cantidad),
       Number(porKilo),
       Number(tintasId),
-      Number(carasId),
       tarifasRows
     );
 
@@ -182,16 +160,11 @@ export const calcularPrecioPreview = async (req: Request, res: Response) => {
           cantidad,
           peso_kg: (Number(cantidad) / Number(porKilo)).toFixed(2),
           tintasId,
-          carasId,
         },
       });
     }
 
-    // ✅ Devolver resultado
-    return res.json({
-      success: true,
-      ...resultado,
-    });
+    return res.json({ success: true, ...resultado });
 
   } catch (error: any) {
     console.error("❌ CALCULAR PRECIO ERROR:", error.message);
@@ -207,7 +180,7 @@ export const calcularPrecioPreview = async (req: Request, res: Response) => {
 // ============================================
 export const calcularPreciosBatch = async (req: Request, res: Response) => {
   try {
-    const { cantidades, porKilo, tintasId, carasId } = req.body;
+    const { cantidades, porKilo, tintasId } = req.body;
 
     if (!Array.isArray(cantidades) || cantidades.length === 0) {
       return res.status(400).json({
@@ -215,19 +188,17 @@ export const calcularPreciosBatch = async (req: Request, res: Response) => {
       });
     }
 
-    if (!porKilo || !tintasId || !carasId) {
+    if (!porKilo || !tintasId) {
       return res.status(400).json({
-        error: "Se requieren: porKilo, tintasId, carasId",
+        error: "Se requieren: porKilo, tintasId",
       });
     }
 
-    // 🔥 Obtener tarifas con JOIN a kilogramos
     const { rows: tarifasRows } = await pool.query<TarifaProduccion>(`
       SELECT 
         tp.idtarifas_produccion,
         tp.tintas_idtintas,
         tp.kilogramos_idkilogramos,
-        tp.caras_idcaras,
         tp.precio,
         tp.merma_porcentaje,
         k.kg,
@@ -245,27 +216,17 @@ export const calcularPreciosBatch = async (req: Request, res: Response) => {
       });
     }
 
-    console.log(`✅ Tarifas cargadas para batch: ${tarifasRows.length}`);
-
-    // Calcular cada cantidad
     const resultados = cantidades.map((cantidad) => {
-      if (cantidad <= 0) {
-        return null;
-      }
-
+      if (cantidad <= 0) return null;
       return calcularPrecioUnitarioBackend(
         Number(cantidad),
         Number(porKilo),
         Number(tintasId),
-        Number(carasId),
         tarifasRows
       );
     });
 
-    return res.json({
-      success: true,
-      resultados,
-    });
+    return res.json({ success: true, resultados });
 
   } catch (error: any) {
     console.error("❌ CALCULAR PRECIOS BATCH ERROR:", error.message);
