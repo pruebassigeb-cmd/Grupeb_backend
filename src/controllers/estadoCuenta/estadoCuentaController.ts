@@ -32,7 +32,12 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
         v.subtotal_real,
         v.iva_real,
         v.total_real,
-        v.diferencia_total
+        v.diferencia_total,
+        EXISTS (
+          SELECT 1 FROM venta_pago vp
+          WHERE vp.ventas_idventas = v.idventas
+            AND vp.es_credito_anticipo = true
+        ) AS es_credito_anticipo
       FROM solicitud s
       JOIN clientes cli ON cli.idclientes = s.clientes_idclientes
       JOIN ventas v     ON v.solicitud_idsolicitud = s.idsolicitud
@@ -153,9 +158,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     }
 
     // ── 5. Calcular precio real por producto ──────────────────
-    // CORRECCIÓN: se usa el precio unitario original (precio_total / cantidad)
-    // en lugar de recalcular desde la tarifa automática.
-    // Esto respeta el precio manual ingresado por el asesor de ventas.
     let nuevoSubtotal    = 0;
     let herramentalTotal = 0;
 
@@ -165,22 +167,18 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       const cantOrig   = Number(prod.cantidad_original);
       const precioOrig = Number(prod.precio_total_original);
 
-      // Precio unitario real = el que el asesor registró (manual o automático)
       const precio_unitario_original = cantOrig > 0
         ? precioOrig / cantOrig
         : 0;
 
-      // Total real = precio unitario original × cantidad real de producción
       const precio_total_real = Number((precio_unitario_original * cantReal).toFixed(2));
 
-      // Kg reales según la cantidad producida
       const peso_kg_real = porKilo > 0
         ? Number((cantReal / porKilo).toFixed(4))
         : 0;
 
       nuevoSubtotal += precio_total_real;
 
-      // ── Herramental aprobado ────────────────────────────────
       const herrPrecio = prod.herramental_aprobado === true && prod.herramental_precio != null
         ? Number(prod.herramental_precio)
         : null;
@@ -267,9 +265,10 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       total_real:        nuevoTotal,
       herramental_total: Number(herramentalTotal.toFixed(2)),
 
-      anticipo: Number(pedido.anticipo),
-      abono:    abonoActual,
-      saldo:    nuevoSaldo,
+      anticipo:            Number(pedido.anticipo),
+      abono:               abonoActual,
+      saldo:               nuevoSaldo,
+      es_credito_anticipo: pedido.es_credito_anticipo ?? false,
 
       diferencia_total: diferenciaTotal,
       estado_id:        nuevoEstado,

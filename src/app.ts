@@ -1,7 +1,13 @@
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import { setupSecurity, corsOptions } from "./config/security.config";
+import {
+  setupSecurity,
+  corsOptions,
+  generalLimiter,
+  approvalLimiter,
+  loginLimiter,
+} from "./config/security.config";
 
 // Rutas
 import authRoutes from "./routes/auth/auth.routes";
@@ -34,12 +40,12 @@ const app = express();
 app.set("trust proxy", 1);
 
 // ==========================
-// CONFIGURACIÓN DE SEGURIDAD
+// CONFIGURACIÓN DE SEGURIDAD (helmet)
 // ==========================
 setupSecurity(app);
 
 // ==========================
-// MIDDLEWARES
+// MIDDLEWARES BASE
 // ==========================
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "5mb" }));
@@ -47,28 +53,37 @@ app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 app.use(cookieParser());
 
 // ==========================
+// RATE LIMITERS
+// El más específico va primero para tomar precedencia sobre el general
+// ==========================
+app.use("/api/cotizaciones/detalle",     approvalLimiter);
+app.use("/api/cotizaciones/herramental", approvalLimiter);
+app.use("/api/auth/login",               loginLimiter);
+app.use("/api",                          generalLimiter);
+
+// ==========================
 // RUTAS
 // ==========================
-app.use("/api/auth", authRoutes);
-app.use("/api/roles", rolesRoutes);
-app.use("/api/privilegios", privilegiosRoutes);
-app.use("/api/usuarios", usuariosRoutes);
-app.use("/api/catalogos", catalogosRoutes);
-app.use("/api/clientes", clientesRoutes);
-app.use("/api/tarifas", tarifasRoutes);
+app.use("/api/auth",                authRoutes);
+app.use("/api/roles",               rolesRoutes);
+app.use("/api/privilegios",         privilegiosRoutes);
+app.use("/api/usuarios",            usuariosRoutes);
+app.use("/api/catalogos",           catalogosRoutes);
+app.use("/api/clientes",            clientesRoutes);
+app.use("/api/tarifas",             tarifasRoutes);
 app.use("/api/catalogos-productos", catalogosProductosRoutes);
-app.use("/api/productos-plastico", productosPlasticoRoutes);
+app.use("/api/productos-plastico",  productosPlasticoRoutes);
 app.use("/api/catalogos-produccion", catalogosProduccionRoutes);
-app.use("/api/cotizaciones", cotizacionesRoutes);
-app.use("/api/pedidos", pedidosRoutes);
-app.use("/api/ventas", ventasRoutes);
-app.use("/api/diseno", disenoRoutes);
-app.use("/api", calcularPrecioRoutes);
-app.use("/api", suajesRoutes);
-app.use("/api/seguimiento", seguimientoRoutes);
-app.use("/api/rodillos", rodillosRoutes);
-app.use("/api/procesos", procesosRoutes);
-app.use("/api/estado-cuenta", estadoCuentaRoutes);
+app.use("/api/cotizaciones",        cotizacionesRoutes);
+app.use("/api/pedidos",             pedidosRoutes);
+app.use("/api/ventas",              ventasRoutes);
+app.use("/api/diseno",              disenoRoutes);
+app.use("/api",                     calcularPrecioRoutes);
+app.use("/api",                     suajesRoutes);
+app.use("/api/seguimiento",         seguimientoRoutes);
+app.use("/api/rodillos",            rodillosRoutes);
+app.use("/api/procesos",            procesosRoutes);
+app.use("/api/estado-cuenta",       estadoCuentaRoutes);
 app.use("/api/seguimiento/:idproduccion/bultos", bultosRoutes);
 
 // ==========================
@@ -81,7 +96,7 @@ app.get("/health", (req, res) => {
 // ==========================
 // 404 - RUTA NO ENCONTRADA
 // ==========================
-app.use((req, res, next) => {
+app.use((req, res) => {
   res.status(404).json({ error: "Ruta no encontrada" });
 });
 

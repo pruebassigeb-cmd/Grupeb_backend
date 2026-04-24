@@ -10,7 +10,6 @@ const ESTADO = {
   PAGADO:          6,
 } as const;
 
-// ── aquí está el único cambio de porcentaje que hay en este controller ──
 const ANTICIPO_PORCENTAJE = 0.40;
 
 async function generarNoProduccion(client: any): Promise<string> {
@@ -274,6 +273,11 @@ export const getVentas = async (req: Request, res: Response) => {
         s.fecha    AS fecha_pedido,
         cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
         cli.impresion,
+        EXISTS (
+          SELECT 1 FROM venta_pago vp
+          WHERE vp.ventas_idventas = v.idventas
+            AND vp.es_credito_anticipo = true
+        ) AS es_credito_anticipo,
         ${SUBQ_HERRAMENTAL}
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
@@ -305,6 +309,11 @@ export const getVentaById = async (req: Request, res: Response) => {
         s.no_pedido, s.no_cotizacion, s.fecha AS fecha_pedido,
         cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
         cli.impresion,
+        EXISTS (
+          SELECT 1 FROM venta_pago vp
+          WHERE vp.ventas_idventas = v.idventas
+            AND vp.es_credito_anticipo = true
+        ) AS es_credito_anticipo,
         ${SUBQ_HERRAMENTAL}
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
@@ -317,7 +326,8 @@ export const getVentaById = async (req: Request, res: Response) => {
     if (ventaRows.length === 0) return res.status(404).json({ error: "Venta no encontrada" });
 
     const { rows: pagos } = await pool.query(`
-      SELECT vp.idventa_pago, vp.monto, vp.es_anticipo, vp.observacion, vp.fecha,
+      SELECT vp.idventa_pago, vp.monto, vp.es_anticipo, vp.es_credito_anticipo,
+             vp.observacion, vp.fecha,
              mp.tipo_pago AS metodo_pago, mp.idmetodo_pago
       FROM venta_pago vp
       JOIN metodo_pago mp ON mp.idmetodo_pago = vp.metodo_pago_idmetodo_pago
@@ -348,6 +358,11 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
         s.no_pedido, s.no_cotizacion, s.fecha AS fecha_pedido,
         cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
         cli.impresion,
+        EXISTS (
+          SELECT 1 FROM venta_pago vp
+          WHERE vp.ventas_idventas = v.idventas
+            AND vp.es_credito_anticipo = true
+        ) AS es_credito_anticipo,
         ${SUBQ_HERRAMENTAL}
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
@@ -360,7 +375,8 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
     if (ventaRows.length === 0) return res.status(404).json({ error: "Venta no encontrada para este pedido" });
 
     const { rows: pagos } = await pool.query(`
-      SELECT vp.idventa_pago, vp.monto, vp.es_anticipo, vp.observacion, vp.fecha,
+      SELECT vp.idventa_pago, vp.monto, vp.es_anticipo, vp.es_credito_anticipo,
+             vp.observacion, vp.fecha,
              mp.tipo_pago AS metodo_pago, mp.idmetodo_pago
       FROM venta_pago vp
       JOIN metodo_pago mp ON mp.idmetodo_pago = vp.metodo_pago_idmetodo_pago
@@ -387,7 +403,6 @@ export const registrarPago = async (req: Request, res: Response) => {
     if (!metodoPagoId) return res.status(400).json({ error: "Se requiere metodoPagoId" });
     if (!monto || Number(monto) <= 0) return res.status(400).json({ error: "El monto debe ser mayor a 0" });
 
-    // Validar fecha si viene — debe ser una fecha válida y no futura
     let fechaPago: Date | null = null;
     if (fecha) {
       const parsed = new Date(fecha);
@@ -430,13 +445,12 @@ export const registrarPago = async (req: Request, res: Response) => {
     if (nuevoSaldo <= 0)             nuevoEstado = ESTADO.PAGADO;
     else if (nuevoAbono >= anticipo) nuevoEstado = ESTADO.ANTICIPO_PAGADO;
 
-    // Si viene fecha manual la usamos, si no NOW()
     await client.query(
       `INSERT INTO venta_pago (
         ventas_idventas, metodo_pago_idmetodo_pago,
-        monto, es_anticipo, observacion, fecha
-      ) VALUES ($1, $2, $3, $4, $5, $6)`,
-      [id, metodoPagoId, montoNum, esAnticipoReal, observacion, fechaPago ?? new Date()]
+        monto, es_anticipo, es_credito_anticipo, observacion, fecha
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [id, metodoPagoId, montoNum, esAnticipoReal, false, observacion, fechaPago ?? new Date()]
     );
 
     await client.query(
@@ -573,6 +587,7 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "El anticipo ya está cubierto" });
     }
 
+    // ── Cambiar estado ────────────────────────────────────────
     await client.query(
       `UPDATE ventas
        SET estado_administrativo_cat_idestado_administrativo_cat = $1
@@ -580,17 +595,27 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
       [ESTADO.ANTICIPO_PAGADO, id]
     );
 
+    // ── Registrar en venta_pago con es_credito_anticipo = true ─
+    await client.query(
+      `INSERT INTO venta_pago (
+        ventas_idventas, metodo_pago_idmetodo_pago,
+        monto, es_anticipo, es_credito_anticipo, observacion, fecha
+      ) VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [id, 1, 0, true, true, "Anticipo autorizado por crédito"]
+    );
+
     const ordenesGeneradas = await generarOrdenesPendientes(client, venta.solicitud_idsolicitud);
 
     await client.query("COMMIT");
 
     return res.json({
-      message:           "Anticipo autorizado por crédito",
-      abono_total:       abono,
-      saldo:             Number(venta.saldo),
-      estado_id:         ESTADO.ANTICIPO_PAGADO,
-      anticipo_cubierto: true,
-      ordenes_generadas: ordenesGeneradas,
+      message:             "Anticipo autorizado por crédito",
+      abono_total:         abono,
+      saldo:               Number(venta.saldo),
+      estado_id:           ESTADO.ANTICIPO_PAGADO,
+      anticipo_cubierto:   true,
+      es_credito_anticipo: true,
+      ordenes_generadas:   ordenesGeneradas,
     });
 
   } catch (error: any) {

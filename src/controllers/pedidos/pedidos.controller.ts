@@ -9,6 +9,23 @@ function normalizarNombreEstado(nombre: string): string {
   return "Pendiente";
 }
 
+async function resolverIdTintas(client: any, cantidad: number): Promise<number | null> {
+  const { rows } = await client.query(
+    `SELECT idtintas FROM tintas WHERE cantidad = $1 LIMIT 1`, [cantidad]
+  );
+  return rows[0]?.idtintas ?? null;
+}
+
+async function resolverIdCaras(client: any, cantidad: number): Promise<number | null> {
+  const { rows } = await client.query(
+    `SELECT idcaras FROM caras WHERE cantidad = $1 LIMIT 1`, [cantidad]
+  );
+  return rows[0]?.idcaras ?? null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GET /pedidos
+// ═══════════════════════════════════════════════════════════════════════════════
 export const getPedidos = async (req: Request, res: Response) => {
   try {
     const { rows } = await pool.query(`
@@ -277,6 +294,180 @@ export const getPedidos = async (req: Request, res: Response) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PUT /pedidos/:id  — solo toca productos, herramental y detalles
+// ═══════════════════════════════════════════════════════════════════════════════
+export const actualizarPedido = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const { id }      = req.params; // no_pedido
+    const { productos } = req.body;
+
+    // ── Verificar que el pedido existe ────────────────────────────────────────
+    const { rows: pedRows } = await client.query(
+      `SELECT idsolicitud FROM solicitud
+       WHERE no_pedido = $1 AND estado = 'pedido'`,
+      [id]
+    );
+    if (pedRows.length === 0)
+      return res.status(404).json({ error: "Pedido no encontrado" });
+
+    const solicitudId: number = pedRows[0].idsolicitud;
+
+    await client.query("BEGIN");
+
+    for (const prod of (productos as any[])) {
+      const {
+        idsolicitud_producto,
+        eliminado,
+        tintas,
+        caras,
+        pantones,
+        pigmentos,
+        observacion,
+        herramental_descripcion,
+        herramental_precio,
+        detalles,
+      } = prod;
+
+      // ── Eliminar producto completo ──────────────────────────────────────────
+      if (eliminado) {
+        await client.query(
+          `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
+          [idsolicitud_producto]
+        );
+        await client.query(
+          `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = $1`,
+          [idsolicitud_producto]
+        );
+        await client.query(
+          `DELETE FROM solicitud_producto WHERE idsolicitud_producto = $1`,
+          [idsolicitud_producto]
+        );
+        continue;
+      }
+
+      // ── Resolver IDs de tintas/caras ────────────────────────────────────────
+      const tintasId = await resolverIdTintas(client, tintas);
+      const carasId  = await resolverIdCaras(client, caras);
+
+      // ── Actualizar solicitud_producto ───────────────────────────────────────
+      await client.query(
+        `UPDATE solicitud_producto SET
+           tintas_idtintas = COALESCE($1, tintas_idtintas),
+           caras_idcaras   = COALESCE($2, caras_idcaras),
+           pantones        = $3,
+           pigmentos       = $4,
+           observacion     = $5
+         WHERE idsolicitud_producto = $6`,
+        [tintasId, carasId, pantones, pigmentos, observacion, idsolicitud_producto]
+      );
+
+      // ── Herramental (upsert / delete) ───────────────────────────────────────
+      const { rows: herrRows } = await client.query(
+        `SELECT id_herramental FROM herramental WHERE idsolicitud_producto = $1`,
+        [idsolicitud_producto]
+      );
+      const tieneHerramental = herramental_descripcion || herramental_precio != null;
+
+      if (herrRows.length > 0) {
+        if (tieneHerramental) {
+          await client.query(
+            `UPDATE herramental SET
+               herramental_descripcion = $1,
+               herramental_precio      = $2
+             WHERE idsolicitud_producto = $3`,
+            [herramental_descripcion, herramental_precio, idsolicitud_producto]
+          );
+        } else {
+          await client.query(
+            `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
+            [idsolicitud_producto]
+          );
+        }
+      } else if (tieneHerramental) {
+        await client.query(
+          `INSERT INTO herramental
+             (idsolicitud_producto, herramental_descripcion, herramental_precio, aprobado)
+           VALUES ($1, $2, $3, false)`,
+          [idsolicitud_producto, herramental_descripcion, herramental_precio]
+        );
+      }
+
+      // ── Detalles (update existentes / insert nuevos) ────────────────────────
+      for (const det of (detalles as any[])) {
+        const { iddetalle, cantidad, precio_total, kilogramos, modo_cantidad } = det;
+
+        if (iddetalle) {
+          await client.query(
+            `UPDATE solicitud_detalle SET
+               cantidad      = $1,
+               precio_total  = $2,
+               kilogramos    = $3,
+               modo_cantidad = $4
+             WHERE idsolicitud_detalle = $5`,
+            [cantidad, precio_total, kilogramos, modo_cantidad, iddetalle]
+          );
+        } else {
+          await client.query(
+            `INSERT INTO solicitud_detalle
+               (solicitud_producto_id, cantidad, precio_total, kilogramos, modo_cantidad, aprobado)
+             VALUES ($1, $2, $3, $4, $5, false)`,
+            [idsolicitud_producto, cantidad, precio_total, kilogramos, modo_cantidad]
+          );
+        }
+      }
+    }
+
+    // ── Recalcular totales en ventas ──────────────────────────────────────────
+    const { rows: ventaRows } = await client.query(
+      `SELECT idventas FROM ventas WHERE solicitud_idsolicitud = $1`,
+      [solicitudId]
+    );
+    if (ventaRows.length > 0) {
+      const ventaId = ventaRows[0].idventas;
+
+      const { rows: sumRows } = await client.query(
+        `SELECT
+           COALESCE(SUM(sd.precio_total), 0)      AS subtotal_prods,
+           COALESCE(SUM(h.herramental_precio), 0) AS subtotal_herr
+         FROM solicitud_producto sp
+         LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id = sp.idsolicitud_producto
+         LEFT JOIN herramental h        ON h.idsolicitud_producto   = sp.idsolicitud_producto
+         WHERE sp.solicitud_idsolicitud = $1`,
+        [solicitudId]
+      );
+
+      const subtotalNuevo = Number(sumRows[0].subtotal_prods) + Number(sumRows[0].subtotal_herr);
+      const ivaNuevo      = Math.round(subtotalNuevo * 0.16 * 100) / 100;
+      const totalNuevo    = Math.round((subtotalNuevo + ivaNuevo) * 100) / 100;
+
+      await client.query(
+        `UPDATE ventas SET
+           subtotal_real = $1,
+           iva_real      = $2,
+           total_real    = $3
+         WHERE idventas = $4`,
+        [subtotalNuevo, ivaNuevo, totalNuevo, ventaId]
+      );
+    }
+
+    await client.query("COMMIT");
+    console.log(`✅ Pedido ${id} actualizado`);
+    return res.json({ message: `Pedido ${id} actualizado correctamente` });
+
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    console.error("❌ ACTUALIZAR PEDIDO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al actualizar pedido", detalle: error.message });
+  } finally {
+    client.release();
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DELETE /pedidos/:id
+// ═══════════════════════════════════════════════════════════════════════════════
 export const eliminarPedido = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
@@ -329,16 +520,13 @@ export const eliminarPedido = async (req: Request, res: Response) => {
 
     if (productoIds.length > 0) {
       await client.query(
-        `DELETE FROM herramental WHERE idsolicitud_producto = ANY($1::int[])`,
-        [productoIds]
+        `DELETE FROM herramental WHERE idsolicitud_producto = ANY($1::int[])`, [productoIds]
       );
       await client.query(
-        `DELETE FROM diseno_producto WHERE solicitud_producto_idsolicitud_producto = ANY($1::int[])`,
-        [productoIds]
+        `DELETE FROM diseno_producto WHERE solicitud_producto_idsolicitud_producto = ANY($1::int[])`, [productoIds]
       );
       await client.query(
-        `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = ANY($1::int[])`,
-        [productoIds]
+        `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = ANY($1::int[])`, [productoIds]
       );
     }
 

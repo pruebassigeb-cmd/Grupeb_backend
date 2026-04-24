@@ -5,6 +5,8 @@ import {
   finalizarProceso,
   resagarProceso,
   editarProceso,
+  registrarAvance,
+  getAvancesProceso,
 } from "../../controllers/procesos/procesosController";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 
@@ -34,5 +36,11 @@ router.put("/:idproduccion/resagar", authMiddleware, resagarProceso);
 
 // PUT /api/procesos/:idproduccion/editar/:tabla
 router.put("/:idproduccion/editar/:tabla", authMiddleware, editarProceso);
+
+// POST /api/procesos/:idproduccion/avance
+router.post("/:idproduccion/avance", authMiddleware, registrarAvance);
+
+// GET /api/procesos/:idproduccion/avances
+router.get("/:idproduccion/avances", authMiddleware, getAvancesProceso);
 
 export default router;

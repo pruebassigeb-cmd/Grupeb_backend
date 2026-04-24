@@ -1,9 +1,7 @@
 import helmet from "helmet";
 import { Express } from "express";
+import rateLimit from "express-rate-limit";
 
-/**
- * Configuración de seguridad global
- */
 export const setupSecurity = (app: Express) => {
   app.use(
     helmet({
@@ -74,16 +72,51 @@ export const corsOptions = {
  * Constantes de seguridad
  */
 export const SECURITY_CONSTANTS = {
-  RATE_LIMIT_WINDOW_MS: 15 * 60 * 1000,
-  LOGIN_MAX_ATTEMPTS: 5,
+  RATE_LIMIT_WINDOW_MS:    15 * 60 * 1000,
+  LOGIN_MAX_ATTEMPTS:      5,
   CREATE_USER_MAX_ATTEMPTS: 10,
-  GENERAL_MAX_REQUESTS: 100,
-  JWT_EXPIRATION: "8h",
-  COOKIE_MAX_AGE: 8 * 60 * 60 * 1000,
-  BCRYPT_ROUNDS: 12,
-  REQUEST_TIMEOUT_MS: 30000,
-  DB_QUERY_TIMEOUT_MS: 10000,
-  MAX_USERS_TO_CHECK: 1000,
-  MAX_REQUEST_BODY_SIZE: "10mb",
-  MAX_JSON_SIZE: "5mb",
+  GENERAL_MAX_REQUESTS:    500,
+  APPROVAL_MAX_REQUESTS:   1000,
+  JWT_EXPIRATION:          "8h",
+  COOKIE_MAX_AGE:          8 * 60 * 60 * 1000,
+  BCRYPT_ROUNDS:           12,
+  REQUEST_TIMEOUT_MS:      30000,
+  DB_QUERY_TIMEOUT_MS:     10000,
+  MAX_USERS_TO_CHECK:      1000,
+  MAX_REQUEST_BODY_SIZE:   "10mb",
+  MAX_JSON_SIZE:           "5mb",
 };
+
+/**
+ * Rate limiter general — aplica a todas las rutas /api
+ */
+export const generalLimiter = rateLimit({
+  windowMs:       SECURITY_CONSTANTS.RATE_LIMIT_WINDOW_MS,
+  max:            SECURITY_CONSTANTS.GENERAL_MAX_REQUESTS,
+  standardHeaders: true,
+  legacyHeaders:  false,
+  message:        { error: "Demasiadas solicitudes, espera un momento." },
+});
+
+/**
+ * Rate limiter para toggles de aprobación — más permisivo
+ * porque la UI puede disparar varios PATCHs seguidos al cambiar selección
+ */
+export const approvalLimiter = rateLimit({
+  windowMs:       SECURITY_CONSTANTS.RATE_LIMIT_WINDOW_MS,
+  max:            SECURITY_CONSTANTS.APPROVAL_MAX_REQUESTS,
+  standardHeaders: true,
+  legacyHeaders:  false,
+  message:        { error: "Demasiadas solicitudes de aprobación, espera un momento." },
+});
+
+/**
+ * Rate limiter estricto para login
+ */
+export const loginLimiter = rateLimit({
+  windowMs:       SECURITY_CONSTANTS.RATE_LIMIT_WINDOW_MS,
+  max:            SECURITY_CONSTANTS.LOGIN_MAX_ATTEMPTS,
+  standardHeaders: true,
+  legacyHeaders:  false,
+  message:        { error: "Demasiados intentos de inicio de sesión. Intenta más tarde." },
+});

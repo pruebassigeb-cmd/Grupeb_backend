@@ -1,9 +1,12 @@
+// ─── pedidos.routes.ts (versión actualizada) ─────────────────────────────────
+
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import {
   getPedidos,
   eliminarPedido,
+  actualizarPedido,       // ← nuevo
 } from "../../controllers/pedidos/pedidos.controller";
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 
@@ -32,6 +35,13 @@ const PERMISO = "Crear/Editar/Eliminar Pedidos";
 router.get("/", authMiddleware, getPedidos);
 
 // ── Escritura — requiere permiso ──────────────────────────
+router.put(
+  "/:id",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  actualizarPedido          // ← nuevo
+);
+
 router.delete(
   "/:id",
   authMiddleware,
