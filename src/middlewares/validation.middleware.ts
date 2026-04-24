@@ -206,6 +206,17 @@ export const validateUsuario = (req: Request, res: Response, next: NextFunction)
 // — Todos los campos son opcionales —
 // ==========================
 export const validateCreateCliente = (req: Request, res: Response, next: NextFunction) => {
+  // Guardar los campos de envío ANTES de que se pise req.body
+  const {
+    envio_domicilio,
+    envio_numero,
+    envio_colonia,
+    envio_codigo_postal,
+    envio_poblacion,
+    envio_estado,
+    envio_referencia,
+  } = req.body;
+
   let {
     empresa,
     correo,
@@ -385,6 +396,7 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
   }
 
   // Actualizar body con datos sanitizados
+  // Los campos envio_* se pasan sin validación tal cual llegaron
   req.body = {
     empresa:                         empresa      || null,
     correo:                          correo       || null,
@@ -396,16 +408,24 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
     regimen_fiscal_idregimen_fiscal: regimenId,
     metodo_pago_idmetodo_pago:       metodoPagoId,
     forma_pago_idforma_pago:         formaPagoId,
-    rfc:                             rfc                  || null,
-    correo_facturacion:              correo_facturacion   || null,
-    uso_cfdi:                        uso_cfdi             || null,
-    moneda:                          moneda               || null,
-    domicilio:                       domicilio            || null,
-    numero:                          numero               || null,
-    colonia:                         colonia              || null,
-    codigo_postal:                   codigo_postal        || null,
-    poblacion:                       poblacion            || null,
-    estado:                          estado               || null,
+    rfc:                             rfc                || null,
+    correo_facturacion:              correo_facturacion || null,
+    uso_cfdi:                        uso_cfdi           || null,
+    moneda:                          moneda             || null,
+    domicilio:                       domicilio          || null,
+    numero:                          numero             || null,
+    colonia:                         colonia            || null,
+    codigo_postal:                   codigo_postal      || null,
+    poblacion:                       poblacion          || null,
+    estado:                          estado             || null,
+    // ── Dirección de envío (sin validaciones) ──
+    envio_domicilio:                 envio_domicilio     || null,
+    envio_numero:                    envio_numero        || null,
+    envio_colonia:                   envio_colonia       || null,
+    envio_codigo_postal:             envio_codigo_postal || null,
+    envio_poblacion:                 envio_poblacion     || null,
+    envio_estado:                    envio_estado        || null,
+    envio_referencia:                envio_referencia    || null,
   };
 
   next();

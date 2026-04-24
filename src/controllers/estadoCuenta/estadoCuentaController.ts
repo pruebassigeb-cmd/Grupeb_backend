@@ -101,7 +101,11 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     }
 
     // ── 3. Cantidad real de cada producto ─────────────────────
+    // Modo unidad → piezas (pzas_finales / piezas_bolseadas)
+    // Modo kilo   → kg     (kilos_finales / kilos_bolseados)
     const productosConReal = await Promise.all(prodRows.map(async (prod: any) => {
+      const modoKilo = prod.modo_cantidad === "kilo";
+
       const { rows: opRows } = await client.query(`
         SELECT op.idproduccion, op.no_produccion
         FROM orden_produccion op
@@ -116,25 +120,33 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       const { idproduccion, no_produccion } = opRows[0];
 
       if (prod.tiene_asa_flexible) {
+        // Proceso final: asa_flexible
+        // Modo unidad → pzas_finales; modo kilo → kilos_finales
+        const campoCantidad = modoKilo ? "kilos_finales" : "pzas_finales";
         const { rows: asaRows } = await client.query(`
-          SELECT pzas_finales FROM asa_flexible
+          SELECT ${campoCantidad} AS cantidad_real
+          FROM asa_flexible
           WHERE orden_produccion_idproduccion = $1
           LIMIT 1
         `, [idproduccion]);
 
-        const cantidad_real = asaRows[0]?.pzas_finales ?? null;
+        const cantidad_real = asaRows[0]?.cantidad_real ?? null;
         return {
           ...prod, cantidad_real, no_produccion,
           motivo_null: cantidad_real === null ? "asa_incompleta" : null,
         };
       } else {
+        // Proceso final: bolseo
+        // Modo unidad → piezas_bolseadas; modo kilo → kilos_bolseados
+        const campoCantidad = modoKilo ? "kilos_bolseados" : "piezas_bolseadas";
         const { rows: bolseoRows } = await client.query(`
-          SELECT piezas_bolseadas FROM bolseo
+          SELECT ${campoCantidad} AS cantidad_real
+          FROM bolseo
           WHERE orden_produccion_idproduccion = $1
           LIMIT 1
         `, [idproduccion]);
 
-        const cantidad_real = bolseoRows[0]?.piezas_bolseadas ?? null;
+        const cantidad_real = bolseoRows[0]?.cantidad_real ?? null;
         return {
           ...prod, cantidad_real, no_produccion,
           motivo_null: cantidad_real === null ? "bolseo_incompleto" : null,
@@ -158,24 +170,34 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     }
 
     // ── 5. Calcular precio real por producto ──────────────────
+    // Modo unidad: precio_unitario = precio_total_original / cantidad_original (por pieza)
+    // Modo kilo:   precio_unitario = precio_total_original / kilogramos_original (por kg)
     let nuevoSubtotal    = 0;
     let herramentalTotal = 0;
 
     const productos = productosConReal.map((prod: any) => {
-      const porKilo    = Number(prod.por_kilo) || 0;
-      const cantReal   = Number(prod.cantidad_real);
-      const cantOrig   = Number(prod.cantidad_original);
-      const precioOrig = Number(prod.precio_total_original);
+      const porKilo      = Number(prod.por_kilo) || 0;
+      const cantReal     = Number(prod.cantidad_real);
+      const precioOrig   = Number(prod.precio_total_original);
+      const modoKilo     = prod.modo_cantidad === "kilo";
 
-      const precio_unitario_original = cantOrig > 0
-        ? precioOrig / cantOrig
+      // Base para precio unitario según modo
+      const baseOriginal = modoKilo
+        ? Number(prod.kilogramos_original)   // precio por kg
+        : Number(prod.cantidad_original);     // precio por pieza
+
+      const precio_unitario_original = baseOriginal > 0
+        ? precioOrig / baseOriginal
         : 0;
 
       const precio_total_real = Number((precio_unitario_original * cantReal).toFixed(2));
 
-      const peso_kg_real = porKilo > 0
-        ? Number((cantReal / porKilo).toFixed(4))
-        : 0;
+      // Peso en kg real (para referencia):
+      // modo unidad → convertir piezas a kg con por_kilo
+      // modo kilo   → cantReal ya está en kg
+      const peso_kg_real = modoKilo
+        ? cantReal
+        : (porKilo > 0 ? Number((cantReal / porKilo).toFixed(4)) : 0);
 
       nuevoSubtotal += precio_total_real;
 
@@ -187,7 +209,13 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
         herramentalTotal += herrPrecio;
       }
 
-      console.log(`📦 [${prod.idsolicitud_producto}] cantOrig=${cantOrig} | precioOrig=${precioOrig} | precioUnit=${precio_unitario_original.toFixed(4)} | cantReal=${cantReal} | precio_total_real=${precio_total_real} | herramental=${herrPrecio ?? 0}`);
+      console.log(
+        `📦 [${prod.idsolicitud_producto}] modo=${prod.modo_cantidad} | ` +
+        `baseOrig=${baseOriginal} | precioOrig=${precioOrig} | ` +
+        `precioUnit=${precio_unitario_original.toFixed(4)} | ` +
+        `cantReal=${cantReal} | precio_total_real=${precio_total_real} | ` +
+        `herramental=${herrPrecio ?? 0}`
+      );
 
       return {
         idsolicitud_producto:    prod.idsolicitud_producto,
@@ -199,13 +227,13 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
         tintas:                  prod.tintas_num,
         caras:                   prod.caras_num,
         modo_cantidad:           prod.modo_cantidad,
-        cantidad_original:       cantOrig,
+        cantidad_original:       modoKilo ? Number(prod.kilogramos_original) : Number(prod.cantidad_original),
         precio_total_original:   precioOrig,
         cantidad_real:           cantReal,
         peso_kg_real,
         precio_unitario_real:    Number(precio_unitario_original.toFixed(6)),
         precio_total_real,
-        diferencia_piezas:       cantReal - cantOrig,
+        diferencia_piezas:       cantReal - (modoKilo ? Number(prod.kilogramos_original) : Number(prod.cantidad_original)),
         diferencia_precio:       Number((precio_total_real - precioOrig).toFixed(2)),
         herramental_descripcion: prod.herramental_descripcion ?? null,
         herramental_precio:      prod.herramental_precio != null ? Number(prod.herramental_precio) : null,
@@ -296,8 +324,9 @@ export const getListaEstadoCuenta = async (req: Request, res: Response) => {
         v.total_real, v.diferencia_total,
         COUNT(DISTINCT op.idproduccion) AS total_ordenes,
         COUNT(DISTINCT CASE
-          WHEN af.pzas_finales IS NOT NULL THEN op.idproduccion
-          WHEN b.piezas_bolseadas IS NOT NULL AND af_proc.idproduccion IS NULL THEN op.idproduccion
+          WHEN af.pzas_finales IS NOT NULL OR af.kilos_finales IS NOT NULL THEN op.idproduccion
+          WHEN (b.piezas_bolseadas IS NOT NULL OR b.kilos_bolseados IS NOT NULL)
+               AND af_proc.idproduccion IS NULL THEN op.idproduccion
         END) AS ordenes_completas
       FROM solicitud s
       JOIN clientes cli ON cli.idclientes = s.clientes_idclientes

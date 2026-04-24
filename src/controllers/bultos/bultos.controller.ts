@@ -426,6 +426,9 @@ export const finalizarBultos = async (req: Request, res: Response): Promise<Resp
 // ─────────────────────────────────────────────
 // GET /api/seguimiento/:idproduccion/bultos/etiqueta
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// GET /api/seguimiento/:idproduccion/bultos/etiqueta
+// ─────────────────────────────────────────────
 export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Response> => {
   try {
     const idproduccion = Number(req.params.idproduccion);
@@ -436,7 +439,16 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
         op.no_produccion, op.idproduccion, op.fecha_entrega, op.bultos_finalizado,
         cli.razon_social AS cliente, cli.atencion, cli.empresa,
         cli.telefono, cli.celular, cli.correo, cli.impresion AS cliente_impresion,
-        dom.domicilio AS calle, dom.numero, dom.colonia, dom.codigo_postal, dom.poblacion, dom.estado,
+
+        -- Prioriza direccion_envio, si no hay cae a domicilio
+        COALESCE(de.domicilio,     dom.domicilio)     AS calle,
+        COALESCE(de.numero,        dom.numero)        AS numero,
+        COALESCE(de.colonia,       dom.colonia)       AS colonia,
+        COALESCE(de.codigo_postal, dom.codigo_postal) AS codigo_postal,
+        COALESCE(de.poblacion,     dom.poblacion)     AS poblacion,
+        COALESCE(de.estado,        dom.estado)        AS estado,
+        de.referencia                                 AS referencia_envio,
+
         tpp.material_plastico_producto AS nombre_producto,
         cfg.medida,
         mp.tipo_material AS material,
@@ -446,7 +458,8 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
       JOIN solicitud_producto sp ON sp.idsolicitud_producto = op.idsolicitud_producto
       JOIN solicitud s           ON s.idsolicitud = sp.solicitud_idsolicitud
       JOIN clientes cli          ON cli.idclientes = s.clientes_idclientes
-      LEFT JOIN domicilio dom    ON dom.clientes_idclientes = cli.idclientes
+      LEFT JOIN domicilio dom         ON dom.clientes_idclientes = cli.idclientes
+      LEFT JOIN direccion_envio de    ON de.clientes_idclientes  = cli.idclientes
       LEFT JOIN configuracion_plastico cfg ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
       LEFT JOIN material_plastico mp       ON mp.idmaterial_plastico = cfg.material_plastico_plastico_idmaterial_plastico
@@ -498,23 +511,24 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
       no_pedido:         pedido.no_pedido,
       no_produccion:     pedido.no_produccion,
       fecha:             pedido.fecha,
-      fecha_entrega:     pedido.fecha_entrega ?? null,
+      fecha_entrega:     pedido.fecha_entrega     ?? null,
       cliente:           pedido.cliente           || "",
-      atencion:          pedido.atencion           || null,
-      empresa:           pedido.empresa            || "",
-      telefono:          pedido.telefono           || "",
-      celular:           pedido.celular            || "",
-      correo:            pedido.correo             || "",
-      cliente_impresion: pedido.cliente_impresion  || "",
-      calle:             pedido.calle              || "",
-      numero:            pedido.numero             || "",
-      colonia:           pedido.colonia            || "",
-      codigo_postal:     pedido.codigo_postal       || "",
-      poblacion:         pedido.poblacion           || "",
-      estado:            pedido.estado              || "",
-      nombre_producto:   pedido.nombre_producto     || "",
-      medida:            pedido.medida              || "",
-      material:          pedido.material            || "",
+      atencion:          pedido.atencion          || null,
+      empresa:           pedido.empresa           || "",
+      telefono:          pedido.telefono          || "",
+      celular:           pedido.celular           || "",
+      correo:            pedido.correo            || "",
+      cliente_impresion: pedido.cliente_impresion || "",
+      calle:             pedido.calle             || "",
+      numero:            pedido.numero            || "",
+      colonia:           pedido.colonia           || "",
+      codigo_postal:     pedido.codigo_postal      || "",
+      poblacion:         pedido.poblacion          || "",
+      estado:            pedido.estado             || "",
+      referencia_envio:  pedido.referencia_envio   || null,
+      nombre_producto:   pedido.nombre_producto    || "",
+      medida:            pedido.medida             || "",
+      material:          pedido.material           || "",
       cantidad_total:    pedido.cantidad_real != null
         ? Number(pedido.cantidad_real)
         : pedido.cantidad ? Number(pedido.cantidad) : null,

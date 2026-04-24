@@ -475,7 +475,8 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
 };
 
 // ============================================================
-// GET /api/seguimiento/:idproduccion/bultos-etiqueta
+// GET /api/seguimiento/:idproduccion/bultos/etiqueta
+// ── Prioriza direccion_envio, si no hay cae a domicilio ──
 // ============================================================
 export const getBultosEtiqueta = async (req: Request, res: Response) => {
   try {
@@ -496,12 +497,16 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
         cli.celular,
         cli.correo,
         cli.impresion     AS cliente_impresion,
-        dom.domicilio     AS calle,
-        dom.numero,
-        dom.colonia,
-        dom.codigo_postal,
-        dom.poblacion,
-        dom.estado,
+
+        -- Dirección: prioriza direccion_envio, si no hay cae a domicilio
+        COALESCE(de.domicilio,     dom.domicilio)     AS calle,
+        COALESCE(de.numero,        dom.numero)        AS numero,
+        COALESCE(de.colonia,       dom.colonia)       AS colonia,
+        COALESCE(de.codigo_postal, dom.codigo_postal) AS codigo_postal,
+        COALESCE(de.poblacion,     dom.poblacion)     AS poblacion,
+        COALESCE(de.estado,        dom.estado)        AS estado,
+        de.referencia                                 AS referencia_envio,
+
         tpp.material_plastico_producto AS nombre_producto,
         cfg.medida,
         mp.tipo_material               AS material,
@@ -518,6 +523,8 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
           ON cli.idclientes = s.clientes_idclientes
       LEFT JOIN domicilio dom
           ON dom.clientes_idclientes = cli.idclientes
+      LEFT JOIN direccion_envio de
+          ON de.clientes_idclientes = cli.idclientes
       LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
@@ -548,6 +555,11 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
         b.idbulto,
         b.cantidad_unidades,
         b.fecha_creacion,
+        b.peso_producto,
+        b.peso,
+        b.alto,
+        b.largo,
+        b.ancho,
         CASE
           WHEN b.asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
           ELSE 'bolseo'
@@ -568,34 +580,42 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
       no_pedido:         pedido.no_pedido,
       no_produccion:     pedido.no_produccion,
       fecha:             pedido.fecha,
-      fecha_entrega:     pedido.fecha_entrega ?? null,
+      fecha_entrega:     pedido.fecha_entrega     ?? null,
       cliente:           pedido.cliente           || "",
-      atencion:          pedido.atencion           || null,
-      empresa:           pedido.empresa            || "",
-      telefono:          pedido.telefono           || "",
-      celular:           pedido.celular            || "",
-      correo:            pedido.correo             || "",
-      cliente_impresion: pedido.cliente_impresion  || "",
-      calle:             pedido.calle              || "",
-      numero:            pedido.numero             || "",
-      colonia:           pedido.colonia            || "",
-      codigo_postal:     pedido.codigo_postal       || "",
-      poblacion:         pedido.poblacion           || "",
-      estado:            pedido.estado              || "",
-      nombre_producto:   pedido.nombre_producto     || "",
-      medida:            pedido.medida              || "",
-      material:          pedido.material            || "",
+      atencion:          pedido.atencion          || null,
+      empresa:           pedido.empresa           || "",
+      telefono:          pedido.telefono          || "",
+      celular:           pedido.celular           || "",
+      correo:            pedido.correo            || "",
+      cliente_impresion: pedido.cliente_impresion || "",
+      calle:             pedido.calle             || "",
+      numero:            pedido.numero            || "",
+      colonia:           pedido.colonia           || "",
+      codigo_postal:     pedido.codigo_postal      || "",
+      poblacion:         pedido.poblacion          || "",
+      estado:            pedido.estado             || "",
+      referencia_envio:  pedido.referencia_envio   || null,
+      nombre_producto:   pedido.nombre_producto    || "",
+      medida:            pedido.medida             || "",
+      material:          pedido.material           || "",
       cantidad_total:    pedido.cantidad_real != null
         ? Number(pedido.cantidad_real)
         : pedido.cantidad ? Number(pedido.cantidad) : null,
-      kilogramos:        pedido.kilogramos ? Number(pedido.kilogramos) : null,
-      modo_cantidad:     pedido.modo_cantidad       || "unidad",
-      total_bultos:      bultosRows.length,
+      kilogramos:    pedido.kilogramos ? Number(pedido.kilogramos) : null,
+      modo_cantidad: pedido.modo_cantidad          || "unidad",
+      total_bultos:  bultosRows.length,
+      total_kg:      bultosRows.reduce((sum: number, b: any) =>
+        sum + (b.peso_producto != null ? Number(b.peso_producto) : 0), 0),
       bultos: bultosRows.map((b: any) => ({
         idbulto:           b.idbulto,
         cantidad_unidades: Number(b.cantidad_unidades),
         fecha_creacion:    b.fecha_creacion,
         proceso_origen:    b.proceso_origen,
+        peso_producto:     b.peso_producto != null ? Number(b.peso_producto) : null,
+        peso:              b.peso  != null ? Number(b.peso)  : null,
+        alto:              b.alto  != null ? Number(b.alto)  : null,
+        largo:             b.largo != null ? Number(b.largo) : null,
+        ancho:             b.ancho != null ? Number(b.ancho) : null,
       })),
     });
 
