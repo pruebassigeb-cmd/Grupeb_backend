@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { uploadToS3, deleteFromS3, getPresignedUrl, CarpetaS3, CARPETAS } from "../../config/multer";
 import { pool } from "../../config/db";
+import type {Request as MulterRequest} from "express";
 
 const getTipo = (mimetype: string): string => {
   if (mimetype === "application/pdf") return "pdf";
@@ -14,7 +15,7 @@ const validarCarpeta = (carpeta: string): CarpetaS3 => {
   return "disenos"; // carpeta por defecto
 };
 
-export const subirArchivo = async (req: Request, res: Response): Promise<void> => {
+export const subirArchivo = async (req: Request & { file?: Express.Multer.File }, res: Response): Promise<void> => {
   try {
     if (!req.file) {
       res.status(400).json({ error: "No se recibió ningún archivo" });
