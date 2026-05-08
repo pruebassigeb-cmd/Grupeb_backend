@@ -468,3 +468,58 @@ export const deleteUsuario = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
+// ==========================
+// OBTENER CONDUCTORES
+// (usuarios con privilegio Conductor = 20)
+// ==========================
+export const getConductores = async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        u.idusuario,
+        u.nombre,
+        u.apellido,
+        u.telefono,
+        r.nombre AS rol
+      FROM usuarios u
+      JOIN roles r ON r.idroles = u.roles_idroles
+      JOIN privilegios_has_usuarios phu ON phu.usuarios_idusuario = u.idusuario
+      WHERE phu.privilegios_idprivilegios = 20
+      ORDER BY u.nombre ASC
+    `);
+    res.json(result.rows);
+  } catch (error: any) {
+    console.error("❌ GET CONDUCTORES ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener conductores" });
+  }
+};
+
+
+export const getUsuariosDiseno = async (req: Request, res: Response) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        u.idusuario,
+        u.nombre,
+        u.apellido,
+        u.telefono,
+        r.nombre AS rol
+      FROM usuarios u
+      JOIN roles r ON r.idroles = u.roles_idroles
+      WHERE
+        u.roles_idroles = 6
+        OR EXISTS (
+          SELECT 1 FROM privilegios_has_usuarios phu
+          WHERE phu.usuarios_idusuario = u.idusuario
+          AND phu.privilegios_idprivilegios = 22
+        )
+        OR r.acceso_total = true
+      ORDER BY u.nombre ASC
+    `);
+    res.json(rows);
+  } catch (error: any) {
+    console.error("❌ GET USUARIOS DISEÑO ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener usuarios de diseño" });
+  }
+};

@@ -1,9 +1,6 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
-// ============================================================
-// GET /estado-cuenta/:noPedido
-// ============================================================
 export const getEstadoCuenta = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
@@ -16,11 +13,12 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
     await client.query("BEGIN");
 
-    // ── 1. Datos base ─────────────────────────────────────────
     const { rows: pedidoRows } = await client.query(`
       SELECT
         s.idsolicitud, s.no_pedido, s.no_cotizacion, s.fecha,
-        cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
+        COALESCE(cli.razon_social, cli.empresa) AS cliente,
+        cli.atencion,
+        cli.empresa, cli.telefono, cli.correo,
         cli.impresion,
         v.idventas,
         v.subtotal  AS subtotal_original,
@@ -37,7 +35,16 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
           SELECT 1 FROM venta_pago vp
           WHERE vp.ventas_idventas = v.idventas
             AND vp.es_credito_anticipo = true
-        ) AS es_credito_anticipo
+        ) AS es_credito_anticipo,
+        (
+          SELECT vp.monto
+          FROM venta_pago vp
+          WHERE vp.ventas_idventas = v.idventas
+            AND vp.es_anticipo = true
+            AND vp.es_credito_anticipo = false
+          ORDER BY vp.fecha ASC
+          LIMIT 1
+        ) AS primer_pago_anticipo
       FROM solicitud s
       JOIN clientes cli ON cli.idclientes = s.clientes_idclientes
       JOIN ventas v     ON v.solicitud_idsolicitud = s.idsolicitud
@@ -52,7 +59,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     const pedido = pedidoRows[0];
     console.log(`\n🧾 ===== ESTADO CUENTA — PEDIDO #${noPedido} =====`);
 
-    // ── 2. Productos con configuración + herramental ──────────
     const { rows: prodRows } = await client.query(`
       SELECT
         sp.idsolicitud_producto,
@@ -100,9 +106,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "No se encontraron productos para este pedido" });
     }
 
-    // ── 3. Cantidad real de cada producto ─────────────────────
-    // Modo unidad → piezas (pzas_finales / piezas_bolseadas)
-    // Modo kilo   → kg     (kilos_finales / kilos_bolseados)
     const productosConReal = await Promise.all(prodRows.map(async (prod: any) => {
       const modoKilo = prod.modo_cantidad === "kilo";
 
@@ -120,8 +123,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       const { idproduccion, no_produccion } = opRows[0];
 
       if (prod.tiene_asa_flexible) {
-        // Proceso final: asa_flexible
-        // Modo unidad → pzas_finales; modo kilo → kilos_finales
         const campoCantidad = modoKilo ? "kilos_finales" : "pzas_finales";
         const { rows: asaRows } = await client.query(`
           SELECT ${campoCantidad} AS cantidad_real
@@ -136,8 +137,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
           motivo_null: cantidad_real === null ? "asa_incompleta" : null,
         };
       } else {
-        // Proceso final: bolseo
-        // Modo unidad → piezas_bolseadas; modo kilo → kilos_bolseados
         const campoCantidad = modoKilo ? "kilos_bolseados" : "piezas_bolseadas";
         const { rows: bolseoRows } = await client.query(`
           SELECT ${campoCantidad} AS cantidad_real
@@ -154,7 +153,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       }
     }));
 
-    // ── 4. Verificar que todos tengan cantidad real ────────────
     const incompletos = productosConReal.filter(p => p.cantidad_real === null);
     if (incompletos.length > 0) {
       await client.query("ROLLBACK");
@@ -169,22 +167,18 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       });
     }
 
-    // ── 5. Calcular precio real por producto ──────────────────
-    // Modo unidad: precio_unitario = precio_total_original / cantidad_original (por pieza)
-    // Modo kilo:   precio_unitario = precio_total_original / kilogramos_original (por kg)
     let nuevoSubtotal    = 0;
     let herramentalTotal = 0;
 
     const productos = productosConReal.map((prod: any) => {
-      const porKilo      = Number(prod.por_kilo) || 0;
-      const cantReal     = Number(prod.cantidad_real);
-      const precioOrig   = Number(prod.precio_total_original);
-      const modoKilo     = prod.modo_cantidad === "kilo";
+      const porKilo    = Number(prod.por_kilo) || 0;
+      const cantReal   = Number(prod.cantidad_real);
+      const precioOrig = Number(prod.precio_total_original);
+      const modoKilo   = prod.modo_cantidad === "kilo";
 
-      // Base para precio unitario según modo
       const baseOriginal = modoKilo
-        ? Number(prod.kilogramos_original)   // precio por kg
-        : Number(prod.cantidad_original);     // precio por pieza
+        ? Number(prod.kilogramos_original)
+        : Number(prod.cantidad_original);
 
       const precio_unitario_original = baseOriginal > 0
         ? precioOrig / baseOriginal
@@ -192,9 +186,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
       const precio_total_real = Number((precio_unitario_original * cantReal).toFixed(2));
 
-      // Peso en kg real (para referencia):
-      // modo unidad → convertir piezas a kg con por_kilo
-      // modo kilo   → cantReal ya está en kg
       const peso_kg_real = modoKilo
         ? cantReal
         : (porKilo > 0 ? Number((cantReal / porKilo).toFixed(4)) : 0);
@@ -221,8 +212,8 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
         idsolicitud_producto:    prod.idsolicitud_producto,
         no_produccion:           prod.no_produccion,
         nombre:                  [prod.tipo_producto, prod.medida, prod.material].filter(Boolean).join(" "),
-        medida:                  prod.medida    ?? null,
-        material:                prod.material  ?? null,
+        medida:                  prod.medida   ?? null,
+        material:                prod.material ?? null,
         impresion:               pedido.impresion ?? null,
         tintas:                  prod.tintas_num,
         caras:                   prod.caras_num,
@@ -241,7 +232,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       };
     });
 
-    // ── 6. Calcular totales reales ─────────────────────────────
     nuevoSubtotal    = Number(nuevoSubtotal.toFixed(2));
     const nuevoIva   = Number((nuevoSubtotal * IVA).toFixed(2));
     const nuevoTotal = Number((nuevoSubtotal + nuevoIva).toFixed(2));
@@ -253,13 +243,11 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
     console.log(`\n💰 TOTALES pedido #${noPedido}: subtotal=${nuevoSubtotal} | herramental=${herramentalTotal} | iva=${nuevoIva} | total=${nuevoTotal} | saldo=${nuevoSaldo}`);
 
-    // ── 7. Determinar nuevo estado ────────────────────────────
     let nuevoEstado: number;
     if (nuevoSaldo <= 0)                             nuevoEstado = ESTADO_PAGADO;
     else if (abonoActual >= Number(pedido.anticipo)) nuevoEstado = ESTADO_ANTICIPO_PAGADO;
     else                                             nuevoEstado = ESTADO_PENDIENTE;
 
-    // ── 8. Guardar en BD ──────────────────────────────────────
     await client.query(`
       UPDATE ventas
       SET subtotal_real    = $1,
@@ -278,6 +266,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       no_cotizacion: pedido.no_cotizacion,
       fecha:         pedido.fecha,
       cliente:       pedido.cliente,
+      atencion:      pedido.atencion ?? null,
       empresa:       pedido.empresa,
       telefono:      pedido.telefono,
       correo:        pedido.correo,
@@ -293,7 +282,10 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       total_real:        nuevoTotal,
       herramental_total: Number(herramentalTotal.toFixed(2)),
 
-      anticipo:            Number(pedido.anticipo),
+      anticipo:             Number(pedido.anticipo),
+      primer_pago_anticipo: pedido.primer_pago_anticipo != null
+        ? Number(pedido.primer_pago_anticipo)
+        : null,
       abono:               abonoActual,
       saldo:               nuevoSaldo,
       es_credito_anticipo: pedido.es_credito_anticipo ?? false,
@@ -311,9 +303,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
   }
 };
 
-// ============================================================
-// GET /estado-cuenta — lista pedidos con producción completa
-// ============================================================
 export const getListaEstadoCuenta = async (req: Request, res: Response) => {
   try {
     const { rows } = await pool.query(`

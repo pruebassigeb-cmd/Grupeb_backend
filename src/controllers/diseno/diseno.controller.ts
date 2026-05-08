@@ -231,15 +231,20 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
   try {
     const { noPedido } = req.params;
 
+    // Consulta principal (cabecera)
     const { rows: solicitudRows } = await pool.query(
       `SELECT
         s.idsolicitud, s.no_pedido, s.no_cotizacion,
         d.iddiseno, d.fecha_aprobacion_general,
         COALESCE(v.anticipo, 0) AS anticipo,
-        COALESCE(v.abono, 0)    AS abono
+        COALESCE(v.abono, 0)    AS abono,
+        od.idorden_diseno,
+        od.no_orden_diseno,
+        od.estado               AS orden_diseno_estado
        FROM solicitud s
        JOIN diseno d ON d.solicitud_idsolicitud = s.idsolicitud
        LEFT JOIN ventas v ON v.solicitud_idsolicitud = s.idsolicitud
+       LEFT JOIN orden_diseno od ON od.solicitud_producto_id = s.idsolicitud
        WHERE s.no_pedido = $1`,
       [noPedido]
     );
@@ -252,6 +257,9 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
     const disenoId         = solicitud.iddiseno;
     const anticupoCubierto = Number(solicitud.abono) >= Number(solicitud.anticipo);
 
+    // ============================================================
+    // CONSULTA DE PRODUCTOS CON JOIN A orden_diseno (POR PRODUCTO)
+    // ============================================================
     const { rows: productos } = await pool.query(`
       SELECT
         dp.iddiseno_producto,
@@ -276,7 +284,11 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
         op.pzas,
         op.pzas_merma,
         op.metros,
-        op.metros_merma
+        op.metros_merma,
+        -- Campos de orden_diseno por producto
+        od.idorden_diseno,
+        od.no_orden_diseno,
+        od.estado               AS orden_diseno_estado
       FROM diseno_producto dp
       JOIN estado_administrativo_cat est
           ON est.idestado_administrativo_cat = dp.estado_administrativo_cat_idestado_administrativo_cat
@@ -293,10 +305,15 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
           AND sd.aprobado = true
       LEFT JOIN orden_produccion op
           ON op.idsolicitud_producto = dp.solicitud_producto_idsolicitud_producto
+      LEFT JOIN orden_diseno od
+          ON od.solicitud_producto_id = dp.solicitud_producto_idsolicitud_producto
       WHERE dp.diseno_iddiseno = $1
       ORDER BY dp.iddiseno_producto
     `, [disenoId]);
 
+    // ============================================================
+    // FORMATEO DE PRODUCTOS CON CAMPOS DE ORDEN_DISENO
+    // ============================================================
     const productosFormateados = productos.map((p: any) => ({
       iddiseno_producto:    p.iddiseno_producto,
       diseno_iddiseno:      p.diseno_iddiseno,
@@ -321,6 +338,10 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
       pzas_merma:   p.pzas_merma   != null ? Number(p.pzas_merma)   : null,
       metros:       p.metros       != null ? Number(p.metros)       : null,
       metros_merma: p.metros_merma != null ? Number(p.metros_merma) : null,
+      // ========== CAMPOS AGREGADOS DE ORDEN_DISENO POR PRODUCTO ==========
+      idorden_diseno:      p.idorden_diseno      ?? null,
+      no_orden_diseno:     p.no_orden_diseno     ?? null,
+      orden_diseno_estado: p.orden_diseno_estado ?? null,
     }));
 
     const total     = productosFormateados.length;
@@ -336,12 +357,16 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
     return res.json({
       no_pedido:                Number(noPedido),
       no_cotizacion:            solicitud.no_cotizacion ?? null,
-      solicitud_id:             solicitudId,
+      idsolicitud:             solicitudId,
       diseno_id:                disenoId,
       fecha_aprobacion_general: solicitud.fecha_aprobacion_general ?? null,
       anticipo_cubierto:        anticupoCubierto,
       anticipo:                 Number(solicitud.anticipo),
       abono:                    Number(solicitud.abono),
+      // Campos de orden_diseno a nivel de pedido (ya existentes)
+      no_orden_diseno:          solicitud.no_orden_diseno     ?? null,
+      idorden_diseno:           solicitud.idorden_diseno       ?? null,
+      orden_diseno_estado:      solicitud.orden_diseno_estado  ?? null,
       estado_id:                estadoGlobal,
       total_productos:          total,
       aprobados,
@@ -452,7 +477,6 @@ export const actualizarEstadoProducto = async (req: Request, res: Response) => {
           noProduccion     = await generarNoProduccion(client);
           const datosOrden = await prepararDatosOrden(client, idsolicitudProducto);
 
-          // ✅ 18 columnas, 16 parámetros $n (NOW() y NOW()+INTERVAL no son $n)
           await client.query(
             `INSERT INTO orden_produccion (
               estado_administrativo_cat_idestado_administrativo_cat,

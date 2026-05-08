@@ -65,6 +65,21 @@ async function obtenerSiguienteFolioPedido(client: any): Promise<string> {
   return generarFolioPedido(numero);
 }
 
+// ============================================================
+// FUNCIÓN PARA GENERAR FOLIO DE ORDEN DE DISEÑO (por producto)
+// ============================================================
+async function generarFolioOrdenDiseno(client: any): Promise<string> {
+  const yy = new Date().getFullYear().toString().slice(-2);
+  const { rows } = await client.query(`
+    SELECT COALESCE(MAX(
+      CAST(SUBSTRING(no_orden_diseno FROM 'OD${yy}(\\d+)') AS INTEGER)
+    ), 0) + 1 AS siguiente
+    FROM orden_diseno
+    WHERE no_orden_diseno LIKE 'OD${yy}%'
+  `);
+  return `OD${yy}${String(rows[0].siguiente).padStart(3, "0")}`;
+}
+
 async function crearVentaYDiseno(
   client:      any,
   solicitudId: number,
@@ -104,7 +119,11 @@ async function crearVentaYDiseno(
     [solicitudId]
   );
 
+  // ============================================================
+  // LOOP MODIFICADO: crea una orden de diseño por cada producto
+  // ============================================================
   for (const prod of productos) {
+    // 1. Insertar el producto en diseno_producto
     await client.query(
       `INSERT INTO diseno_producto (
         diseno_iddiseno,
@@ -114,6 +133,16 @@ async function crearVentaYDiseno(
       ) VALUES ($1, $2, $3, NOW())`,
       [disenoId, prod.idsolicitud_producto, ESTADO.PENDIENTE]
     );
+
+    // 2. Crear orden de diseño específica para este producto
+    const folioOD = await generarFolioOrdenDiseno(client);
+    await client.query(
+      `INSERT INTO orden_diseno 
+        (solicitud_producto_id, no_pedido, no_orden_diseno, estado, version_actual)
+       VALUES ($1, $2, $3, 'en_revision', 1)`,
+      [prod.idsolicitud_producto, folioPedido, folioOD]
+    );
+    console.log(`✅ Orden de diseño ${folioOD} creada para producto ${prod.idsolicitud_producto}`);
   }
 
   console.log(`✅ Diseño #${disenoId} creado con ${productos.length} producto(s) para pedido ${folioPedido}`);
@@ -436,7 +465,6 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           correo:         row.cliente_correo       || "",
           impresion:      row.cliente_impresion    || null,
           empresa:        row.cliente_empresa      || "",
-          // ── Campos nuevos de cliente ──────────────────────────────────────
           celular:        row.cliente_celular      || null,
           razon_social:   row.cliente_razon_social || null,
           rfc:            row.cliente_rfc          || null,
@@ -446,7 +474,6 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           codigo_postal:  row.cliente_codigo_postal || null,
           poblacion:      row.cliente_poblacion    || null,
           estado_cliente: row.cliente_estado       || null,
-          // ─────────────────────────────────────────────────────────────────
           productos:      [],
           total:          0,
         };

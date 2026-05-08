@@ -7,6 +7,8 @@ import {
   getUsuarioById,
   updateUsuario,
   deleteUsuario,
+  getConductores,
+  getUsuariosDiseno,
 } from "../../controllers/usuarios/usuarios.controller";
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 import {
@@ -18,12 +20,13 @@ import {
 
 const router = Router();
 
+
 // ==========================
 // HELMET
 // ==========================
 router.use(
   helmet({
-    contentSecurityPolicy:     false,
+    contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
   })
 );
@@ -33,26 +36,26 @@ router.use(
 // ==========================
 const createLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max:      10,
-  message:  { error: "Demasiados usuarios creados. Intenta más tarde." },
+  max: 10,
+  message: { error: "Demasiados usuarios creados. Intenta más tarde." },
   standardHeaders: true,
-  legacyHeaders:   false,
+  legacyHeaders: false,
 });
 
 const updateDeleteLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max:      30,
-  message:  { error: "Demasiadas operaciones. Intenta más tarde." },
+  max: 30,
+  message: { error: "Demasiadas operaciones. Intenta más tarde." },
   standardHeaders: true,
-  legacyHeaders:   false,
+  legacyHeaders: false,
 });
 
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max:      100,
-  message:  { error: "Demasiadas solicitudes. Intenta más tarde." },
+  max: 100,
+  message: { error: "Demasiadas solicitudes. Intenta más tarde." },
   standardHeaders: true,
-  legacyHeaders:   false,
+  legacyHeaders: false,
 });
 
 router.use(generalLimiter);
@@ -62,6 +65,9 @@ router.use(generalLimiter);
 // Todas requieren: estar autenticado + privilegio "Crear/Editar/Eliminar Usuarios"
 // ==========================
 const PERMISO = "Crear/Editar/Eliminar Usuarios";
+
+router.get("/conductores/lista", authMiddleware, getConductores);
+router.get("/diseno/lista",      authMiddleware, getUsuariosDiseno); 
 
 router.post(
   "/",

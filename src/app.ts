@@ -31,6 +31,17 @@ import rodillosRoutes from "./routes/rodillos/rodillos.routes";
 import procesosRoutes from "./routes/procesos/procesos.routes";
 import estadoCuentaRoutes from "./routes/estadoCuenta/estadoCuenta.routes";
 import bultosRoutes from "./routes/seguimiento/bultos.routes";
+import unidadesRoutes from "./routes/envios/unidades.routes";
+import paqueteriaRoutes from "./routes/envios/paqueteria.routes";
+import enviosRoutes from "./routes/envios/envios.routes";
+import bitacoraRoutes from "./routes/envios/bitacora.routes";
+import notasRoutes from "./routes/envios/notas.routes";
+import carritoRoutes from "./routes/envios/carrito.routes";
+import archivosRoutes from "./routes/archivos/archivos.routes";
+import formatoCastoresRoutes from "./routes/envios/formatoCastores.routes";
+import formatoTresGuerrasRoutes from "./routes/envios/formatoTresGuerras.routes";
+import ordenDisenoRoutes from "./routes/diseno/ordenDiseno.routes";
+
 
 const app = express();
 
@@ -85,6 +96,18 @@ app.use("/api/rodillos",            rodillosRoutes);
 app.use("/api/procesos",            procesosRoutes);
 app.use("/api/estado-cuenta",       estadoCuentaRoutes);
 app.use("/api/seguimiento/:idproduccion/bultos", bultosRoutes);
+app.use("/api/unidades",            unidadesRoutes);
+app.use("/api/paqueterias",         paqueteriaRoutes);
+app.use("/api/envios",              enviosRoutes);
+app.use("/api/bitacora",            bitacoraRoutes);
+app.use("/api/notas",               notasRoutes);
+app.use("/api/notas-remision",      notasRoutes);
+app.use("/api/carrito",             carritoRoutes);
+app.use("/api/archivos",            archivosRoutes);
+app.use("/api/formato-castores",    formatoCastoresRoutes);
+app.use("/api/formato-tres-guerras", formatoTresGuerrasRoutes);
+app.use("/api/orden-diseno", ordenDisenoRoutes);
+
 
 // ==========================
 // HEALTH CHECK
