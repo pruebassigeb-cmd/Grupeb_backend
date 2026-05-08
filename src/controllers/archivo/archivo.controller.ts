@@ -1,7 +1,9 @@
 import { Request, Response } from "express";
-import { uploadToS3, deleteFromS3, getPresignedUrl, CarpetaS3, CARPETAS } from "../../config/multer";
+import { uploadToS3, deleteFromS3, getPresignedUrl, CarpetaS3, CARPETAS, MulterFile } from "../../config/multer";
 import { pool } from "../../config/db";
-import type {Request as MulterRequest} from "express";
+
+// Request extendido con file tipado con nuestra interfaz propia
+type RequestConArchivo = Request & { file?: MulterFile };
 
 const getTipo = (mimetype: string): string => {
   if (mimetype === "application/pdf") return "pdf";
@@ -12,10 +14,10 @@ const getTipo = (mimetype: string): string => {
 const validarCarpeta = (carpeta: string): CarpetaS3 => {
   const valores = Object.values(CARPETAS) as string[];
   if (valores.includes(carpeta)) return carpeta as CarpetaS3;
-  return "disenos"; // carpeta por defecto
+  return "disenos";
 };
 
-export const subirArchivo = async (req: Request & { file?: Express.Multer.File }, res: Response): Promise<void> => {
+export const subirArchivo = async (req: RequestConArchivo, res: Response): Promise<void> => {
   try {
     if (!req.file) {
       res.status(400).json({ error: "No se recibió ningún archivo" });
@@ -54,7 +56,7 @@ export const listarArchivos = async (_req: Request, res: Response): Promise<void
     const archivosConUrl = await Promise.all(
       result.rows.map(async (archivo) => ({
         ...archivo,
-        url: await getPresignedUrl(archivo.public_id),
+        url:    await getPresignedUrl(archivo.public_id),
         carpeta: archivo.public_id?.split("/")?.[1] ?? "disenos",
       }))
     );
@@ -138,11 +140,11 @@ export const obtenerEstadisticas = async (_req: Request, res: Response): Promise
   try {
     const result = await pool.query(`
       SELECT
-        COUNT(*)                          AS total_archivos,
-        COALESCE(SUM(tamano_kb), 0)       AS total_kb,
-        COUNT(*) FILTER (WHERE tipo = 'image')    AS total_imagenes,
-        COUNT(*) FILTER (WHERE tipo = 'pdf')      AS total_pdfs,
-        COUNT(*) FILTER (WHERE tipo = 'document') AS total_documentos,
+        COUNT(*)                                                                   AS total_archivos,
+        COALESCE(SUM(tamano_kb), 0)                                                AS total_kb,
+        COUNT(*) FILTER (WHERE tipo = 'image')                                     AS total_imagenes,
+        COUNT(*) FILTER (WHERE tipo = 'pdf')                                       AS total_pdfs,
+        COUNT(*) FILTER (WHERE tipo = 'document')                                  AS total_documentos,
         COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%disenos%'),      0) AS kb_disenos,
         COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%pdfs%'),         0) AS kb_pdfs,
         COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%fotos-envios%'), 0) AS kb_fotos,
@@ -152,10 +154,10 @@ export const obtenerEstadisticas = async (_req: Request, res: Response): Promise
 
     const row = result.rows[0];
 
-    const totalKb   = Number(row.total_kb);
-    const totalMb   = totalKb / 1024;
-    const totalGb   = totalMb / 1024;
-    const limiteGb  = 10; // puedes ajustar este límite
+    const totalKb    = Number(row.total_kb);
+    const totalMb    = totalKb / 1024;
+    const totalGb    = totalMb / 1024;
+    const limiteGb   = 10;
     const porcentaje = Math.min((totalGb / limiteGb) * 100, 100);
 
     res.json({
@@ -164,17 +166,17 @@ export const obtenerEstadisticas = async (_req: Request, res: Response): Promise
       total_pdfs:       Number(row.total_pdfs),
       total_documentos: Number(row.total_documentos),
       almacenamiento: {
-        kb:          totalKb,
-        mb:          parseFloat(totalMb.toFixed(2)),
-        gb:          parseFloat(totalGb.toFixed(4)),
-        limite_gb:   limiteGb,
-        porcentaje:  parseFloat(porcentaje.toFixed(2)),
+        kb:         totalKb,
+        mb:         parseFloat(totalMb.toFixed(2)),
+        gb:         parseFloat(totalGb.toFixed(4)),
+        limite_gb:  limiteGb,
+        porcentaje: parseFloat(porcentaje.toFixed(2)),
       },
       por_carpeta: {
-        disenos:      parseFloat((Number(row.kb_disenos)  / 1024).toFixed(2)),
-        pdfs:         parseFloat((Number(row.kb_pdfs)     / 1024).toFixed(2)),
-        fotos_envios: parseFloat((Number(row.kb_fotos)    / 1024).toFixed(2)),
-        backups:      parseFloat((Number(row.kb_backups)  / 1024).toFixed(2)),
+        disenos:      parseFloat((Number(row.kb_disenos) / 1024).toFixed(2)),
+        pdfs:         parseFloat((Number(row.kb_pdfs)    / 1024).toFixed(2)),
+        fotos_envios: parseFloat((Number(row.kb_fotos)   / 1024).toFixed(2)),
+        backups:      parseFloat((Number(row.kb_backups) / 1024).toFixed(2)),
       },
     });
   } catch (error) {
