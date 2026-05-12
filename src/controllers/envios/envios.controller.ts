@@ -807,3 +807,182 @@ export const updateClavesSatBultos = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
+// ==========================
+// BULTOS POR ORDEN DE PRODUCCIÓN
+// Reemplaza únicamente esta función al final de envios.controller.ts
+// ==========================
+export const getBultosPorProduccion = async (req: Request, res: Response) => {
+  try {
+    const idsolicitud  = Number(req.params.idsolicitud);
+    const idproduccion = Number(req.params.idproduccion);
+
+    // ── Verificar que la orden pertenece a esa solicitud ──────────────────────
+    const { rows: ordenRows } = await pool.query(
+      `SELECT op.idproduccion, op.no_produccion
+       FROM orden_produccion op
+       JOIN solicitud_producto sp ON sp.idsolicitud_producto = op.idsolicitud_producto
+       WHERE op.idproduccion = $1
+         AND sp.solicitud_idsolicitud = $2`,
+      [idproduccion, idsolicitud]
+    );
+    if (ordenRows.length === 0)
+      return res.status(404).json({ error: "Orden no encontrada para este pedido" });
+
+    // ── Obtener todos los bultos de esta orden con su estado de envío ─────────
+    const { rows: bultosRows } = await pool.query(
+      `SELECT
+         b.idbulto,
+         b.cantidad_unidades,
+         b.peso_producto,
+         b.peso,
+         b.alto,
+         b.largo,
+         b.ancho,
+         b.fecha_creacion,
+         CASE
+           WHEN b.bolseo_idbolseo             IS NOT NULL THEN 'bolseo'
+           WHEN b.asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
+         END AS proceso_origen,
+         tpp.material_plastico_producto AS nombre_producto,
+         cfg.medida,
+         CASE
+           WHEN e.estado = 'entregado'  THEN 'entregado'
+           WHEN e.estado = 'en_camino'  THEN 'en_camino'
+           WHEN e.estado = 'preparando' THEN 'preparando'
+           ELSE 'sin_enviar'
+         END AS estado_bulto,
+         e.idenvio,
+         e.estado AS estado_envio
+       FROM bultos b
+       JOIN (
+         SELECT idbolseo AS id_proceso, 'bolseo' AS tipo_proceso, orden_produccion_idproduccion
+         FROM bolseo WHERE orden_produccion_idproduccion = $1
+         UNION ALL
+         SELECT idasa_flexible AS id_proceso, 'asa_flexible' AS tipo_proceso, orden_produccion_idproduccion
+         FROM asa_flexible WHERE orden_produccion_idproduccion = $1
+       ) proc ON (
+         (proc.tipo_proceso = 'bolseo'       AND b.bolseo_idbolseo             = proc.id_proceso)
+         OR
+         (proc.tipo_proceso = 'asa_flexible' AND b.asa_flexible_idasa_flexible = proc.id_proceso)
+       )
+       JOIN orden_produccion op ON op.idproduccion = $1
+       JOIN solicitud_producto sp ON sp.idsolicitud_producto = op.idsolicitud_producto
+       JOIN configuracion_plastico cfg
+           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
+       JOIN tipo_producto_plastico tpp
+           ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
+       -- Envío activo más reciente para este bulto
+       LEFT JOIN (
+         SELECT DISTINCT ON (eb_inner.bultos_idbulto)
+           eb_inner.bultos_idbulto,
+           e_inner.idenvio,
+           e_inner.estado
+         FROM envio_bulto eb_inner
+         JOIN envio e_inner ON e_inner.idenvio = eb_inner.envio_idenvio
+         ORDER BY eb_inner.bultos_idbulto, e_inner.idenvio DESC
+       ) e ON e.bultos_idbulto = b.idbulto
+       ORDER BY b.idbulto ASC`,
+      [idproduccion]
+    );
+
+    // ── Obtener todos los envíos que contienen al menos un bulto de esta orden ─
+    const { rows: enviosRows } = await pool.query(
+      `SELECT DISTINCT
+         e.idenvio,
+         e.tipo,
+         e.estado,
+         e.es_parcialidad,
+         e.numero_guia,
+         e.costo_flete,
+         e.fecha_envio,
+         e.fecha_entrega_estimada,
+         e.observaciones,
+         u.idusuario,
+         u.nombre      AS chofer_nombre,
+         un.idunidad,
+         un.marca,
+         un.modelo,
+         un.placa,
+         p.idpaqueteria,
+         p.nombre      AS paqueteria_nombre,
+         COUNT(eb2.bultos_idbulto) AS total_bultos
+       FROM envio e
+       JOIN envio_bulto eb ON eb.envio_idenvio = e.idenvio
+       JOIN bultos b        ON b.idbulto        = eb.bultos_idbulto
+       JOIN (
+         SELECT idbulto FROM bultos b2
+         WHERE
+           b2.bolseo_idbolseo IN (
+             SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = $1
+           )
+           OR
+           b2.asa_flexible_idasa_flexible IN (
+             SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1
+           )
+       ) bultos_orden ON bultos_orden.idbulto = b.idbulto
+       LEFT JOIN usuarios   u  ON u.idusuario   = e.usuarios_idusuario
+       LEFT JOIN unidades   un ON un.idunidad    = e.unidades_idunidad
+       LEFT JOIN paqueteria p  ON p.idpaqueteria = e.paqueteria_idpaqueteria
+       JOIN envio_bulto eb2 ON eb2.envio_idenvio = e.idenvio
+       WHERE e.estado != 'cancelado'
+       GROUP BY
+         e.idenvio, e.tipo, e.estado, e.es_parcialidad,
+         e.numero_guia, e.costo_flete, e.fecha_envio,
+         e.fecha_entrega_estimada, e.observaciones,
+         u.idusuario, u.nombre,
+         un.idunidad, un.marca, un.modelo, un.placa,
+         p.idpaqueteria, p.nombre
+       ORDER BY e.idenvio DESC`,
+      [idproduccion]
+    );
+
+    return res.json({
+      bultos: bultosRows.map((r: any) => ({
+        idbulto:           Number(r.idbulto),
+        cantidad_unidades: r.cantidad_unidades != null ? Number(r.cantidad_unidades) : null,
+        peso_producto:     r.peso_producto     != null ? Number(r.peso_producto)     : null,
+        peso:              r.peso              != null ? Number(r.peso)              : null,
+        alto:              r.alto              != null ? Number(r.alto)              : null,
+        largo:             r.largo             != null ? Number(r.largo)             : null,
+        ancho:             r.ancho             != null ? Number(r.ancho)             : null,
+        fecha_creacion:    r.fecha_creacion,
+        proceso_origen:    r.proceso_origen    as "bolseo" | "asa_flexible",
+        nombre_producto:   r.nombre_producto   || "",
+        medida:            r.medida            || "",
+        estado_bulto:      r.estado_bulto      as "sin_enviar" | "preparando" | "en_camino" | "entregado",
+        idenvio:           r.idenvio           != null ? Number(r.idenvio) : null,
+        estado_envio:      r.estado_envio      || null,
+      })),
+      envios: enviosRows.map((e: any) => ({
+        idenvio:                Number(e.idenvio),
+        tipo:                   e.tipo          as "local" | "paqueteria",
+        estado:                 e.estado        as "preparando" | "en_camino" | "entregado",
+        es_parcialidad:         Boolean(e.es_parcialidad),
+        numero_guia:            e.numero_guia            || null,
+        costo_flete:            e.costo_flete   != null ? Number(e.costo_flete) : null,
+        fecha_envio:            e.fecha_envio,
+        fecha_entrega_estimada: e.fecha_entrega_estimada || null,
+        observaciones:          e.observaciones          || null,
+        total_bultos:           Number(e.total_bultos),
+        chofer: e.idusuario ? {
+          idusuario: Number(e.idusuario),
+          nombre:    e.chofer_nombre,
+        } : null,
+        unidad: e.idunidad ? {
+          idunidad: Number(e.idunidad),
+          nombre:   `${e.marca} ${e.modelo} - ${e.placa}`,
+        } : null,
+        paqueteria: e.idpaqueteria ? {
+          idpaqueteria: Number(e.idpaqueteria),
+          nombre:       e.paqueteria_nombre,
+        } : null,
+      })),
+    });
+
+  } catch (error: any) {
+    console.error("❌ GET BULTOS POR PRODUCCION ERROR:", error.message);
+    return res.status(500).json({ error: "Error al obtener bultos por producción" });
+  }
+};
+ 

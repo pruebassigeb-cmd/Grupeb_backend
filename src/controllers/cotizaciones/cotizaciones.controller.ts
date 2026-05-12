@@ -499,7 +499,6 @@ export const getCotizaciones = async (req: Request, res: Response) => {
             fuelleLateral1: row.cfg_fuelle_lat_iz ? String(row.cfg_fuelle_lat_iz) : "",
             fuelleLateral2: row.cfg_fuelle_lat_de ? String(row.cfg_fuelle_lat_de) : "",
             refuerzo:       row.cfg_refuerzo      ? String(row.cfg_refuerzo)      : "",
-            solapa:         "",
           };
 
           const materialUpper = (row.material_nombre || "").toUpperCase();

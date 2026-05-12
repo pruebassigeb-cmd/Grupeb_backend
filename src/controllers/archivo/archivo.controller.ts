@@ -10,11 +10,16 @@ const getTipo = (mimetype: string): string => {
   if (mimetype.startsWith("image/")) return "image";
   return "document";
 };
-
+  
 const validarCarpeta = (carpeta: string): CarpetaS3 => {
   const valores = Object.values(CARPETAS) as string[];
   if (valores.includes(carpeta)) return carpeta as CarpetaS3;
   return "disenos";
+};
+
+const validarCategoria = (categoria: string): "render" | "master" | "otro" => {
+  if (categoria === "render" || categoria === "master") return categoria;
+  return "otro";
 };
 
 export const subirArchivo = async (req: RequestConArchivo, res: Response): Promise<void> => {
@@ -24,7 +29,9 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
       return;
     }
 
-    const carpeta = validarCarpeta(req.body.carpeta || "disenos");
+    const carpeta   = validarCarpeta(req.body.carpeta   || "disenos");
+    const categoria = validarCategoria(req.body.categoria || "otro");
+
     const { url, public_id, resource_type } = await uploadToS3(req.file, carpeta);
     const tipo      = getTipo(req.file.mimetype);
     const tamanoKb  = Math.round(req.file.size / 1024);
@@ -32,10 +39,10 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
 
     const result = await pool.query(
       `INSERT INTO archivos 
-        (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb, subidoPor, resource_type]
+      [req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb, subidoPor, resource_type, categoria]
     );
 
     res.status(201).json(result.rows[0]);
@@ -49,7 +56,7 @@ export const listarArchivos = async (_req: Request, res: Response): Promise<void
   try {
     const result = await pool.query(
       `SELECT id_archivo, nombre, tipo, mime_type, url, public_id,
-              tamano_kb, subido_por, resource_type, created_at
+              tamano_kb, subido_por, resource_type, categoria, created_at
        FROM archivos ORDER BY created_at DESC`
     );
 

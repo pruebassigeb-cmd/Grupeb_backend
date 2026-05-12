@@ -1,5 +1,25 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
+import { getPresignedUrl } from "../../config/multer";
+
+// ── Descarga imagen desde S3 y la retorna como data URL base64 ──
+async function publicIdToBase64(publicId: string): Promise<string | null> {
+  try {
+    const url      = await getPresignedUrl(publicId);
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.warn(`⚠️ publicIdToBase64: fetch failed ${response.status} para ${publicId}`);
+      return null;
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer      = Buffer.from(arrayBuffer);
+    const mime        = response.headers.get("content-type") || "image/png";
+    return `data:${mime};base64,${buffer.toString("base64")}`;
+  } catch (e: any) {
+    console.error("❌ publicIdToBase64 error:", e.message);
+    return null;
+  }
+}
 
 // ============================================================
 // GET /api/seguimiento/:noPedido/orden-produccion
@@ -103,7 +123,13 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
 
         -- Progreso real de extrusión
         ext.kilos_extruir,
-        ext.metros_extruir
+        ext.metros_extruir,
+
+        -- Render: archivo con categoria='render' de la revisión marcada como versión final
+        ar.public_id AS render_public_id,
+
+        -- Master: archivo con categoria='master' de cualquier revisión de la misma orden
+        am.public_id AS master_public_id
 
       FROM solicitud_producto sp
       LEFT JOIN orden_produccion op
@@ -135,11 +161,35 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           AND sd.aprobado = true
       LEFT JOIN extrusion ext
           ON ext.orden_produccion_idproduccion = op.idproduccion
+
+      -- Orden de diseño ligada al producto
+      LEFT JOIN orden_diseno od
+          ON od.solicitud_producto_id = sp.idsolicitud_producto
+
+      -- Revisión marcada como versión final
+      LEFT JOIN revision_diseno rd_final
+          ON rd_final.orden_diseno_id = od.idorden_diseno
+          AND rd_final.es_version_final = true
+
+      -- Render: categoria='render' de la revisión final
+      LEFT JOIN archivos ar
+          ON ar.revision_diseno_id = rd_final.idrevision
+          AND ar.categoria = 'render'
+
+      -- Master: categoria='master' de cualquier revisión de la misma orden
+      LEFT JOIN archivos am
+          ON am.revision_diseno_id IN (
+            SELECT idrevision FROM revision_diseno
+            WHERE orden_diseno_id = od.idorden_diseno
+          )
+          AND am.categoria = 'master'
+
       WHERE sp.solicitud_idsolicitud = $1
       ORDER BY sp.idsolicitud_producto
     `, [pedido.idsolicitud]);
 
-    const productosFormateados = productos.map((r: any) => {
+    // Convertir imágenes a base64 en el backend para evitar CORS en el frontend
+    const productosFormateados = await Promise.all(productos.map(async (r: any) => {
       const materialUpper = (r.material || "").toUpperCase();
       const esBopp = materialUpper.includes("BOPP") ||
                      materialUpper.includes("CELOFAN") ||
@@ -149,12 +199,20 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ? (r.calibre_bopp ? String(r.calibre_bopp) : "")
         : (r.calibre_numero && Number(r.calibre_numero) !== 0 ? String(r.calibre_numero) : "");
 
-      // ── FIX: != null para preservar valor 0 ──
       const altura      = r.altura        != null ? String(r.altura)        : "";
       const ancho       = r.ancho         != null ? String(r.ancho)         : "";
       const fuelleFondo = r.fuelle_fondo  != null ? String(r.fuelle_fondo)  : "";
       const fuelleLat   = r.fuelle_lat_iz != null ? String(r.fuelle_lat_iz) : "";
       const refuerzo    = r.refuerzo      != null ? String(r.refuerzo)      : "";
+
+      // Descargar imágenes en el backend y mandar como base64
+      const [url_render, url_master] = await Promise.all([
+        r.render_public_id ? publicIdToBase64(r.render_public_id) : Promise.resolve(null),
+        r.master_public_id ? publicIdToBase64(r.master_public_id) : Promise.resolve(null),
+      ]);
+
+      console.log(`📦 [${r.idsolicitud_producto}] render base64:`, url_render ? `OK (${url_render.length} chars)` : "null");
+      console.log(`📦 [${r.idsolicitud_producto}] master base64:`, url_master ? `OK (${url_master.length} chars)` : "null");
 
       return {
         idsolicitud_producto:    r.idsolicitud_producto,
@@ -173,7 +231,6 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ancho,
         fuelle_fondo:            fuelleFondo,
         fuelle_lat_iz:           fuelleLat,
-        // ── FIX: != null para preservar valor 0 ──
         fuelle_lat_de:           r.fuelle_lat_de != null ? String(r.fuelle_lat_de) : "",
         refuerzo,
         por_kilo:                r.por_kilo ? String(r.por_kilo) : null,
@@ -184,7 +241,6 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           fuelleLateral1: fuelleLat,
           fuelleLateral2: fuelleLat,
           refuerzo,
-          solapa: "",
         },
         tintas:      r.tintas   ?? null,
         caras:       r.caras    ?? null,
@@ -219,8 +275,11 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         pzas_merma:  r.pzas_merma  != null ? Number(r.pzas_merma)  : null,
         kilos_extruir:  r.kilos_extruir  ? Number(r.kilos_extruir)  : null,
         metros_extruir: r.metros_extruir ? Number(r.metros_extruir) : null,
+        // ── Base64 de render y master (listos para jsPDF, sin CORS) ──
+        url_render,
+        url_master,
       };
-    });
+    }));
 
     return res.json({
       no_pedido:       pedido.no_pedido ?? "",

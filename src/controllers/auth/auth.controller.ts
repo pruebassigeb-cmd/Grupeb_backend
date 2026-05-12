@@ -45,6 +45,45 @@ async function obtenerPrivilegios(
 }
 
 // ==========================
+// HELPER — verificar si un usuario tiene un privilegio
+// (revisa primero custom, luego rol)
+// ==========================
+async function tienePrivilegio(
+  userId: number,
+  rolId: number,
+  accesoTotal: boolean,
+  privilegio: string
+): Promise<boolean> {
+  if (accesoTotal) return true;
+
+  // Privilegios personalizados
+  const { rows: custom } = await pool.query(
+    `SELECT 1
+     FROM privilegios_has_usuarios pu
+     JOIN privilegios p ON p.idprivilegios = pu.privilegios_idprivilegios
+     WHERE pu.usuarios_idusuario = $1
+       AND p.privilegio = $2
+     LIMIT 1`,
+    [userId, privilegio]
+  );
+
+  if (custom.length > 0) return true;
+
+  // Privilegios del rol como fallback
+  const { rows: rolPrivs } = await pool.query(
+    `SELECT 1
+     FROM roles_has_privilegios rp
+     JOIN privilegios p ON p.idprivilegios = rp.privilegios_idprivilegios
+     WHERE rp.roles_idroles = $1
+       AND p.privilegio = $2
+     LIMIT 1`,
+    [rolId, privilegio]
+  );
+
+  return rolPrivs.length > 0;
+}
+
+// ==========================
 // LOGIN
 // ==========================
 export const login = async (req: Request, res: Response) => {
@@ -102,7 +141,6 @@ export const login = async (req: Request, res: Response) => {
         .json({ error: "Error de configuración del servidor" });
     }
 
-    // ── Obtener privilegios ───────────────────────────────────
     const privilegios = await obtenerPrivilegios(
       usuario.idusuario,
       usuario.roles_idroles,
@@ -206,19 +244,17 @@ export const verifyToken = (req: Request, res: Response) => {
 
 // ==========================
 // VERIFICAR OPERADOR DE PLANTA
-// Valida que un operador tenga el privilegio para un proceso
-// específico sin crear una sesión completa
 // ==========================
 export const verificarOperador = async (req: Request, res: Response) => {
   try {
     const { correo, codigo, proceso } = req.body;
 
-    // proceso: "extrusion" | "impresion" | "bolseo" | "asa_flexible"
     const PROCESO_PRIVILEGIO: Record<string, string> = {
       extrusion:    "Operar Extrusión",
       impresion:    "Operar Impresión",
       bolseo:       "Operar Bolseo",
       asa_flexible: "Operar Asa Flexible",
+      orden_diseno: "Orden de Diseño",   // ← NUEVO
     };
 
     if (!correo || !codigo || !proceso) {
@@ -240,7 +276,6 @@ export const verificarOperador = async (req: Request, res: Response) => {
     const correoSanitizado =
       validator.normalizeEmail(correo) || correo.toLowerCase().trim();
 
-    // Buscar usuario
     const { rows } = await pool.query(
       `SELECT u.idusuario, u.codigo, u.nombre, u.apellido,
               u.roles_idroles, r.acceso_total
@@ -264,35 +299,19 @@ export const verificarOperador = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    // Si tiene acceso total, puede operar cualquier proceso
-    if (usuario.acceso_total) {
-      return res.json({
-        autorizado: true,
-        operador: {
-          id:      usuario.idusuario,
-          nombre:  usuario.nombre,
-          apellido: usuario.apellido,
-        },
-      });
-    }
-
-    // Verificar privilegio específico del proceso
+    // Verificar privilegio (revisa custom Y rol como fallback)
     const privilegioRequerido = PROCESO_PRIVILEGIO[proceso];
-
-    const { rows: privRows } = await pool.query(
-      `SELECT 1
-       FROM privilegios_has_usuarios pu
-       JOIN privilegios p ON p.idprivilegios = pu.privilegios_idprivilegios
-       WHERE pu.usuarios_idusuario = $1
-         AND p.privilegio = $2
-       LIMIT 1`,
-      [usuario.idusuario, privilegioRequerido]
+    const autorizado = await tienePrivilegio(
+      usuario.idusuario,
+      usuario.roles_idroles,
+      usuario.acceso_total,
+      privilegioRequerido
     );
 
-    if (privRows.length === 0) {
+    if (!autorizado) {
       return res.status(403).json({
         autorizado: false,
-        error: `No tienes permiso para operar ${proceso}`,
+        error: `No tienes permiso para acceder a ${proceso.replace("_", " ")}`,
       });
     }
 

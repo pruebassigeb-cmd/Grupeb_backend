@@ -203,7 +203,7 @@ export const getOrdenDisenoById = async (req: AuthRequest, res: Response) => {
 
     const orden = ordenRows[0];
 
-    // Participantes: tabla formal + usuarios que hayan mandado mensajes
+    // Participantes
     const { rows: participantes } = await pool.query(`
       SELECT DISTINCT ON (u.idusuario)
         COALESCE(odp.idparticipante, -u.idusuario)          AS idparticipante,
@@ -229,7 +229,7 @@ export const getOrdenDisenoById = async (req: AuthRequest, res: Response) => {
       ORDER BY u.idusuario, odp.agregado_at ASC NULLS LAST
     `, [id]);
 
-    // Revisiones con archivos — incluye es_version_final
+    // Revisiones con archivos — incluye categoria
     const { rows: revisiones } = await pool.query(`
       SELECT
         rd.idrevision,
@@ -249,7 +249,8 @@ export const getOrdenDisenoById = async (req: AuthRequest, res: Response) => {
               'public_id',     a.public_id,
               'tipo',          a.tipo,
               'mime_type',     a.mime_type,
-              'resource_type', a.resource_type
+              'resource_type', a.resource_type,
+              'categoria',     a.categoria
             )
           ) FILTER (WHERE a.id_archivo IS NOT NULL),
           '[]'
@@ -375,7 +376,6 @@ export const enviarMensaje = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "No se puede enviar mensajes a una orden aprobada" });
     }
 
-    // Auto-registrar al remitente con rol correcto según privilegios
     const { rows: usuarioRows } = await client.query(
       `SELECT p.privilegio
        FROM usuarios u
@@ -675,7 +675,6 @@ export const marcarNotificacionesLeidas = async (req: AuthRequest, res: Response
 
 // ============================================================
 // MARCAR REVISIÓN COMO VERSIÓN FINAL
-// Solo para roles con privilegio "Editar Diseño" (id=8) o acceso total
 // ============================================================
 export const marcarVersionFinal = async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
@@ -701,22 +700,18 @@ export const marcarVersionFinal = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Solo se pueden marcar renders como versión final" });
     }
 
-    // Desmarcar versión final anterior de esta orden
     await client.query(
       `UPDATE revision_diseno SET es_version_final = false
        WHERE orden_diseno_id = $1 AND es_version_final = true`,
       [id]
     );
 
-    // Marcar la nueva versión final
     await client.query(
       `UPDATE revision_diseno SET es_version_final = true WHERE idrevision = $1`,
       [revId]
     );
 
     await client.query("COMMIT");
-
-    console.log(`⭐ Revisión ${revId} marcada como versión final en orden ${id}`);
 
     return res.json({
       message: "Versión final marcada exitosamente",
@@ -733,29 +728,25 @@ export const marcarVersionFinal = async (req: AuthRequest, res: Response) => {
 };
 
 // ============================================================
-// LIMPIEZA AUTOMÁTICA — llamar desde cron job
-// Elimina mensajes y archivos de órdenes aprobadas hace más de 30 días
-// excepto los archivos de la revisión marcada como versión final
+// LIMPIEZA AUTOMÁTICA
 // ============================================================
 export const limpiarChatsAntiguos = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    // Órdenes aprobadas hace más de 30 días
     const { rows: ordenes } = await client.query(`
       SELECT idorden_diseno FROM orden_diseno
       WHERE estado = 'aprobado'
         AND autorizado_at < NOW() - INTERVAL '30 days'
     `);
 
-    let totalMensajes  = 0;
-    let totalArchivos  = 0;
+    let totalMensajes = 0;
+    let totalArchivos = 0;
 
     for (const orden of ordenes) {
       const ordenId = orden.idorden_diseno;
 
-      // Obtener revision final de esta orden (si existe)
       const { rows: finalRows } = await client.query(
         `SELECT idrevision FROM revision_diseno
          WHERE orden_diseno_id = $1 AND es_version_final = true
@@ -764,8 +755,6 @@ export const limpiarChatsAntiguos = async (req: Request, res: Response) => {
       );
       const revisionFinalId = finalRows[0]?.idrevision ?? null;
 
-      // Desvincular archivos de revisiones que NO son la versión final
-      // (los archivos en S3 se borran aparte si quieres, aquí solo se desvinculan de la revisión)
       const { rowCount: archivosEliminados } = await client.query(
         revisionFinalId
           ? `UPDATE archivos SET revision_diseno_id = NULL
@@ -781,7 +770,6 @@ export const limpiarChatsAntiguos = async (req: Request, res: Response) => {
         revisionFinalId ? [ordenId, revisionFinalId] : [ordenId]
       );
 
-      // Eliminar mensajes del chat (excepto los de sistema de la versión final)
       const { rowCount: mensajesEliminados } = await client.query(
         revisionFinalId
           ? `DELETE FROM mensaje_diseno
@@ -791,15 +779,11 @@ export const limpiarChatsAntiguos = async (req: Request, res: Response) => {
         revisionFinalId ? [ordenId, revisionFinalId] : [ordenId]
       );
 
-      totalArchivos  += archivosEliminados ?? 0;
-      totalMensajes  += mensajesEliminados ?? 0;
-
-      console.log(`🧹 Orden ${ordenId} — ${mensajesEliminados} mensajes, ${archivosEliminados} archivos desvinculados`);
+      totalArchivos += archivosEliminados ?? 0;
+      totalMensajes += mensajesEliminados ?? 0;
     }
 
     await client.query("COMMIT");
-
-    console.log(`✅ Limpieza completada — ${ordenes.length} órdenes, ${totalMensajes} mensajes, ${totalArchivos} archivos`);
 
     return res.json({
       message: "Limpieza completada",

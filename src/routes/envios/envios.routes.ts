@@ -13,6 +13,7 @@ import {
   getProductosSat,
   getGuiaGeneral,
   updateClavesSatBultos,
+  getBultosPorProduccion,        // ← NUEVO
 } from "../../controllers/envios/envios.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 import { validateId, preventSQLInjection } from "../../middlewares/validation.middleware";
@@ -31,6 +32,9 @@ router.get("/catalogos/productos-sat", authMiddleware, getProductosSat);
 
 // Pedidos disponibles
 router.get("/pedidos-disponibles", authMiddleware, getPedidosDisponibles);
+
+// Bultos filtrados por orden de producción específica  ← NUEVO (va ANTES de la ruta genérica de bultos)
+router.get("/pedidos/:idsolicitud/bultos-por-produccion/:idproduccion", authMiddleware, getBultosPorProduccion);
 
 // Bultos de un pedido
 router.get("/pedidos/:idsolicitud/bultos", authMiddleware, getBultosPedido);

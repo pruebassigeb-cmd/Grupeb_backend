@@ -8,6 +8,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
   try {
     const { rows } = await pool.query(`
       SELECT
+        s.idsolicitud,
         s.no_pedido,
         s.no_cotizacion,
         s.fecha,
@@ -40,6 +41,25 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         imp.estado_produccion_cat_idestado_produccion_cat  AS impresion_estado_id,
         bol.estado_produccion_cat_idestado_produccion_cat  AS bolseo_estado_id,
         asa.estado_produccion_cat_idestado_produccion_cat  AS asa_flexible_estado_id,
+
+        -- Fechas de referencia por proceso (fecha_inicio = cuando arrancó, si no ha terminado = días activo)
+        CASE WHEN ext.fecha_fin IS NULL THEN ext.fecha_inicio ELSE NULL END AS extrusion_fecha_estado,
+        CASE WHEN imp.fecha_fin IS NULL THEN imp.fecha_inicio ELSE NULL END AS impresion_fecha_estado,
+        CASE WHEN bol.fecha_fin IS NULL THEN bol.fecha_inicio ELSE NULL END AS bolseo_fecha_estado,
+        CASE WHEN asa.fecha_fin IS NULL THEN asa.fecha_inicio ELSE NULL END AS asa_flexible_fecha_estado,
+
+        -- Fechas para columnas administrativas
+        CASE WHEN v.abono < v.anticipo
+              AND v.estado_administrativo_cat_idestado_administrativo_cat NOT IN (2, 6)
+             THEN v.fecha_creacion ELSE NULL END                            AS anticipo_fecha_estado,
+        CASE WHEN v.saldo > 0.01
+             THEN v.fecha_creacion ELSE NULL END                            AS pago_fecha_estado,
+        CASE WHEN dp.estado_administrativo_cat_idestado_administrativo_cat != 3
+             THEN d.fecha ELSE NULL END                                     AS diseno_fecha_estado,
+        CASE WHEN od.estado != 'aprobado'
+             THEN od.created_at ELSE NULL END                               AS od_fecha_estado,
+        -- Envío: fecha desde que se creó el envío si no tiene fecha de entrega estimada
+        en.fecha_envio                                                      AS envio_fecha_estado,
 
         EXISTS (
           SELECT 1 FROM tipo_producto_plastico_proceso tppp2
@@ -83,11 +103,9 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         sp.foil,
         asz.tipo                        AS asa_suaje,
 
-        -- Color del Asa
         sp.id_color,
         ca.color                        AS color_asa_nombre,
 
-        -- Medida del Troquel
         sp.id_medidatro,
         mt.medida                       AS medida_troquel,
 
@@ -99,7 +117,11 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         op.kilos_merma,
         op.pzas,
         op.pzas_merma,
-        op.metros_merma
+        op.metros_merma,
+
+        -- Orden de Diseño
+        od.idorden_diseno,
+        od.estado                       AS od_estado
 
       FROM solicitud s
       LEFT JOIN clientes cli
@@ -146,6 +168,10 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
           AND sd.aprobado = true
+      LEFT JOIN orden_diseno od
+          ON od.solicitud_producto_id = sp.idsolicitud_producto
+      LEFT JOIN envio en
+          ON en.solicitud_idsolicitud = s.idsolicitud
 
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
@@ -172,6 +198,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         : (row.calibre_numero && Number(row.calibre_numero) !== 0 ? String(row.calibre_numero) : "");
 
       return {
+        idsolicitud:         Number(row.idsolicitud),
         no_pedido:           row.no_pedido,
         no_cotizacion:       row.no_cotizacion ?? null,
         fecha:               row.fecha,
@@ -193,6 +220,19 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         impresion_estado:    row.lleva_impresion    ? mapEstadoProceso(row.impresion_estado_id)    : "no-aplica",
         bolseo_estado:       row.lleva_bolseo       ? mapEstadoProceso(row.bolseo_estado_id)       : "no-aplica",
         asa_flexible_estado: row.lleva_asa_flexible ? mapEstadoProceso(row.asa_flexible_estado_id) : "no-aplica",
+
+        // Fechas de referencia por proceso
+        extrusion_fecha_estado:    row.extrusion_fecha_estado    ?? null,
+        impresion_fecha_estado:    row.impresion_fecha_estado    ?? null,
+        bolseo_fecha_estado:       row.bolseo_fecha_estado       ?? null,
+        asa_flexible_fecha_estado: row.asa_flexible_fecha_estado ?? null,
+
+        // Fechas para columnas administrativas
+        anticipo_fecha_estado: row.anticipo_fecha_estado ?? null,
+        pago_fecha_estado:     row.pago_fecha_estado     ?? null,
+        diseno_fecha_estado:   row.diseno_fecha_estado   ?? null,
+        od_fecha_estado:       row.od_fecha_estado       ?? null,
+        envio_fecha_estado:    row.envio_fecha_estado    ?? null,
         nombre_producto:  row.nombre_producto || "",
         medida:           row.medida          || "",
         altura:           row.altura        != null ? String(row.altura)        : "",
@@ -223,6 +263,10 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         pzas:         row.pzas         != null ? Number(row.pzas)         : null,
         pzas_merma:   row.pzas_merma   != null ? Number(row.pzas_merma)   : null,
         metros_merma: row.metros_merma != null ? Number(row.metros_merma) : null,
+
+        // Orden de Diseño
+        idorden_diseno: row.idorden_diseno ?? null,
+        od_estado:      row.od_estado      ?? null,
       };
     });
 
@@ -267,12 +311,10 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       SELECT
         sp.idsolicitud_producto,
 
-        -- Orden de producción
         op.idproduccion,
         op.no_produccion,
         op.fecha            AS fecha_produccion,
 
-        -- Producto
         tpp.material_plastico_producto  AS nombre_producto,
         pr.tipo_producto                AS categoria,
         mp.tipo_material                AS material,
@@ -287,7 +329,6 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         cfg.refuerzo,
         cfg.por_kilo,
 
-        -- Características
         t.cantidad   AS tintas,
         car.cantidad AS caras,
         sp.bk,
@@ -299,27 +340,21 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         sp.pantones,
         sp.observacion,
 
-        -- Asa/Suaje
         asz.tipo AS asa_suaje,
 
-        -- Color del Asa
         sp.id_color,
         ca.color AS color_asa_nombre,
 
-        -- Medida del Troquel
         sp.id_medidatro,
         mt.medida AS medida_troquel,
 
-        -- Cantidad aprobada por el cliente
         sd.cantidad,
         sd.kilogramos,
         sd.modo_cantidad,
 
-        -- Fecha aprobación diseño
         dp.fecha_aprobacion AS fecha_aprobacion_diseno,
         dp.observaciones    AS observaciones_diseno,
 
-        -- Datos de extrusión calculados al crear la orden
         op.repeticion_extrusion,
         op.repeticion_metro,
         op.metros,
@@ -328,13 +363,11 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         op.repeticion_sicosa,
         op.fecha_entrega,
 
-        -- Campos de merma
         op.kilos,
         op.kilos_merma,
         op.pzas,
         op.pzas_merma,
 
-        -- Progreso real de extrusión
         ext.kilos_extruir,
         ext.metros_extruir
 
@@ -415,7 +448,6 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           fuelleLateral1: fuelleLat,
           fuelleLateral2: fuelleLat,
           refuerzo,
-          solapa: "",
         },
         tintas:      r.tintas   ?? null,
         caras:       r.caras    ?? null,
@@ -498,7 +530,6 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
         cli.correo,
         cli.impresion     AS cliente_impresion,
 
-        -- Dirección: prioriza direccion_envio, si no hay cae a domicilio
         COALESCE(de.domicilio,     dom.domicilio)     AS calle,
         COALESCE(de.numero,        dom.numero)        AS numero,
         COALESCE(de.colonia,       dom.colonia)       AS colonia,
