@@ -10,7 +10,10 @@ export const pool = new Pool({
   database: process.env.DB_NAME,
   port: Number(process.env.DB_PORT),
 
-  client_encoding: "utf8",
+  options: "-c client_encoding=UTF8",
+  //client_encoding: "utf8",
 });
 
-pool.query("SET client_encoding TO 'UTF8'");
+pool.on("connect", (client) => {
+  client.query("SET client_encoding TO 'UTF8'");
+});

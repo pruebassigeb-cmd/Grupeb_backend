@@ -6,8 +6,41 @@ import validator from "validator";
 // ==========================
 // CONSTANTES
 // ==========================
-const BCRYPT_ROUNDS = 12;
+const BCRYPT_ROUNDS    = 12;
 const MAX_USERS_TO_CHECK = 1000;
+
+// Campos extra opcionales (dirección + datos personales)
+const CAMPOS_EXTRA = [
+  "fecha_nacimiento",
+  "rfc",
+  "nss",
+  "curp",
+  "tipo_sangre",
+  "alergias",
+  "enfermedades",
+  "foto_url",
+  "calle",
+  "numero_ext",
+  "numero_int",
+  "colonia",
+  "codigo_postal",
+  "municipio",
+  "estado",
+  "emergencia_nombre",
+  "emergencia_parentesco",
+  "emergencia_telefono",
+] as const;
+
+/** Extrae del body sólo los campos extra que vengan con valor */
+function extraerCamposExtra(body: Record<string, any>) {
+  const campos: Record<string, any> = {};
+  for (const campo of CAMPOS_EXTRA) {
+    if (body[campo] !== undefined && body[campo] !== "") {
+      campos[campo] = body[campo] === "" ? null : body[campo];
+    }
+  }
+  return campos;
+}
 
 // ==========================
 // CREAR USUARIO (REGISTER)
@@ -18,108 +51,89 @@ export const createUsuario = async (req: Request, res: Response) => {
   try {
     let { nombre, apellido, correo, telefono, codigo, roles_idroles, privilegios } = req.body;
 
-    // Sanitización
-    nombre = validator.escape(nombre.trim());
+    nombre   = validator.escape(nombre.trim());
     apellido = validator.escape(apellido.trim());
-    correo = validator.normalizeEmail(correo.trim()) || "";
+    correo   = validator.normalizeEmail(correo.trim()) || "";
 
     console.log("📝 Creando nuevo usuario:", { nombre, apellido, correo, roles_idroles });
 
-    // Validaciones críticas
     if (!nombre || !apellido || !correo || !codigo) {
-      return res.status(400).json({ 
-        error: "Todos los campos requeridos deben estar completos" 
-      });
+      return res.status(400).json({ error: "Todos los campos requeridos deben estar completos" });
     }
 
     if (!/^\d{5}$/.test(codigo)) {
-      return res.status(400).json({ 
-        error: "Datos de entrada inválidos" 
-      });
+      return res.status(400).json({ error: "Datos de entrada inválidos" });
     }
 
     if (!validator.isEmail(correo)) {
-      return res.status(400).json({ 
-        error: "El formato del correo no es válido" 
-      });
+      return res.status(400).json({ error: "El formato del correo no es válido" });
     }
 
     if (!Number.isInteger(Number(roles_idroles)) || Number(roles_idroles) < 1) {
-      return res.status(400).json({ 
-        error: "Datos de entrada inválidos" 
-      });
+      return res.status(400).json({ error: "Datos de entrada inválidos" });
     }
 
-    // Iniciar transacción
     await client.query("BEGIN");
 
-    // Verificar correo único
     const existeCorreo = await client.query(
       "SELECT 1 FROM usuarios WHERE correo = $1 LIMIT 1",
       [correo]
     );
-
     if ((existeCorreo.rowCount ?? 0) > 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ 
-        error: "El correo ya está registrado" 
-      });
+      return res.status(400).json({ error: "El correo ya está registrado" });
     }
 
-    // Validar código único
     const todosLosCodigos = await client.query(
       "SELECT codigo FROM usuarios LIMIT $1",
       [MAX_USERS_TO_CHECK]
     );
-
     for (const row of todosLosCodigos.rows) {
       if (await bcrypt.compare(codigo, row.codigo)) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ 
-          error: "El código ya está en uso" 
-        });
+        return res.status(400).json({ error: "El código ya está en uso" });
       }
     }
 
-    // Hashear código
     const hash = await bcrypt.hash(codigo, BCRYPT_ROUNDS);
 
-    // Insertar usuario
+    // Campos extra opcionales
+    const extras = extraerCamposExtra(req.body);
+    const extraKeys   = Object.keys(extras);
+    const extraValues = Object.values(extras);
+
+    const baseColumns = ["nombre", "apellido", "correo", "telefono", "codigo", "roles_idroles"];
+    const basePlaceholders = ["$1", "$2", "$3", "$4", "$5", "$6"];
+    const baseValues = [nombre, apellido, correo, telefono || null, hash, roles_idroles];
+
+    const allColumns      = [...baseColumns, ...extraKeys];
+    const allPlaceholders = [...basePlaceholders, ...extraKeys.map((_, i) => `$${i + 7}`)];
+    const allValues       = [...baseValues, ...extraValues];
+
     const resultUsuario = await client.query(
-      `INSERT INTO usuarios (nombre, apellido, correo, telefono, codigo, roles_idroles)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO usuarios (${allColumns.join(", ")})
+       VALUES (${allPlaceholders.join(", ")})
        RETURNING idusuario, nombre, apellido, correo, telefono, roles_idroles`,
-      [nombre, apellido, correo, telefono || null, hash, roles_idroles]
+      allValues
     );
 
     const nuevoUsuario = resultUsuario.rows[0];
-
     console.log("✅ Usuario creado:", { id: nuevoUsuario.idusuario, correo: nuevoUsuario.correo });
 
-    // Verificar acceso total
     const rol = await client.query(
       "SELECT acceso_total FROM roles WHERE idroles = $1 LIMIT 1",
       [roles_idroles]
     );
-
     const tieneAccesoTotal = rol.rows[0]?.acceso_total;
 
-    // Insertar privilegios si corresponde
     if (!tieneAccesoTotal && privilegios && Array.isArray(privilegios) && privilegios.length > 0) {
-      console.log("📋 Insertando privilegios:", privilegios.length);
-
-      // Validar privilegios
       const privilegiosValidos = privilegios.every(
         (id) => Number.isInteger(Number(id)) && Number(id) > 0
       );
-
       if (!privilegiosValidos) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ 
-          error: "Datos de privilegios inválidos" 
-        });
+        return res.status(400).json({ error: "Datos de privilegios inválidos" });
       }
-
       for (const idPrivilegio of privilegios) {
         await client.query(
           `INSERT INTO privilegios_has_usuarios (privilegios_idprivilegios, usuarios_idusuario)
@@ -127,31 +141,26 @@ export const createUsuario = async (req: Request, res: Response) => {
           [idPrivilegio, nuevoUsuario.idusuario]
         );
       }
-    } else if (tieneAccesoTotal) {
-      console.log("👑 Usuario con acceso total");
     }
 
     await client.query("COMMIT");
-
     console.log("✅ Usuario creado exitosamente");
 
     res.status(201).json({
       message: "Usuario creado exitosamente",
       usuario: {
-        id: nuevoUsuario.idusuario,
-        nombre: nuevoUsuario.nombre,
+        id:       nuevoUsuario.idusuario,
+        nombre:   nuevoUsuario.nombre,
         apellido: nuevoUsuario.apellido,
-        correo: nuevoUsuario.correo,
+        correo:   nuevoUsuario.correo,
         telefono: nuevoUsuario.telefono,
-        rol: nuevoUsuario.roles_idroles,
+        rol:      nuevoUsuario.roles_idroles,
       },
     });
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ CREATE USUARIO ERROR:", error.message);
-    res.status(500).json({ 
-      error: "Error al procesar la solicitud" 
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
   }
@@ -163,7 +172,7 @@ export const createUsuario = async (req: Request, res: Response) => {
 export const getUsuarios = async (req: Request, res: Response) => {
   try {
     const result = await pool.query(`
-      SELECT 
+      SELECT
         u.idusuario,
         u.nombre,
         u.apellido,
@@ -171,7 +180,25 @@ export const getUsuarios = async (req: Request, res: Response) => {
         u.telefono,
         u.roles_idroles,
         u.created_at,
-        r.nombre as rol,
+        u.fecha_nacimiento,
+        u.rfc,
+        u.nss,
+        u.curp,
+        u.tipo_sangre,
+        u.alergias,
+        u.enfermedades,
+        u.foto_url,
+        u.calle,
+        u.numero_ext,
+        u.numero_int,
+        u.colonia,
+        u.codigo_postal,
+        u.municipio,
+        u.estado,
+        u.emergencia_nombre,
+        u.emergencia_parentesco,
+        u.emergencia_telefono,
+        r.nombre     AS rol,
         r.acceso_total
       FROM usuarios u
       LEFT JOIN roles r ON u.roles_idroles = r.idroles
@@ -182,9 +209,7 @@ export const getUsuarios = async (req: Request, res: Response) => {
     res.json(result.rows);
   } catch (error: any) {
     console.error("❌ GET USUARIOS ERROR:", error.message);
-    res.status(500).json({ 
-      error: "Error al obtener usuarios" 
-    });
+    res.status(500).json({ error: "Error al obtener usuarios" });
   }
 };
 
@@ -195,22 +220,37 @@ export const getUsuarioById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    // Validar ID
     if (!Number.isInteger(Number(id)) || Number(id) < 1) {
-      return res.status(400).json({ 
-        error: "ID inválido" 
-      });
+      return res.status(400).json({ error: "ID inválido" });
     }
 
     const result = await pool.query(`
-      SELECT 
+      SELECT
         u.idusuario,
         u.nombre,
         u.apellido,
         u.correo,
         u.telefono,
         u.roles_idroles,
-        r.nombre as rol,
+        u.fecha_nacimiento,
+        u.rfc,
+        u.nss,
+        u.curp,
+        u.tipo_sangre,
+        u.alergias,
+        u.enfermedades,
+        u.foto_url,
+        u.calle,
+        u.numero_ext,
+        u.numero_int,
+        u.colonia,
+        u.codigo_postal,
+        u.municipio,
+        u.estado,
+        u.emergencia_nombre,
+        u.emergencia_parentesco,
+        u.emergencia_telefono,
+        r.nombre     AS rol,
         r.acceso_total
       FROM usuarios u
       LEFT JOIN roles r ON u.roles_idroles = r.idroles
@@ -219,14 +259,11 @@ export const getUsuarioById = async (req: Request, res: Response) => {
     `, [id]);
 
     if ((result.rowCount ?? 0) === 0) {
-      return res.status(404).json({ 
-        error: "Usuario no encontrado" 
-      });
+      return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
     const usuario = result.rows[0];
 
-    // Obtener privilegios
     const privilegiosResult = await pool.query(`
       SELECT privilegios_idprivilegios
       FROM privilegios_has_usuarios
@@ -238,9 +275,7 @@ export const getUsuarioById = async (req: Request, res: Response) => {
     res.json(usuario);
   } catch (error: any) {
     console.error("❌ GET USUARIO BY ID ERROR:", error.message);
-    res.status(500).json({ 
-      error: "Error al obtener usuario" 
-    });
+    res.status(500).json({ error: "Error al obtener usuario" });
   }
 };
 
@@ -254,107 +289,105 @@ export const updateUsuario = async (req: Request, res: Response) => {
     const { id } = req.params;
     let { nombre, apellido, correo, telefono, codigo, roles_idroles, privilegios } = req.body;
 
-    // Validar ID
     if (!Number.isInteger(Number(id)) || Number(id) < 1) {
-      return res.status(400).json({ 
-        error: "ID inválido" 
-      });
+      return res.status(400).json({ error: "ID inválido" });
     }
 
-    // Sanitización
-    nombre = validator.escape(nombre.trim());
+    nombre   = validator.escape(nombre.trim());
     apellido = validator.escape(apellido.trim());
-    correo = validator.normalizeEmail(correo.trim()) || "";
+    correo   = validator.normalizeEmail(correo.trim()) || "";
 
     console.log("📝 Actualizando usuario:", id);
 
-    // Validaciones
     if (!nombre || !apellido || !correo) {
-      return res.status(400).json({ 
-        error: "Nombre, apellido y correo son requeridos" 
-      });
+      return res.status(400).json({ error: "Nombre, apellido y correo son requeridos" });
     }
 
     if (!validator.isEmail(correo)) {
-      return res.status(400).json({ 
-        error: "El formato del correo no es válido" 
-      });
+      return res.status(400).json({ error: "El formato del correo no es válido" });
     }
 
     if (!Number.isInteger(Number(roles_idroles)) || Number(roles_idroles) < 1) {
-      return res.status(400).json({ 
-        error: "Debe seleccionar un rol válido" 
-      });
+      return res.status(400).json({ error: "Debe seleccionar un rol válido" });
     }
 
     await client.query("BEGIN");
 
-    // Verificar correo único (excepto el mismo usuario)
     const existeCorreo = await client.query(
       "SELECT 1 FROM usuarios WHERE correo = $1 AND idusuario != $2 LIMIT 1",
       [correo, id]
     );
-
     if ((existeCorreo.rowCount ?? 0) > 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ 
-        error: "El correo ya está registrado" 
-      });
+      return res.status(400).json({ error: "El correo ya está registrado" });
     }
 
-    let updateQuery = `
-      UPDATE usuarios 
-      SET nombre = $1, apellido = $2, correo = $3, telefono = $4, roles_idroles = $5
-      WHERE idusuario = $6
-      RETURNING idusuario, nombre, apellido, correo, telefono, roles_idroles
-    `;
-    let updateParams: any[] = [nombre, apellido, correo, telefono || null, roles_idroles, id];
+    // Campos extra opcionales
+    const extras      = extraerCamposExtra(req.body);
+    const extraKeys   = Object.keys(extras);
+    const extraValues = Object.values(extras);
 
-    // Si se proporciona nuevo código
+    // Construir SET dinámico
+    let paramIndex = 6; // $1-$5 base + $6 = id al final
+    const setClauses: string[] = [
+      `nombre = $1`,
+      `apellido = $2`,
+      `correo = $3`,
+      `telefono = $4`,
+      `roles_idroles = $5`,
+    ];
+    const updateValues: any[] = [nombre, apellido, correo, telefono || null, roles_idroles];
+
+    // Código opcional
+    let nuevoHash: string | null = null;
     if (codigo && codigo.trim() !== "") {
       if (!/^\d{5}$/.test(codigo)) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ 
-          error: "Datos de entrada inválidos" 
-        });
+        return res.status(400).json({ error: "Datos de entrada inválidos" });
       }
 
-      // Validar código único
       const todosLosCodigos = await client.query(
         "SELECT idusuario, codigo FROM usuarios WHERE idusuario != $1 LIMIT $2",
         [id, MAX_USERS_TO_CHECK]
       );
-
       for (const row of todosLosCodigos.rows) {
         if (await bcrypt.compare(codigo, row.codigo)) {
           await client.query("ROLLBACK");
-          return res.status(400).json({ 
-            error: "El código ya está en uso" 
-          });
+          return res.status(400).json({ error: "El código ya está en uso" });
         }
       }
 
-      const hash = await bcrypt.hash(codigo, BCRYPT_ROUNDS);
-      updateQuery = `
-        UPDATE usuarios 
-        SET nombre = $1, apellido = $2, correo = $3, telefono = $4, roles_idroles = $5, codigo = $6
-        WHERE idusuario = $7
-        RETURNING idusuario, nombre, apellido, correo, telefono, roles_idroles
-      `;
-      updateParams = [nombre, apellido, correo, telefono || null, roles_idroles, hash, id];
+      nuevoHash = await bcrypt.hash(codigo, BCRYPT_ROUNDS);
+      paramIndex++;
+      setClauses.push(`codigo = $${paramIndex}`);
+      updateValues.push(nuevoHash);
     }
 
-    const resultUsuario = await client.query(updateQuery, updateParams);
+    // Agregar campos extra al SET
+    for (const key of extraKeys) {
+      paramIndex++;
+      setClauses.push(`${key} = $${paramIndex}`);
+      updateValues.push(extras[key]);
+    }
+
+    // El WHERE id es el último parámetro
+    paramIndex++;
+    updateValues.push(id);
+
+    const resultUsuario = await client.query(
+      `UPDATE usuarios
+       SET ${setClauses.join(", ")}
+       WHERE idusuario = $${paramIndex}
+       RETURNING idusuario, nombre, apellido, correo, telefono, roles_idroles`,
+      updateValues
+    );
 
     if ((resultUsuario.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ 
-        error: "Usuario no encontrado" 
-      });
+      return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
     const usuarioActualizado = resultUsuario.rows[0];
-
     console.log("✅ Usuario actualizado:", { id: usuarioActualizado.idusuario });
 
     // Eliminar privilegios anteriores
@@ -363,29 +396,20 @@ export const updateUsuario = async (req: Request, res: Response) => {
       [id]
     );
 
-    // Verificar acceso total
     const rol = await client.query(
       "SELECT acceso_total FROM roles WHERE idroles = $1 LIMIT 1",
       [roles_idroles]
     );
-
     const tieneAccesoTotal = rol.rows[0]?.acceso_total;
 
-    // Insertar nuevos privilegios
     if (!tieneAccesoTotal && privilegios && Array.isArray(privilegios) && privilegios.length > 0) {
-      console.log("📋 Actualizando privilegios:", privilegios.length);
-
       const privilegiosValidos = privilegios.every(
         (idPriv) => Number.isInteger(Number(idPriv)) && Number(idPriv) > 0
       );
-
       if (!privilegiosValidos) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ 
-          error: "Datos de privilegios inválidos" 
-        });
+        return res.status(400).json({ error: "Datos de privilegios inválidos" });
       }
-
       for (const idPrivilegio of privilegios) {
         await client.query(
           `INSERT INTO privilegios_has_usuarios (privilegios_idprivilegios, usuarios_idusuario)
@@ -396,19 +420,13 @@ export const updateUsuario = async (req: Request, res: Response) => {
     }
 
     await client.query("COMMIT");
-
     console.log("✅ Actualización completada");
 
-    res.json({
-      message: "Usuario actualizado exitosamente",
-      usuario: usuarioActualizado,
-    });
+    res.json({ message: "Usuario actualizado exitosamente", usuario: usuarioActualizado });
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ UPDATE USUARIO ERROR:", error.message);
-    res.status(500).json({ 
-      error: "Error al procesar la solicitud" 
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
   }
@@ -423,22 +441,17 @@ export const deleteUsuario = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    // Validar ID
     if (!Number.isInteger(Number(id)) || Number(id) < 1) {
-      return res.status(400).json({ 
-        error: "ID inválido" 
-      });
+      return res.status(400).json({ error: "ID inválido" });
     }
 
     await client.query("BEGIN");
 
-    // Eliminar privilegios asociados
     await client.query(
       "DELETE FROM privilegios_has_usuarios WHERE usuarios_idusuario = $1",
       [id]
     );
 
-    // Eliminar usuario
     const result = await client.query(
       "DELETE FROM usuarios WHERE idusuario = $1 RETURNING idusuario",
       [id]
@@ -446,24 +459,17 @@ export const deleteUsuario = async (req: Request, res: Response) => {
 
     if ((result.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ 
-        error: "Usuario no encontrado" 
-      });
+      return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
     await client.query("COMMIT");
-
     console.log("✅ Usuario eliminado:", id);
 
-    res.json({ 
-      message: "Usuario eliminado exitosamente" 
-    });
+    res.json({ message: "Usuario eliminado exitosamente" });
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ DELETE USUARIO ERROR:", error.message);
-    res.status(500).json({ 
-      error: "Error al procesar la solicitud" 
-    });
+    res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
   }
@@ -471,7 +477,6 @@ export const deleteUsuario = async (req: Request, res: Response) => {
 
 // ==========================
 // OBTENER CONDUCTORES
-// (usuarios con privilegio Conductor = 20)
 // ==========================
 export const getConductores = async (req: Request, res: Response) => {
   try {
@@ -495,7 +500,9 @@ export const getConductores = async (req: Request, res: Response) => {
   }
 };
 
-
+// ==========================
+// OBTENER USUARIOS DISEÑO
+// ==========================
 export const getUsuariosDiseno = async (req: Request, res: Response) => {
   try {
     const { rows } = await pool.query(`
