@@ -57,7 +57,7 @@ async function upsertDetalle(
       [idusuario, ...values]
     );
   }
-}
+} 
 
 /** Normaliza fecha_nacimiento a string YYYY-MM-DD si viene como Date o timestamp */
 function normalizarFecha(valor: any): string | null {
