@@ -3,6 +3,7 @@ import { pool } from "../../config/db";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import validator from "validator";
+import { getPresignedUrl } from "../../config/multer";
 
 // ==========================
 // CONSTANTES DE SEGURIDAD
@@ -19,7 +20,6 @@ async function obtenerPrivilegios(
 ): Promise<string[]> {
   if (accesoTotal) return [];
 
-  // ¿Tiene privilegios personalizados?
   const { rows: custom } = await pool.query(
     `SELECT p.privilegio
      FROM privilegios_has_usuarios pu
@@ -28,11 +28,8 @@ async function obtenerPrivilegios(
     [userId]
   );
 
-  if (custom.length > 0) {
-    return custom.map((r: any) => r.privilegio);
-  }
+  if (custom.length > 0) return custom.map((r: any) => r.privilegio);
 
-  // Si no tiene custom, usar los del rol
   const { rows: rolPrivs } = await pool.query(
     `SELECT p.privilegio
      FROM roles_has_privilegios rp
@@ -46,7 +43,6 @@ async function obtenerPrivilegios(
 
 // ==========================
 // HELPER — verificar si un usuario tiene un privilegio
-// (revisa primero custom, luego rol)
 // ==========================
 async function tienePrivilegio(
   userId: number,
@@ -56,7 +52,6 @@ async function tienePrivilegio(
 ): Promise<boolean> {
   if (accesoTotal) return true;
 
-  // Privilegios personalizados
   const { rows: custom } = await pool.query(
     `SELECT 1
      FROM privilegios_has_usuarios pu
@@ -69,7 +64,6 @@ async function tienePrivilegio(
 
   if (custom.length > 0) return true;
 
-  // Privilegios del rol como fallback
   const { rows: rolPrivs } = await pool.query(
     `SELECT 1
      FROM roles_has_privilegios rp
@@ -110,10 +104,12 @@ export const login = async (req: Request, res: Response) => {
 
     const result = await pool.query(
       `SELECT u.idusuario, u.nombre, u.apellido, u.correo, u.codigo,
-              u.roles_idroles,
-              r.nombre as rol, r.acceso_total
+              u.roles_idroles, u.activo,
+              r.nombre as rol, r.acceso_total,
+              a.public_id AS foto_public_id
        FROM usuarios u
-       LEFT JOIN roles r ON u.roles_idroles = r.idroles
+       LEFT JOIN roles r    ON u.roles_idroles = r.idroles
+       LEFT JOIN archivos a ON a.id_archivo = u.foto_id_archivo
        WHERE LOWER(u.correo) = LOWER($1)
        LIMIT 1`,
       [correoSanitizado]
@@ -126,6 +122,14 @@ export const login = async (req: Request, res: Response) => {
 
     const usuario = result.rows[0];
 
+    // ── Verificar que la cuenta esté activa ──
+    if (usuario.activo === false) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return res.status(403).json({
+        error: "Tu cuenta está desactivada. Contacta al administrador.",
+      });
+    }
+
     const isMatch = await bcrypt.compare(codigoSanitizado, usuario.codigo);
 
     if (!isMatch) {
@@ -136,9 +140,7 @@ export const login = async (req: Request, res: Response) => {
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
       console.error("❌ JWT_SECRET no configurado");
-      return res
-        .status(500)
-        .json({ error: "Error de configuración del servidor" });
+      return res.status(500).json({ error: "Error de configuración del servidor" });
     }
 
     const privilegios = await obtenerPrivilegios(
@@ -146,6 +148,11 @@ export const login = async (req: Request, res: Response) => {
       usuario.roles_idroles,
       usuario.acceso_total
     );
+
+    // Generar URL firmada de la foto si tiene
+    const foto_url = usuario.foto_public_id
+      ? await getPresignedUrl(usuario.foto_public_id)
+      : null;
 
     const token = jwt.sign(
       {
@@ -157,7 +164,7 @@ export const login = async (req: Request, res: Response) => {
       },
       jwtSecret,
       {
-        expiresIn:  JWT_EXPIRATION,
+        expiresIn: JWT_EXPIRATION,
         algorithm: "HS256",
       }
     );
@@ -172,12 +179,13 @@ export const login = async (req: Request, res: Response) => {
         rol:          usuario.rol,
         acceso_total: usuario.acceso_total,
         privilegios,
+        foto_url,
       },
     });
 
     console.log("✅ Login exitoso:", {
-      id:  usuario.idusuario,
-      rol: usuario.rol,
+      id:          usuario.idusuario,
+      rol:         usuario.rol,
       privilegios: privilegios.length,
     });
   } catch (error: any) {
@@ -216,9 +224,7 @@ export const verifyToken = (req: Request, res: Response) => {
 
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
-      return res
-        .status(500)
-        .json({ error: "Error de configuración del servidor" });
+      return res.status(500).json({ error: "Error de configuración del servidor" });
     }
 
     const decoded = jwt.verify(token, jwtSecret) as any;
@@ -254,7 +260,7 @@ export const verificarOperador = async (req: Request, res: Response) => {
       impresion:    "Operar Impresión",
       bolseo:       "Operar Bolseo",
       asa_flexible: "Operar Asa Flexible",
-      orden_diseno: "Orden de Diseño",   // ← NUEVO
+      orden_diseno: "Orden de Diseño",
     };
 
     if (!correo || !codigo || !proceso) {
@@ -278,7 +284,7 @@ export const verificarOperador = async (req: Request, res: Response) => {
 
     const { rows } = await pool.query(
       `SELECT u.idusuario, u.codigo, u.nombre, u.apellido,
-              u.roles_idroles, r.acceso_total
+              u.roles_idroles, u.activo, r.acceso_total
        FROM usuarios u
        LEFT JOIN roles r ON u.roles_idroles = r.idroles
        WHERE LOWER(u.correo) = LOWER($1)
@@ -293,13 +299,17 @@ export const verificarOperador = async (req: Request, res: Response) => {
 
     const usuario = rows[0];
 
+    // ── Verificar que la cuenta esté activa ──
+    if (usuario.activo === false) {
+      return res.status(403).json({ error: "Esta cuenta está desactivada." });
+    }
+
     const isMatch = await bcrypt.compare(codigo, usuario.codigo);
     if (!isMatch) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    // Verificar privilegio (revisa custom Y rol como fallback)
     const privilegioRequerido = PROCESO_PRIVILEGIO[proceso];
     const autorizado = await tienePrivilegio(
       usuario.idusuario,

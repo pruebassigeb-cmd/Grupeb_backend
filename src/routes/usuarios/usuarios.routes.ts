@@ -9,6 +9,7 @@ import {
   deleteUsuario,
   getConductores,
   getUsuariosDiseno,
+  toggleActivoUsuario,
 } from "../../controllers/usuarios/usuarios.controller";
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 import {
@@ -19,7 +20,6 @@ import {
 } from "../../middlewares/validation.middleware";
 
 const router = Router();
-
 
 // ==========================
 // HELMET
@@ -62,12 +62,11 @@ router.use(generalLimiter);
 
 // ==========================
 // RUTAS
-// Todas requieren: estar autenticado + privilegio "Crear/Editar/Eliminar Usuarios"
 // ==========================
 const PERMISO = "Crear/Editar/Eliminar Usuarios";
 
 router.get("/conductores/lista", authMiddleware, getConductores);
-router.get("/diseno/lista",      authMiddleware, getUsuariosDiseno); 
+router.get("/diseno/lista",      authMiddleware, getUsuariosDiseno);
 
 router.post(
   "/",
@@ -112,6 +111,15 @@ router.delete(
   updateDeleteLimiter,
   validateId,
   deleteUsuario
+);
+
+router.patch(
+  "/:id/toggle-activo",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  updateDeleteLimiter,
+  validateId,
+  toggleActivoUsuario
 );
 
 export default router;

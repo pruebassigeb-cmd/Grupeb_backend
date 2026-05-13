@@ -48,12 +48,24 @@ export const setupSecurity = (app: Express) => {
  */
 export const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    const allowed = [
+    const allowedExact = [
       process.env.FRONTEND_URL || "http://localhost:5173",
       "http://localhost:5173",
       "http://localhost:5174",
     ];
-    if (!origin || allowed.includes(origin)) {
+
+    // Patrones para desarrollo (dev tunnels, ngrok, etc.)
+    const allowedPatterns = [
+      /^https:\/\/[a-z0-9.-]+\.devtunnels\.ms$/,
+      /^https:\/\/[a-z0-9.-]+\.ngrok(-free)?\.app$/,
+    ];
+
+    const isAllowed =
+      !origin ||
+      allowedExact.includes(origin) ||
+      allowedPatterns.some((pattern) => pattern.test(origin));
+
+    if (isAllowed) {
       callback(null, true);
     } else {
       console.log("❌ CORS bloqueado para origen:", origin);

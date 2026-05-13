@@ -39,6 +39,29 @@ export const validateLogin = (req: Request, res: Response, next: NextFunction) =
 // VALIDACIÓN DE CREAR USUARIO
 // ==========================
 export const validateCreateUsuario = (req: Request, res: Response, next: NextFunction) => {
+  // ── Guardar campos extra ANTES de pisar req.body ──
+  const camposExtra = {
+    foto_id_archivo:       req.body.foto_id_archivo,
+    rfc:                   req.body.rfc,
+    curp:                  req.body.curp,
+    calle:                 req.body.calle,
+    numero_ext:            req.body.numero_ext,
+    numero_int:            req.body.numero_int,
+    colonia:               req.body.colonia,
+    codigo_postal:         req.body.codigo_postal,
+    municipio:             req.body.municipio,
+    estado:                req.body.estado,
+    fecha_nacimiento:      req.body.fecha_nacimiento,
+    nss:                   req.body.nss,
+    tipo_sangre:           req.body.tipo_sangre,
+    alergias:              req.body.alergias,
+    enfermedades:          req.body.enfermedades,
+    medicamentos:          req.body.medicamentos,
+    emergencia_nombre:     req.body.emergencia_nombre,
+    emergencia_parentesco: req.body.emergencia_parentesco,
+    emergencia_telefono:   req.body.emergencia_telefono,
+  };
+
   let { nombre, apellido, correo, telefono, codigo, roles_idroles, privilegios } = req.body;
 
   if (!nombre || !apellido || !correo || !codigo) {
@@ -111,7 +134,8 @@ export const validateCreateUsuario = (req: Request, res: Response, next: NextFun
     telefono: telefono || null,
     codigo,
     roles_idroles: Number(roles_idroles),
-    privilegios: privilegios || []
+    privilegios: privilegios || [],
+    ...camposExtra,
   };
 
   next();
@@ -121,6 +145,29 @@ export const validateCreateUsuario = (req: Request, res: Response, next: NextFun
 // VALIDACIÓN DE ACTUALIZAR USUARIO
 // ==========================
 export const validateUsuario = (req: Request, res: Response, next: NextFunction) => {
+  // ── Guardar campos extra ANTES de pisar req.body ──
+  const camposExtra = {
+    foto_id_archivo:       req.body.foto_id_archivo,
+    rfc:                   req.body.rfc,
+    curp:                  req.body.curp,
+    calle:                 req.body.calle,
+    numero_ext:            req.body.numero_ext,
+    numero_int:            req.body.numero_int,
+    colonia:               req.body.colonia,
+    codigo_postal:         req.body.codigo_postal,
+    municipio:             req.body.municipio,
+    estado:                req.body.estado,
+    fecha_nacimiento:      req.body.fecha_nacimiento,
+    nss:                   req.body.nss,
+    tipo_sangre:           req.body.tipo_sangre,
+    alergias:              req.body.alergias,
+    enfermedades:          req.body.enfermedades,
+    medicamentos:          req.body.medicamentos,
+    emergencia_nombre:     req.body.emergencia_nombre,
+    emergencia_parentesco: req.body.emergencia_parentesco,
+    emergencia_telefono:   req.body.emergencia_telefono,
+  };
+
   let { nombre, apellido, correo, telefono, codigo, roles_idroles, privilegios } = req.body;
 
   if (!nombre || !apellido || !correo) {
@@ -195,7 +242,8 @@ export const validateUsuario = (req: Request, res: Response, next: NextFunction)
     telefono: telefono || null,
     codigo: codigo || undefined,
     roles_idroles: Number(roles_idroles),
-    privilegios: privilegios || []
+    privilegios: privilegios || [],
+    ...camposExtra,
   };
 
   next();
