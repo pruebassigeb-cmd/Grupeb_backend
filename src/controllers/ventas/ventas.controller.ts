@@ -10,7 +10,38 @@ const ESTADO = {
   PAGADO:          6,
 } as const;
 
-const ANTICIPO_PORCENTAJE = 0.40;
+// ── Porcentajes de anticipo ────────────────────────────────────────────────────
+const ANTICIPO_PORCENTAJE_VISIBLE = 0.50; // referencia documental
+const ANTICIPO_VALIDACION_MIN     = 0.40; // umbral para producción Y estado EN_PROCESO
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: determina el nuevo estado respetando es_credito_anticipo.
+// Se usa en registrarPago, eliminarPago y cualquier otro lugar que recalcule.
+// ─────────────────────────────────────────────────────────────────────────────
+function determinarEstado(
+  nuevoAbono:          number,
+  nuevoSaldo:          number,
+  umbralActivacion:    number,
+  esCreditoAnticipo:   boolean
+): number {
+  if (nuevoSaldo <= 0)                             return ESTADO.PAGADO;
+  if (nuevoAbono >= umbralActivacion)              return ESTADO.ANTICIPO_PAGADO;
+  if (esCreditoAnticipo)                           return ESTADO.ANTICIPO_PAGADO; // ← FIX
+  return ESTADO.PENDIENTE;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: consulta si la venta tiene un registro de crédito en venta_pago
+// ─────────────────────────────────────────────────────────────────────────────
+async function ventaTieneCredito(client: any, ventaId: number): Promise<boolean> {
+  const { rows } = await client.query(
+    `SELECT 1 FROM venta_pago
+     WHERE ventas_idventas = $1 AND es_credito_anticipo = true
+     LIMIT 1`,
+    [ventaId]
+  );
+  return rows.length > 0;
+}
 
 async function generarNoProduccion(client: any): Promise<string> {
   const anio = new Date().getFullYear().toString().slice(-2);
@@ -433,17 +464,21 @@ export const registrarPago = async (req: Request, res: Response) => {
     const montoNum    = Number(monto);
     const abonoAntes  = Number(venta.abono);
     const nuevoAbono  = Number((abonoAntes + montoNum).toFixed(2));
-    const nuevoSaldo  = Number((Number(venta.total) - nuevoAbono).toFixed(2));
-    const anticipo    = Number(venta.anticipo);
+    const totalVenta  = Number(venta.total);
+    const nuevoSaldo  = Number((totalVenta - nuevoAbono).toFixed(2));
 
-    const anticipoAntesNoCubierto = abonoAntes < anticipo;
-    const anticipoAhoraCubierto   = nuevoAbono >= anticipo;
+    const umbralActivacion = Number((totalVenta * ANTICIPO_VALIDACION_MIN).toFixed(2));
+
+    const anticipoAntesNoCubierto = abonoAntes  < umbralActivacion;
+    const anticipoAhoraCubierto   = nuevoAbono >= umbralActivacion;
     const esAnticipoReal          = anticipoAntesNoCubierto && anticipoAhoraCubierto;
     const esLiquidacion           = nuevoSaldo <= 0;
 
-    let nuevoEstado: number = ESTADO.PENDIENTE;
-    if (nuevoSaldo <= 0)             nuevoEstado = ESTADO.PAGADO;
-    else if (nuevoAbono >= anticipo) nuevoEstado = ESTADO.ANTICIPO_PAGADO;
+    // FIX: verificar crédito antes de asignar estado
+    const esCreditoAnticipo = await ventaTieneCredito(client, Number(id));
+    const nuevoEstado       = determinarEstado(nuevoAbono, nuevoSaldo, umbralActivacion, esCreditoAnticipo);
+
+    console.log(`💳 Pago: abono=${nuevoAbono} | umbral=${umbralActivacion} | credito=${esCreditoAnticipo} | estado=${nuevoEstado}`);
 
     await client.query(
       `INSERT INTO venta_pago (
@@ -520,15 +555,19 @@ export const eliminarPago = async (req: Request, res: Response) => {
     const { rows: ventaRows } = await client.query(
       `SELECT total, anticipo FROM ventas WHERE idventas = $1`, [ventaId]
     );
-    const total      = Number(ventaRows[0].total);
-    const anticipo   = Number(ventaRows[0].anticipo);
-    const nuevoSaldo = Number((total - nuevoAbono).toFixed(2));
-
-    let nuevoEstado: number = ESTADO.PENDIENTE;
-    if (nuevoSaldo <= 0)             nuevoEstado = ESTADO.PAGADO;
-    else if (nuevoAbono >= anticipo) nuevoEstado = ESTADO.ANTICIPO_PAGADO;
-
+    const total         = Number(ventaRows[0].total);
+    const nuevoSaldo    = Number((total - nuevoAbono).toFixed(2));
     const estaLiquidado = nuevoSaldo <= 0;
+
+    const umbralActivacion = Number((total * ANTICIPO_VALIDACION_MIN).toFixed(2));
+
+    // FIX: verificar si aún queda algún registro de crédito DESPUÉS de eliminar
+    // (el DELETE ya ocurrió, así que si el pago eliminado era el de crédito,
+    //  ya no aparece en la consulta)
+    const esCreditoAnticipo = await ventaTieneCredito(client, ventaId);
+    const nuevoEstado       = determinarEstado(nuevoAbono, nuevoSaldo, umbralActivacion, esCreditoAnticipo);
+
+    console.log(`🗑️ Eliminar pago: abono=${nuevoAbono} | umbral=${umbralActivacion} | credito=${esCreditoAnticipo} | estado=${nuevoEstado}`);
 
     await client.query(
       `UPDATE ventas
@@ -578,16 +617,17 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Venta no encontrada" });
     }
 
-    const venta    = ventaRows[0];
-    const anticipo = Number(venta.anticipo);
-    const abono    = Number(venta.abono);
+    const venta = ventaRows[0];
+    const total = Number(venta.total);
+    const abono = Number(venta.abono);
 
-    if (abono >= anticipo) {
+    const umbralActivacion = Number((total * ANTICIPO_VALIDACION_MIN).toFixed(2));
+
+    if (abono >= umbralActivacion) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "El anticipo ya está cubierto" });
+      return res.status(400).json({ error: "El anticipo mínimo requerido ya está cubierto" });
     }
 
-    // ── Cambiar estado ────────────────────────────────────────
     await client.query(
       `UPDATE ventas
        SET estado_administrativo_cat_idestado_administrativo_cat = $1
@@ -595,7 +635,6 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
       [ESTADO.ANTICIPO_PAGADO, id]
     );
 
-    // ── Registrar en venta_pago con es_credito_anticipo = true ─
     await client.query(
       `INSERT INTO venta_pago (
         ventas_idventas, metodo_pago_idmetodo_pago,

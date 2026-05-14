@@ -43,6 +43,7 @@ import formatoTresGuerrasRoutes from "./routes/envios/formatoTresGuerras.routes"
 import ordenDisenoRoutes from "./routes/diseno/ordenDiseno.routes";
 import codigoPostalRouter from "./routes/codigoPostal/codigoPostal.routes";
 import backupRoutes from "./routes/backup/backup.routes";
+import historialRoutes from "./routes/envios/historial.routes";
 
 
 const app = express();
@@ -116,6 +117,7 @@ app.use("/api/formato-tres-guerras", formatoTresGuerrasRoutes);
 app.use("/api/orden-diseno", ordenDisenoRoutes);
 app.use("/api/codigos-postales", codigoPostalRouter);
 app.use("/api/backup", backupRoutes);
+app.use("/api/historial", historialRoutes);
 // ==========================
 // HEALTH CHECK
 // ==========================

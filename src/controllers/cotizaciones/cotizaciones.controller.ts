@@ -8,8 +8,8 @@ const ESTADO = {
   RECHAZADO:  4,
 } as const;
 
-const IVA                 = 0.16;
-const ANTICIPO_PORCENTAJE = 0.40;
+const IVA_PORCENTAJE      = 0.16;
+const ANTICIPO_PORCENTAJE = 0.50; // lo que ve el cliente
 
 type TipoDocumento = "cotizacion" | "pedido";
 
@@ -65,9 +65,6 @@ async function obtenerSiguienteFolioPedido(client: any): Promise<string> {
   return generarFolioPedido(numero);
 }
 
-// ============================================================
-// FUNCIÓN PARA GENERAR FOLIO DE ORDEN DE DISEÑO (por producto)
-// ============================================================
 async function generarFolioOrdenDiseno(client: any): Promise<string> {
   const yy = new Date().getFullYear().toString().slice(-2);
   const { rows } = await client.query(`
@@ -80,13 +77,15 @@ async function generarFolioOrdenDiseno(client: any): Promise<string> {
   return `OD${yy}${String(rows[0].siguiente).padStart(3, "0")}`;
 }
 
+// ── sin_iva: si es true el IVA es 0, el total = subtotal ─────────────────────
 async function crearVentaYDiseno(
   client:      any,
   solicitudId: number,
   folioPedido: string,
-  subtotal:    number
+  subtotal:    number,
+  sinIva:      boolean = false
 ): Promise<void> {
-  const iva      = Number((subtotal * IVA).toFixed(2));
+  const iva      = sinIva ? 0 : Number((subtotal * IVA_PORCENTAJE).toFixed(2));
   const total    = Number((subtotal + iva).toFixed(2));
   const anticipo = Number((total * ANTICIPO_PORCENTAJE).toFixed(2));
 
@@ -100,7 +99,7 @@ async function crearVentaYDiseno(
     RETURNING idventas`,
     [solicitudId, ESTADO.PENDIENTE, subtotal, iva, total, anticipo, total, 0]
   );
-  console.log(`✅ Venta creada: idventas=${ventaRows[0].idventas} para pedido ${folioPedido}`);
+  console.log(`✅ Venta creada: idventas=${ventaRows[0].idventas} | pedido=${folioPedido} | sinIva=${sinIva} | anticipo=${anticipo}`);
 
   const { rows: disenoRows } = await client.query(
     `INSERT INTO diseno (
@@ -119,11 +118,7 @@ async function crearVentaYDiseno(
     [solicitudId]
   );
 
-  // ============================================================
-  // LOOP MODIFICADO: crea una orden de diseño por cada producto
-  // ============================================================
   for (const prod of productos) {
-    // 1. Insertar el producto en diseno_producto
     await client.query(
       `INSERT INTO diseno_producto (
         diseno_iddiseno,
@@ -134,10 +129,9 @@ async function crearVentaYDiseno(
       [disenoId, prod.idsolicitud_producto, ESTADO.PENDIENTE]
     );
 
-    // 2. Crear orden de diseño específica para este producto
     const folioOD = await generarFolioOrdenDiseno(client);
     await client.query(
-      `INSERT INTO orden_diseno 
+      `INSERT INTO orden_diseno
         (solicitud_producto_id, no_pedido, no_orden_diseno, estado, version_actual)
        VALUES ($1, $2, $3, 'en_revision', 1)`,
       [prod.idsolicitud_producto, folioPedido, folioOD]
@@ -154,10 +148,17 @@ async function crearVentaYDiseno(
 export const crearCotizacion = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    const { clienteId, productos, tipo = "cotizacion", prioridad = false } = req.body;
-    console.log("🔍 prioridad en controller:", prioridad);
+    const {
+      clienteId, productos,
+      tipo      = "cotizacion",
+      prioridad = false,
+      sin_iva   = false,       // ← NUEVO
+    } = req.body;
+
+    console.log("🔍 prioridad en controller:", prioridad, "| sin_iva:", sin_iva);
 
     const tipoDocumento: TipoDocumento = tipo === "pedido" ? "pedido" : "cotizacion";
+    const sinIvaBool = sin_iva === true || sin_iva === "true";
 
     if (!clienteId) return res.status(400).json({ error: "Se requiere clienteId" });
     if (!productos || productos.length === 0) return res.status(400).json({ error: "Se requiere al menos un producto" });
@@ -180,20 +181,20 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         `INSERT INTO solicitud (
           clientes_idclientes,
           estado_administrativo_cat_idestado_administrativo_cat,
-          estado, no_cotizacion
-        ) VALUES ($1, $2, $3, $4)
+          estado, no_cotizacion, sin_iva
+        ) VALUES ($1, $2, $3, $4, $5)
         RETURNING idsolicitud, no_cotizacion, no_pedido, estado`,
-        [clienteId, ESTADO.PENDIENTE, tipoDocumento, folioCotizacion]
+        [clienteId, ESTADO.PENDIENTE, tipoDocumento, folioCotizacion, sinIvaBool]
       ));
     } else {
       ({ rows: solRows } = await client.query(
         `INSERT INTO solicitud (
           clientes_idclientes,
           estado_administrativo_cat_idestado_administrativo_cat,
-          estado, no_pedido, prioridad
-        ) VALUES ($1, $2, $3, $4, $5)
+          estado, no_pedido, prioridad, sin_iva
+        ) VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING idsolicitud, no_cotizacion, no_pedido, estado`,
-        [clienteId, ESTADO.PENDIENTE, tipoDocumento, folioPedido, prioridad]
+        [clienteId, ESTADO.PENDIENTE, tipoDocumento, folioPedido, prioridad, sinIvaBool]
       ));
     }
 
@@ -293,7 +294,7 @@ export const crearCotizacion = async (req: Request, res: Response) => {
     }
 
     if (tipoDocumento === "pedido") {
-      await crearVentaYDiseno(client, solicitudId, folioPedidoGuardado, subtotalTotal);
+      await crearVentaYDiseno(client, solicitudId, folioPedidoGuardado, subtotalTotal, sinIvaBool);
     }
 
     await client.query("COMMIT");
@@ -303,6 +304,7 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         message:   "Pedido creado exitosamente",
         no_pedido: folioPedidoGuardado,
         tipo:      "pedido",
+        sin_iva:   sinIvaBool,
       });
     }
 
@@ -310,6 +312,7 @@ export const crearCotizacion = async (req: Request, res: Response) => {
       message:       "Cotización creada exitosamente",
       no_cotizacion: folioCotizacionGuardado,
       tipo:          "cotizacion",
+      sin_iva:       sinIvaBool,
     });
 
   } catch (error: any) {
@@ -333,6 +336,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           s.no_pedido,
           s.estado          AS tipo_documento,
           s.fecha,
+          s.sin_iva,
           s.clientes_idclientes,
           s.estado_administrativo_cat_idestado_administrativo_cat,
 
@@ -457,6 +461,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           no_pedido:      row.no_pedido ?? null,
           tipo_documento: row.tipo_documento ?? "cotizacion",
           fecha:          row.fecha,
+          sin_iva:        row.sin_iva ?? false,
           estado_id:      row.estado_administrativo_cat_idestado_administrativo_cat,
           estado:         normalizarNombreEstado(row.estado_nombre || ""),
           cliente_id:     row.clientes_idclientes,
@@ -600,7 +605,7 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
     await client.query("BEGIN");
 
     const { rows: docRows } = await client.query(
-      `SELECT idsolicitud, estado, no_pedido
+      `SELECT idsolicitud, estado, no_pedido, sin_iva
        FROM solicitud
        WHERE no_cotizacion = $1`,
       [id]
@@ -612,6 +617,7 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
     }
 
     const doc = docRows[0];
+    const sinIva = doc.sin_iva ?? false;
     let folioPedidoAsignado: string | null = doc.no_pedido;
     let seConvirtioAPedido = false;
 
@@ -658,11 +664,13 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
         Number(subtotalRows[0].subtotal_detalles) +
         Number(subtotalRows[0].subtotal_herramental);
 
+      // Pasar sinIva al crear la venta desde la cotización aprobada
       await crearVentaYDiseno(
         client,
         doc.idsolicitud,
         folioPedidoAsignado,
-        subtotalTotal
+        subtotalTotal,
+        sinIva
       );
 
     } else {

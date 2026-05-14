@@ -11,11 +11,15 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     const ESTADO_ANTICIPO_PAGADO = 2;
     const ESTADO_PAGADO          = 6;
 
+    // Umbral mínimo para considerar anticipo cubierto (40% del total)
+    const ANTICIPO_VALIDACION_MIN = 0.40;
+
     await client.query("BEGIN");
 
     const { rows: pedidoRows } = await client.query(`
       SELECT
         s.idsolicitud, s.no_pedido, s.no_cotizacion, s.fecha,
+        s.sin_iva,
         COALESCE(cli.razon_social, cli.empresa) AS cliente,
         cli.atencion,
         cli.empresa, cli.telefono, cli.correo,
@@ -56,8 +60,12 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Pedido no encontrado" });
     }
 
-    const pedido = pedidoRows[0];
-    console.log(`\n🧾 ===== ESTADO CUENTA — PEDIDO #${noPedido} =====`);
+    const pedido  = pedidoRows[0];
+    const sinIva  = pedido.sin_iva ?? false;
+
+    console.log(`\n🧾 ===== ESTADO CUENTA — PEDIDO #${noPedido} | sinIva=${sinIva} =====`);
+    console.log(`   es_credito_anticipo: ${pedido.es_credito_anticipo}`);
+    console.log(`   abono_actual: ${pedido.abono} | total_original: ${pedido.total_original}`);
 
     const { rows: prodRows } = await client.query(`
       SELECT
@@ -232,8 +240,10 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       };
     });
 
-    nuevoSubtotal    = Number(nuevoSubtotal.toFixed(2));
-    const nuevoIva   = Number((nuevoSubtotal * IVA).toFixed(2));
+    nuevoSubtotal = Number(nuevoSubtotal.toFixed(2));
+
+    // ── FIX: si el pedido es sin IVA, el IVA real también es 0 ───────────────
+    const nuevoIva   = sinIva ? 0 : Number((nuevoSubtotal * IVA).toFixed(2));
     const nuevoTotal = Number((nuevoSubtotal + nuevoIva).toFixed(2));
 
     const abonoActual     = Number(pedido.abono);
@@ -241,12 +251,27 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     const totalOriginal   = Number(pedido.total_original);
     const diferenciaTotal = Number((nuevoTotal - totalOriginal).toFixed(2));
 
-    console.log(`\n💰 TOTALES pedido #${noPedido}: subtotal=${nuevoSubtotal} | herramental=${herramentalTotal} | iva=${nuevoIva} | total=${nuevoTotal} | saldo=${nuevoSaldo}`);
+    // ─────────────────────────────────────────────────────────────────────────
+    // REGLA DE ESTADO
+    // ─────────────────────────────────────────────────────────────────────────
+    const umbralActivacion  = Number((totalOriginal * ANTICIPO_VALIDACION_MIN).toFixed(2));
+    const anticipoYaCubierto =
+      abonoActual >= umbralActivacion ||
+      pedido.es_credito_anticipo === true;
 
     let nuevoEstado: number;
-    if (nuevoSaldo <= 0)                             nuevoEstado = ESTADO_PAGADO;
-    else if (abonoActual >= Number(pedido.anticipo)) nuevoEstado = ESTADO_ANTICIPO_PAGADO;
-    else                                             nuevoEstado = ESTADO_PENDIENTE;
+    if (nuevoSaldo <= 0) {
+      nuevoEstado = ESTADO_PAGADO;
+    } else if (anticipoYaCubierto) {
+      nuevoEstado = ESTADO_ANTICIPO_PAGADO;
+    } else {
+      nuevoEstado = ESTADO_PENDIENTE;
+    }
+
+    console.log(
+      `   sinIva=${sinIva} | umbral40%=${umbralActivacion} | abono=${abonoActual} | anticipoYaCubierto=${anticipoYaCubierto}` +
+      ` | credito=${pedido.es_credito_anticipo} | nuevoSaldo=${nuevoSaldo} | estado=${nuevoEstado}`
+    );
 
     await client.query(`
       UPDATE ventas
@@ -270,6 +295,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       empresa:       pedido.empresa,
       telefono:      pedido.telefono,
       correo:        pedido.correo,
+      sin_iva:       sinIva,
 
       productos,
 
@@ -308,6 +334,7 @@ export const getListaEstadoCuenta = async (req: Request, res: Response) => {
     const { rows } = await pool.query(`
       SELECT
         s.no_pedido, s.no_cotizacion, s.fecha,
+        s.sin_iva,
         cli.razon_social AS cliente, cli.empresa,
         v.total, v.abono, v.saldo, v.anticipo,
         v.total_real, v.diferencia_total,
@@ -331,7 +358,7 @@ export const getListaEstadoCuenta = async (req: Request, res: Response) => {
       ) af_proc ON af_proc.idproduccion = op.idproduccion
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
-      GROUP BY s.no_pedido, s.no_cotizacion, s.fecha,
+      GROUP BY s.no_pedido, s.no_cotizacion, s.fecha, s.sin_iva,
                cli.razon_social, cli.empresa,
                v.total, v.abono, v.saldo, v.anticipo,
                v.total_real, v.diferencia_total
