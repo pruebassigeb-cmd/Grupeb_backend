@@ -4,7 +4,7 @@ import { pool } from "../../config/db";
 function normalizarNombreEstado(nombre: string): string {
   if (!nombre) return "Pendiente";
   const n = nombre.toLowerCase().trim();
-  if (n === "aprobado" || n === "aprobada")   return "Aprobada";
+  if (n === "aprobado" || n === "aprobada") return "Aprobada";
   if (n === "rechazado" || n === "rechazada") return "Rechazada";
   return "Pendiente";
 }
@@ -157,31 +157,31 @@ export const getPedidos = async (req: Request, res: Response) => {
 
       if (!agrupados[noPedido]) {
         agrupados[noPedido] = {
-          no_pedido:        noPedido,
-          no_cotizacion:    row.no_cotizacion ?? null,
-          es_directo:       row.no_cotizacion === null,
-          fecha:            row.fecha,
-          prioridad:        row.prioridad ?? false,
-          estado_id:        row.estado_administrativo_cat_idestado_administrativo_cat,
-          estado:           normalizarNombreEstado(row.estado_nombre || ""),
+          no_pedido: noPedido,
+          no_cotizacion: row.no_cotizacion ?? null,
+          es_directo: row.no_cotizacion === null,
+          fecha: row.fecha,
+          prioridad: row.prioridad ?? false,
+          estado_id: row.estado_administrativo_cat_idestado_administrativo_cat,
+          estado: normalizarNombreEstado(row.estado_nombre || ""),
           diseno_estado_id: row.diseno_estado_id ?? 1,
-          cliente_id:       row.clientes_idclientes,
-          cliente:          row.cliente_nombre        || "",
-          telefono:         row.cliente_telefono      || "",
-          correo:           row.cliente_correo        || "",
-          impresion:        row.cliente_impresion     || null,
-          empresa:          row.cliente_empresa       || "",
-          celular:          row.cliente_celular       || null,
-          razon_social:     row.cliente_razon_social  || null,
-          rfc:              row.cliente_rfc           || null,
-          domicilio:        row.cliente_domicilio     || null,
-          numero:           row.cliente_numero        || null,
-          colonia:          row.cliente_colonia       || null,
-          codigo_postal:    row.cliente_codigo_postal || null,
-          poblacion:        row.cliente_poblacion     || null,
-          estado_cliente:   row.cliente_estado        || null,
-          productos:        [],
-          total:            0,
+          cliente_id: row.clientes_idclientes,
+          cliente: row.cliente_nombre || "",
+          telefono: row.cliente_telefono || "",
+          correo: row.cliente_correo || "",
+          impresion: row.cliente_impresion || null,
+          empresa: row.cliente_empresa || "",
+          celular: row.cliente_celular || null,
+          razon_social: row.cliente_razon_social || null,
+          rfc: row.cliente_rfc || null,
+          domicilio: row.cliente_domicilio || null,
+          numero: row.cliente_numero || null,
+          colonia: row.cliente_colonia || null,
+          codigo_postal: row.cliente_codigo_postal || null,
+          poblacion: row.cliente_poblacion || null,
+          estado_cliente: row.cliente_estado || null,
+          productos: [],
+          total: 0,
         };
       }
 
@@ -191,26 +191,26 @@ export const getPedidos = async (req: Request, res: Response) => {
         );
 
         if (!producto) {
-          const tipoNombre     = row.tipo_producto_nombre || "";
-          const medida         = row.cfg_medida           || "";
-          const material       = (row.material_nombre     || "").toLowerCase();
+          const tipoNombre = row.tipo_producto_nombre || "";
+          const medida = row.cfg_medida || "";
+          const material = (row.material_nombre || "").toLowerCase();
           const nombreCompleto =
             [tipoNombre, medida, material].filter(Boolean).join(" ") ||
             `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
 
           const medidas = {
-            altura:         row.cfg_altura        ? String(row.cfg_altura)        : "",
-            ancho:          row.cfg_ancho         ? String(row.cfg_ancho)         : "",
-            fuelleFondo:    row.cfg_fuelle_fondo  ? String(row.cfg_fuelle_fondo)  : "",
+            altura: row.cfg_altura ? String(row.cfg_altura) : "",
+            ancho: row.cfg_ancho ? String(row.cfg_ancho) : "",
+            fuelleFondo: row.cfg_fuelle_fondo ? String(row.cfg_fuelle_fondo) : "",
             fuelleLateral1: row.cfg_fuelle_lat_iz ? String(row.cfg_fuelle_lat_iz) : "",
             fuelleLateral2: row.cfg_fuelle_lat_de ? String(row.cfg_fuelle_lat_de) : "",
-            refuerzo:       row.cfg_refuerzo      ? String(row.cfg_refuerzo)      : "",
+            refuerzo: row.cfg_refuerzo ? String(row.cfg_refuerzo) : "",
           };
 
           const materialUpper = (row.material_nombre || "").toUpperCase();
           const esBopp = materialUpper.includes("BOPP") ||
-                         materialUpper.includes("CELOFAN") ||
-                         materialUpper.includes("CELOFÁN");
+            materialUpper.includes("CELOFAN") ||
+            materialUpper.includes("CELOFÁN");
 
           const calibreResuelto = (() => {
             if (esBopp) {
@@ -224,52 +224,52 @@ export const getPedidos = async (req: Request, res: Response) => {
           })();
 
           producto = {
-            idsolicitud:             row.idsolicitud,
-            idsolicitud_producto:    row.idsolicitud_producto,
-            idcotizacion_producto:   row.idsolicitud_producto,
-            producto_id:             row.configuracion_plastico_idconfiguracion_plastico,
-            nombre:                  nombreCompleto,
-            material:                row.material_nombre || "",
-            calibre:                 calibreResuelto,
-            calibre_bopp:            row.calibre_bopp ? String(row.calibre_bopp) : null,
-            medidasFormateadas:      row.cfg_medida    || "",
+            idsolicitud: row.idsolicitud,
+            idsolicitud_producto: row.idsolicitud_producto,
+            idcotizacion_producto: row.idsolicitud_producto,
+            producto_id: row.configuracion_plastico_idconfiguracion_plastico,
+            nombre: nombreCompleto,
+            material: row.material_nombre || "",
+            calibre: calibreResuelto,
+            calibre_bopp: row.calibre_bopp ? String(row.calibre_bopp) : null,
+            medidasFormateadas: row.cfg_medida || "",
             medidas,
-            tintas:                  row.tintas_cantidad ?? row.tintas_idtintas,
-            caras:                   row.caras_cantidad  ?? row.caras_idcaras,
-            bk:                      row.bk,
-            foil:                    row.foil,
-            idsuaje:                 row.idsuaje        ?? null,
-            asa_suaje:               row.suaje_tipo      ?? null,
-            alto_rel:                row.alto_rel,
-            laminado:                row.laminado,
-            uv_br:                   row.uv_br,
-            pigmentos:               row.pigmentos || null,
-            pantones:                row.pantones
+            tintas: row.tintas_cantidad ?? row.tintas_idtintas,
+            caras: row.caras_cantidad ?? row.caras_idcaras,
+            bk: row.bk,
+            foil: row.foil,
+            idsuaje: row.idsuaje ?? null,
+            asa_suaje: row.suaje_tipo ?? null,
+            alto_rel: row.alto_rel,
+            laminado: row.laminado,
+            uv_br: row.uv_br,
+            pigmentos: row.pigmentos || null,
+            pantones: row.pantones
               ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
               : null,
-            observacion:             row.observacion,
-            por_kilo:                row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
-            id_color:                row.id_color        ?? null,
-            color_asa_nombre:        row.color_asa_nombre ?? null,
-            id_medidatro:            row.id_medidatro    ?? null,
-            medida_troquel:          row.medida_troquel  ?? null,
+            observacion: row.observacion,
+            por_kilo: row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
+            id_color: row.id_color ?? null,
+            color_asa_nombre: row.color_asa_nombre ?? null,
+            id_medidatro: row.id_medidatro ?? null,
+            medida_troquel: row.medida_troquel ?? null,
             herramental_descripcion: row.herramental_descripcion ?? null,
-            herramental_precio:      row.herramental_precio != null ? Number(row.herramental_precio) : null,
-            herramental_aprobado:    row.herramental_aprobado ?? null,
-            herramental_id:          row.id_herramental ?? null,
-            detalles:                [],
-            subtotal:                0,
+            herramental_precio: row.herramental_precio != null ? Number(row.herramental_precio) : null,
+            herramental_aprobado: row.herramental_aprobado ?? null,
+            herramental_id: row.id_herramental ?? null,
+            detalles: [],
+            subtotal: 0,
           };
           agrupados[noPedido].productos.push(producto);
         }
 
         if (row.idsolicitud_detalle) {
           producto.detalles.push({
-            iddetalle:     row.idsolicitud_detalle,
-            cantidad:      Number(row.cantidad),
-            precio_total:  Number(row.precio_total),
-            aprobado:      row.aprobado,
-            kilogramos:    row.kilogramos != null ? Number(row.kilogramos) : null,
+            iddetalle: row.idsolicitud_detalle,
+            cantidad: Number(row.cantidad),
+            precio_total: Number(row.precio_total),
+            aprobado: row.aprobado,
+            kilogramos: row.kilogramos != null ? Number(row.kilogramos) : null,
             modo_cantidad: row.modo_cantidad || "unidad",
           });
           producto.subtotal += Number(row.precio_total);
@@ -299,7 +299,7 @@ export const getPedidos = async (req: Request, res: Response) => {
 export const actualizarPedido = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    const { id }      = req.params; // no_pedido
+    const { id } = req.params; // no_pedido
     const { productos } = req.body;
 
     // ── Verificar que el pedido existe ────────────────────────────────────────
@@ -348,18 +348,39 @@ export const actualizarPedido = async (req: Request, res: Response) => {
 
       // ── Resolver IDs de tintas/caras ────────────────────────────────────────
       const tintasId = await resolverIdTintas(client, tintas);
-      const carasId  = await resolverIdCaras(client, caras);
-
+      const carasId = await resolverIdCaras(client, caras);
+      // Antes del UPDATE, limpiar pantones sobrantes
+      const pantonesLimpios = (() => {
+        if (!pantones) return null;
+        const arr = pantones.split(",").map((s: string) => s.trim()).filter(Boolean);
+        // Cortar al número de tintas actual
+        const truncados = arr.slice(0, tintas);
+        return truncados.length > 0 ? truncados.join(", ") : null;
+      })();
       // ── Actualizar solicitud_producto ───────────────────────────────────────
+      // Después — siempre sobreescribe tintas y caras
       await client.query(
         `UPDATE solicitud_producto SET
-           tintas_idtintas = COALESCE($1, tintas_idtintas),
-           caras_idcaras   = COALESCE($2, caras_idcaras),
-           pantones        = $3,
-           pigmentos       = $4,
-           observacion     = $5
-         WHERE idsolicitud_producto = $6`,
-        [tintasId, carasId, pantones, pigmentos, observacion, idsolicitud_producto]
+     tintas_idtintas = $1,
+     caras_idcaras   = $2,
+     pantones        = $3,
+     pigmentos       = $4,
+     observacion     = $5,
+     idsuaje         = $6,
+     id_color        = $7,
+     id_medidatro    = $8
+   WHERE idsolicitud_producto = $9`,
+        [
+          tintasId,
+          carasId,
+          pantonesLimpios,   // ← pantones truncados al nº de tintas
+          pigmentos || null,
+          observacion || null,
+          prod.idsuaje ?? null,
+          prod.id_color ?? null,
+          prod.id_medidatro ?? null,
+          idsolicitud_producto,
+        ]
       );
 
       // ── Herramental (upsert / delete) ───────────────────────────────────────
@@ -438,8 +459,8 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       );
 
       const subtotalNuevo = Number(sumRows[0].subtotal_prods) + Number(sumRows[0].subtotal_herr);
-      const ivaNuevo      = Math.round(subtotalNuevo * 0.16 * 100) / 100;
-      const totalNuevo    = Math.round((subtotalNuevo + ivaNuevo) * 100) / 100;
+      const ivaNuevo = Math.round(subtotalNuevo * 0.16 * 100) / 100;
+      const totalNuevo = Math.round((subtotalNuevo + ivaNuevo) * 100) / 100;
 
       await client.query(
         `UPDATE ventas SET
@@ -478,8 +499,8 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     if (pedRows.length === 0)
       return res.status(404).json({ error: "Pedido no encontrado" });
 
-    const solicitudId: number       = pedRows[0].idsolicitud;
-    const noCotizacion: number|null = pedRows[0].no_cotizacion;
+    const solicitudId: number = pedRows[0].idsolicitud;
+    const noCotizacion: number | null = pedRows[0].no_cotizacion;
 
     const { rows: pagosRows } = await client.query(
       `SELECT COUNT(*) AS total FROM venta_pago vp
@@ -488,10 +509,10 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     );
     if (Number(pagosRows[0].total) > 0) {
       return res.status(409).json({
-        error:   "No se puede eliminar este pedido porque tiene pagos registrados.",
-        motivo:  "pagos",
+        error: "No se puede eliminar este pedido porque tiene pagos registrados.",
+        motivo: "pagos",
         detalle: `El pedido #${id} tiene ${pagosRows[0].total} pago(s) registrado(s). ` +
-                 "Elimina los pagos desde el módulo de Anticipo y Liquidación antes de cancelar el pedido.",
+          "Elimina los pagos desde el módulo de Anticipo y Liquidación antes de cancelar el pedido.",
       });
     }
 
@@ -503,10 +524,10 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     );
     if (Number(disenoRows[0].total) > 0) {
       return res.status(409).json({
-        error:   "No se puede eliminar este pedido porque tiene productos aprobados en diseño.",
-        motivo:  "diseno",
+        error: "No se puede eliminar este pedido porque tiene productos aprobados en diseño.",
+        motivo: "diseno",
         detalle: `El pedido #${id} tiene ${disenoRows[0].total} producto(s) aprobado(s) en diseño. ` +
-                 "Restablece los productos en el módulo de Diseño antes de cancelar el pedido.",
+          "Restablece los productos en el módulo de Diseño antes de cancelar el pedido.",
       });
     }
 
@@ -545,9 +566,9 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     await client.query("COMMIT");
 
     return res.json({
-      message:          "Pedido cancelado y eliminado exitosamente",
-      no_pedido:        id,
-      no_cotizacion:    noCotizacion,
+      message: "Pedido cancelado y eliminado exitosamente",
+      no_pedido: id,
+      no_cotizacion: noCotizacion,
       tenia_cotizacion: noCotizacion !== null,
     });
 

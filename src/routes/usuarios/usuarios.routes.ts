@@ -10,6 +10,7 @@ import {
   getConductores,
   getUsuariosDiseno,
   toggleActivoUsuario,
+  getFotosINE,               // ← agregar este import
 } from "../../controllers/usuarios/usuarios.controller";
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 import {
@@ -21,9 +22,6 @@ import {
 
 const router = Router();
 
-// ==========================
-// HELMET
-// ==========================
 router.use(
   helmet({
     contentSecurityPolicy: false,
@@ -61,7 +59,7 @@ const generalLimiter = rateLimit({
 router.use(generalLimiter);
 
 // ==========================
-// RUTAS
+// RUTAS — las estáticas SIEMPRE antes de /:id
 // ==========================
 const PERMISO = "Crear/Editar/Eliminar Usuarios";
 
@@ -83,6 +81,15 @@ router.get(
   authMiddleware,
   checkPermiso(PERMISO),
   getUsuarios
+);
+
+// ── Rutas con :id — estáticas compuestas primero ──────────────────────────
+router.get(
+  "/:id/ine",                          // ← ANTES de /:id simple
+  authMiddleware,
+  checkPermiso(PERMISO),
+  validateId,
+  getFotosINE
 );
 
 router.get(

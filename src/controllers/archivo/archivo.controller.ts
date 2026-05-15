@@ -2,7 +2,6 @@ import { Request, Response } from "express";
 import { uploadToS3, deleteFromS3, getPresignedUrl, CarpetaS3, CARPETAS, MulterFile } from "../../config/multer";
 import { pool } from "../../config/db";
 
-// Request extendido con file tipado con nuestra interfaz propia
 type RequestConArchivo = Request & { file?: MulterFile };
 
 const getTipo = (mimetype: string): string => {
@@ -10,7 +9,7 @@ const getTipo = (mimetype: string): string => {
   if (mimetype.startsWith("image/")) return "image";
   return "document";
 };
-  
+
 const validarCarpeta = (carpeta: string): CarpetaS3 => {
   const valores = Object.values(CARPETAS) as string[];
   if (valores.includes(carpeta)) return carpeta as CarpetaS3;
@@ -18,7 +17,8 @@ const validarCarpeta = (carpeta: string): CarpetaS3 => {
 };
 
 const validarCategoria = (categoria: string): "render" | "master" | "otro" => {
-  if (categoria === "render" || categoria === "master") return categoria;
+  if (categoria === "render") return "render";
+  if (categoria === "master") return "master";
   return "otro";
 };
 
@@ -33,16 +33,18 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
     const categoria = validarCategoria(req.body.categoria || "otro");
 
     const { url, public_id, resource_type } = await uploadToS3(req.file, carpeta);
-    const tipo      = getTipo(req.file.mimetype);
-    const tamanoKb  = Math.round(req.file.size / 1024);
+    const tipo     = getTipo(req.file.mimetype);
+    const tamanoKb = Math.round(req.file.size / 1024);
+
     const subidoPor = (req as any).user?.id || null;
+    const usuarioId = req.body.usuario_id ? Number(req.body.usuario_id) : null;
 
     const result = await pool.query(
       `INSERT INTO archivos 
-        (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria, usuario_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb, subidoPor, resource_type, categoria]
+      [req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb, subidoPor, resource_type, categoria, usuarioId]
     );
 
     res.status(201).json(result.rows[0]);
@@ -56,14 +58,14 @@ export const listarArchivos = async (_req: Request, res: Response): Promise<void
   try {
     const result = await pool.query(
       `SELECT id_archivo, nombre, tipo, mime_type, url, public_id,
-              tamano_kb, subido_por, resource_type, categoria, created_at
+              tamano_kb, subido_por, usuario_id, resource_type, categoria, created_at
        FROM archivos ORDER BY created_at DESC`
     );
 
     const archivosConUrl = await Promise.all(
       result.rows.map(async (archivo) => ({
         ...archivo,
-        url:    await getPresignedUrl(archivo.public_id),
+        url:     await getPresignedUrl(archivo.public_id),
         carpeta: archivo.public_id?.split("/")?.[1] ?? "disenos",
       }))
     );

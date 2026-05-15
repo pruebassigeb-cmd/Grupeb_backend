@@ -43,6 +43,222 @@ async function notificarParticipantes(
   }
 }
 
+const ESTADO = {
+  PENDIENTE:  1,
+  EN_PROCESO: 2,
+  APROBADO:   3,
+} as const;
+
+// ============================================================
+// HELPERS DE PRODUCCIÓN (copiados de diseno.controller para reutilizar)
+// ============================================================
+
+async function generarNoProduccion(client: any): Promise<string> {
+  const anio = new Date().getFullYear().toString().slice(-2);
+  const { rows } = await client.query(
+    `SELECT COUNT(*) AS total FROM orden_produccion 
+     WHERE no_produccion::text LIKE $1`,
+    [`OP${anio}%`]
+  );
+  const siguiente = Number(rows[0].total) + 1;
+  return `OP${anio}${String(siguiente).padStart(3, "0")}`;
+}
+
+async function anticipoPagado(client: any, solicitudId: number): Promise<boolean> {
+  const { rows } = await client.query(
+    `SELECT anticipo, abono, estado_administrativo_cat_idestado_administrativo_cat AS estado_id
+     FROM ventas WHERE solicitud_idsolicitud = $1`,
+    [solicitudId]
+  );
+  if (rows.length === 0) return false;
+  const abono    = Number(rows[0].abono);
+  const anticipo = Number(rows[0].anticipo);
+  const estadoId = Number(rows[0].estado_id);
+  return abono >= anticipo || estadoId === 2 || estadoId === 6;
+}
+
+async function obtenerMerma(client: any, kilos: number, tintasId: number): Promise<number> {
+  if (!kilos || kilos <= 0) return 0;
+  try {
+    const { rows } = await client.query(`
+      SELECT tp.merma_porcentaje
+      FROM tarifas_produccion tp
+      INNER JOIN kilogramos k ON k.idkilogramos = tp.kilogramos_idkilogramos
+      WHERE tp.tintas_idtintas = $1
+        AND $2 >= k.kg_min
+        AND ($2 <= k.kg_max OR k.kg_max IS NULL)
+      LIMIT 1
+    `, [tintasId, kilos]);
+    if (rows.length === 0) return 0;
+    return Number(rows[0].merma_porcentaje);
+  } catch (err: any) {
+    console.warn("⚠️ obtenerMerma error:", err.message);
+    return 0;
+  }
+}
+
+function calcularDatosExtrusion(p: {
+  alto: number; ancho: number;
+  fuelle_fondo: number; fuelle_lat_iz: number; fuelle_lat_de: number;
+  refuerzo: number; cantidad: number;
+}): { repeticion_extrusion: number; repeticion_metro: number; metros: number; ancho_bobina: number } {
+  let repeticion_extrusion: number;
+  let ancho_bobina: number;
+
+  if (p.fuelle_fondo > 0) {
+    repeticion_extrusion = p.ancho;
+    ancho_bobina         = p.alto + p.fuelle_fondo + p.refuerzo;
+  } else {
+    repeticion_extrusion = p.alto;
+    ancho_bobina         = p.ancho + p.fuelle_lat_iz + p.fuelle_lat_de + p.refuerzo;
+  }
+
+  const repeticion_metro = repeticion_extrusion > 0
+    ? parseFloat((100 / repeticion_extrusion).toFixed(4)) : 0;
+  const metros = parseFloat((p.cantidad * (repeticion_extrusion / 100)).toFixed(1));
+
+  return {
+    repeticion_extrusion: parseFloat(repeticion_extrusion.toFixed(2)),
+    repeticion_metro,
+    metros,
+    ancho_bobina: parseFloat(ancho_bobina.toFixed(2)),
+  };
+}
+
+async function buscarRepeticionRodillos(
+  client: any, valor: number
+): Promise<{ kidder: string | null; sicosa: string | null }> {
+  if (!valor || valor <= 0) return { kidder: null, sicosa: null };
+  try {
+    const { rows: kidderRows } = await client.query(`
+      SELECT sin_grabado, con_grabado_1rep, con_grabado_2rep, con_grabado_3rep,
+        LEAST(ABS(con_grabado_1rep-$1),ABS(con_grabado_2rep-$1),ABS(con_grabado_3rep-$1)) AS distancia_min
+      FROM rodillos_kidder ORDER BY distancia_min ASC LIMIT 1
+    `, [valor]);
+
+    const { rows: sicosaRows } = await client.query(`
+      SELECT sin_grabado, con_grabado_1rep, con_grabado_2rep, con_grabado_3rep,
+             con_grabado_4rep, con_grabado_5rep,
+        LEAST(ABS(con_grabado_1rep-$1),ABS(con_grabado_2rep-$1),ABS(con_grabado_3rep-$1),
+              ABS(con_grabado_4rep-$1),ABS(con_grabado_5rep-$1)) AS distancia_min
+      FROM rodillos_sicosa ORDER BY distancia_min ASC LIMIT 1
+    `, [valor]);
+
+    const formatearRodillo = (row: any, reps: { label: string; col: string }[]): string | null => {
+      if (!row) return null;
+      const candidatos = reps
+        .map(r => ({ label: r.label, valor: parseFloat(row[r.col]) || 0 }))
+        .filter(r => r.valor > 0);
+      if (candidatos.length === 0) return null;
+      const mejor = candidatos.reduce((prev, curr) =>
+        Math.abs(curr.valor - valor) < Math.abs(prev.valor - valor) ? curr : prev
+      );
+      const sinGrab  = parseFloat(row.sin_grabado).toFixed(2);
+      const esExacto = Math.abs(mejor.valor - valor) < 0.001;
+      return `SG=${sinGrab} | ${esExacto ? "" : "~"}${mejor.valor.toFixed(2)} (${mejor.label})`;
+    };
+
+    const kidder = formatearRodillo(kidderRows[0], [
+      { label: "1 rep", col: "con_grabado_1rep" },
+      { label: "2 rep", col: "con_grabado_2rep" },
+      { label: "3 rep", col: "con_grabado_3rep" },
+    ]);
+    const sicosa = formatearRodillo(sicosaRows[0], [
+      { label: "1 rep", col: "con_grabado_1rep" },
+      { label: "2 rep", col: "con_grabado_2rep" },
+      { label: "3 rep", col: "con_grabado_3rep" },
+      { label: "4 rep", col: "con_grabado_4rep" },
+      { label: "5 rep", col: "con_grabado_5rep" },
+    ]);
+    return { kidder, sicosa };
+  } catch (err: any) {
+    console.warn("⚠️ buscarRepeticionRodillos error:", err.message);
+    return { kidder: null, sicosa: null };
+  }
+}
+
+async function getMedidasParaOrden(client: any, idsolicitudProducto: number) {
+  const { rows } = await client.query(`
+    SELECT
+      COALESCE(cfg.altura,       0) AS alto,
+      COALESCE(cfg.ancho,        0) AS ancho,
+      COALESCE(cfg.fuelle_fondo, 0) AS fuelle_fondo,
+      COALESCE(cfg.fuelle_latIz, 0) AS fuelle_lat_iz,
+      COALESCE(cfg.fuelle_latDe, 0) AS fuelle_lat_de,
+      COALESCE(cfg.refuerzo,     0) AS refuerzo,
+      COALESCE(sd.cantidad,      0) AS cantidad,
+      sd.kilogramos,
+      sd.modo_cantidad,
+      sp.tintas_idtintas
+    FROM solicitud_producto sp
+    JOIN configuracion_plastico cfg
+        ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
+    LEFT JOIN solicitud_detalle sd
+        ON sd.solicitud_producto_id = sp.idsolicitud_producto
+        AND sd.aprobado = true
+    WHERE sp.idsolicitud_producto = $1
+    LIMIT 1
+  `, [idsolicitudProducto]);
+  return rows[0] ?? null;
+}
+
+async function prepararDatosOrden(client: any, idsolicitudProducto: number) {
+  const medidas = await getMedidasParaOrden(client, idsolicitudProducto);
+
+  if (!medidas) {
+    return {
+      repeticion_extrusion: null, repeticion_metro: null,
+      metros: null, metros_merma: null, ancho_bobina: null,
+      kilos: null, kilos_merma: null, pzas: null, pzas_merma: null,
+      repeticion_kidder: null, repeticion_sicosa: null,
+    };
+  }
+
+  const cantidad = Number(medidas.cantidad);
+  const kilos    = medidas.kilogramos ? parseFloat(Number(medidas.kilogramos).toFixed(4)) : null;
+  const tintasId = Number(medidas.tintas_idtintas) || 1;
+
+  const mermaPct    = kilos ? await obtenerMerma(client, kilos, tintasId) : 0;
+  const factorMerma = 1 + mermaPct / 100;
+
+  const kilos_merma = kilos ? parseFloat((kilos * factorMerma).toFixed(2)) : null;
+  const pzas        = cantidad > 0 ? cantidad : null;
+  const pzas_merma  = pzas ? Math.round(pzas * factorMerma) : null;
+
+  if (cantidad <= 0) {
+    return {
+      repeticion_extrusion: null, repeticion_metro: null,
+      metros: null, metros_merma: null, ancho_bobina: null,
+      kilos, kilos_merma, pzas, pzas_merma,
+      repeticion_kidder: null, repeticion_sicosa: null,
+    };
+  }
+
+  const ext = calcularDatosExtrusion({
+    alto:          Number(medidas.alto),
+    ancho:         Number(medidas.ancho),
+    fuelle_fondo:  Number(medidas.fuelle_fondo),
+    fuelle_lat_iz: Number(medidas.fuelle_lat_iz),
+    fuelle_lat_de: Number(medidas.fuelle_lat_de),
+    refuerzo:      Number(medidas.refuerzo),
+    cantidad,
+  });
+
+  const metros_merma = parseFloat((ext.metros * factorMerma).toFixed(1));
+  const rodillos     = await buscarRepeticionRodillos(client, ext.repeticion_extrusion);
+
+  return {
+    repeticion_extrusion: ext.repeticion_extrusion,
+    repeticion_metro:     ext.repeticion_metro,
+    metros:               ext.metros,
+    metros_merma,
+    ancho_bobina:         ext.ancho_bobina,
+    kilos, kilos_merma, pzas, pzas_merma,
+    repeticion_kidder:    rodillos.kidder,
+    repeticion_sicosa:    rodillos.sicosa,
+  };
+}
+
 // ============================================================
 // CREAR ORDEN DE DISEÑO
 // ============================================================
@@ -229,7 +445,7 @@ export const getOrdenDisenoById = async (req: AuthRequest, res: Response) => {
       ORDER BY u.idusuario, odp.agregado_at ASC NULLS LAST
     `, [id]);
 
-    // Revisiones con archivos — incluye categoria
+    // Revisiones con archivos
     const { rows: revisiones } = await pool.query(`
       SELECT
         rd.idrevision,
@@ -371,10 +587,8 @@ export const enviarMensaje = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Orden no encontrada" });
     }
 
-    if (ordenRows[0].estado === "aprobado") {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "No se puede enviar mensajes a una orden aprobada" });
-    }
+    // ← ALTERACIÓN 2: ya no bloqueamos mensajes en órdenes aprobadas
+    // (se eliminó la validación que retornaba 400 cuando estado === "aprobado")
 
     const { rows: usuarioRows } = await client.query(
       `SELECT p.privilegio
@@ -456,10 +670,8 @@ export const subirRevision = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Orden no encontrada" });
     }
 
-    if (ordenRows[0].estado === "aprobado") {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "La orden ya fue aprobada" });
-    }
+    // Importante: una orden aprobada NO bloquea el chat ni la carga de archivos.
+    // Solo se valida que exista; se permite seguir subiendo renders/feedback.
 
     const versionActual = ordenRows[0].version_actual;
     const noPedido      = ordenRows[0].no_pedido;
@@ -523,6 +735,7 @@ export const subirRevision = async (req: AuthRequest, res: Response) => {
 
 // ============================================================
 // APROBAR ORDEN DE DISEÑO
+// ← ALTERACIÓN 1: también aprueba diseno_producto y genera orden de producción
 // ============================================================
 export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
@@ -533,7 +746,7 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
     await client.query("BEGIN");
 
     const { rows: ordenRows } = await client.query(
-      `SELECT estado, no_pedido FROM orden_diseno WHERE idorden_diseno = $1`,
+      `SELECT estado, no_pedido, solicitud_producto_id FROM orden_diseno WHERE idorden_diseno = $1`,
       [id]
     );
 
@@ -547,14 +760,108 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "La orden ya fue aprobada" });
     }
 
-    const noPedido = ordenRows[0].no_pedido;
+    const noPedido            = ordenRows[0].no_pedido;
+    const solicitudProductoId = ordenRows[0].solicitud_producto_id;
 
+    // 1. Aprobar la orden_diseno
     await client.query(
       `UPDATE orden_diseno
        SET estado = 'aprobado', autorizado_at = NOW()
        WHERE idorden_diseno = $1`,
       [id]
     );
+
+    // 2. Aprobar el diseno_producto correspondiente
+    const { rows: dpRows } = await client.query(
+      `SELECT dp.iddiseno_producto, dp.diseno_iddiseno, d.solicitud_idsolicitud
+       FROM diseno_producto dp
+       JOIN diseno d ON d.iddiseno = dp.diseno_iddiseno
+       WHERE dp.solicitud_producto_idsolicitud_producto = $1
+       LIMIT 1`,
+      [solicitudProductoId]
+    );
+
+    let ordenGenerada    = false;
+    let noProduccion: string | null = null;
+
+    if (dpRows.length > 0) {
+      const dp          = dpRows[0];
+      const disenoId    = dp.diseno_iddiseno;
+      const solicitudId = dp.solicitud_idsolicitud;
+
+      // Actualizar estado del producto a APROBADO
+      await client.query(
+        `UPDATE diseno_producto
+         SET estado_administrativo_cat_idestado_administrativo_cat = $1,
+             fecha_aprobacion = NOW(),
+             fecha = NOW()
+         WHERE iddiseno_producto = $2`,
+        [ESTADO.APROBADO, dp.iddiseno_producto]
+      );
+
+      // Recalcular estado cabecera diseno
+      const { rows: todosProductos } = await client.query(
+        `SELECT estado_administrativo_cat_idestado_administrativo_cat AS estado_id
+         FROM diseno_producto WHERE diseno_iddiseno = $1`,
+        [disenoId]
+      );
+
+      const estadosPadre = todosProductos.map((p: any) => Number(p.estado_id));
+      const nuevoEstadoPadre =
+        estadosPadre.every(e => e === ESTADO.APROBADO)                            ? ESTADO.APROBADO   :
+        estadosPadre.some(e  => e === ESTADO.EN_PROCESO || e === ESTADO.APROBADO) ? ESTADO.EN_PROCESO :
+                                                                                     ESTADO.PENDIENTE;
+
+      await client.query(
+        `UPDATE diseno SET estado_administrativo_cat_idestado_administrativo_cat = $1 WHERE iddiseno = $2`,
+        [nuevoEstadoPadre, disenoId]
+      );
+
+      if (nuevoEstadoPadre === ESTADO.APROBADO) {
+        await client.query(
+          `UPDATE diseno SET fecha_aprobacion_general = NOW() WHERE iddiseno = $1`,
+          [disenoId]
+        );
+      }
+
+      // 3. Intentar generar orden de producción si anticipo está cubierto
+      const cubierto = await anticipoPagado(client, solicitudId);
+      if (cubierto) {
+        const { rows: ordenExistente } = await client.query(
+          `SELECT idproduccion FROM orden_produccion WHERE idsolicitud_producto = $1`,
+          [solicitudProductoId]
+        );
+
+        if (ordenExistente.length === 0) {
+          noProduccion     = await generarNoProduccion(client);
+          const datosOrden = await prepararDatosOrden(client, solicitudProductoId);
+
+          await client.query(
+            `INSERT INTO orden_produccion (
+              estado_administrativo_cat_idestado_administrativo_cat,
+              no_produccion, fecha, fecha_entrega, idsolicitud, idsolicitud_producto,
+              idestado_produccion_cat, repeticion_extrusion, repeticion_metro, metros,
+              metros_merma, ancho_bobina, kilos, kilos_merma, pzas, pzas_merma,
+              repeticion_kidder, repeticion_sicosa
+            ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+            [
+              ESTADO.PENDIENTE, noProduccion, solicitudId, solicitudProductoId,
+              ESTADO.PENDIENTE,
+              datosOrden.repeticion_extrusion, datosOrden.repeticion_metro,
+              datosOrden.metros,               datosOrden.metros_merma,
+              datosOrden.ancho_bobina,
+              datosOrden.kilos,                datosOrden.kilos_merma,
+              datosOrden.pzas,                 datosOrden.pzas_merma,
+              datosOrden.repeticion_kidder,    datosOrden.repeticion_sicosa,
+            ]
+          );
+          ordenGenerada = true;
+          console.log(`✅ Orden ${noProduccion} creada desde aprobación de orden de diseño`);
+        } else {
+          ordenGenerada = true;
+        }
+      }
+    }
 
     await crearMensajeSistema(
       client, Number(id),
@@ -570,10 +877,12 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
     await client.query("COMMIT");
 
     return res.json({
-      message: "Orden de diseño aprobada exitosamente",
+      message:        "Orden de diseño aprobada exitosamente",
       idorden_diseno: Number(id),
-      estado: "aprobado",
-      autorizado_at: new Date(),
+      estado:         "aprobado",
+      autorizado_at:  new Date(),
+      orden_generada: ordenGenerada,
+      no_produccion:  noProduccion,
     });
   } catch (error: any) {
     await client.query("ROLLBACK");
@@ -787,8 +1096,8 @@ export const limpiarChatsAntiguos = async (req: Request, res: Response) => {
 
     return res.json({
       message: "Limpieza completada",
-      ordenes_procesadas: ordenes.length,
-      mensajes_eliminados: totalMensajes,
+      ordenes_procesadas:     ordenes.length,
+      mensajes_eliminados:    totalMensajes,
       archivos_desvinculados: totalArchivos,
     });
   } catch (error: any) {

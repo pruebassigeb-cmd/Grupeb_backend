@@ -21,6 +21,7 @@ export const CARPETAS = {
   fotos_envios: "fotos-envios",
   backups:      "backups",
   usuarios:     "usuarios",
+  usuarios_ine: "usuarios-ine",
 } as const;
 
 export type CarpetaS3 = typeof CARPETAS[keyof typeof CARPETAS];

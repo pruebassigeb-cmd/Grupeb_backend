@@ -4,9 +4,6 @@ import bcrypt from "bcrypt";
 import validator from "validator";
 import { getPresignedUrl, deleteFromS3 } from "../../config/multer";
 
-// ==========================
-// CONSTANTES
-// ==========================
 const BCRYPT_ROUNDS      = 12;
 const MAX_USERS_TO_CHECK = 1000;
 
@@ -57,9 +54,8 @@ async function upsertDetalle(
       [idusuario, ...values]
     );
   }
-} 
+}
 
-/** Normaliza fecha_nacimiento a string YYYY-MM-DD si viene como Date o timestamp */
 function normalizarFecha(valor: any): string | null {
   if (!valor) return null;
   if (valor instanceof Date) return valor.toISOString().split("T")[0];
@@ -72,11 +68,9 @@ function normalizarFecha(valor: any): string | null {
 // ==========================
 export const createUsuario = async (req: Request, res: Response) => {
   const client = await pool.connect();
-
   try {
     let { nombre, apellido, correo, telefono, codigo, roles_idroles, privilegios } = req.body;
 
-    // Validar ANTES de sanitizar para no corromper acentos/ñ
     if (!nombre?.trim() || !apellido?.trim() || !correo?.trim() || !codigo)
       return res.status(400).json({ error: "Todos los campos requeridos deben estar completos" });
     if (!/^\d{5}$/.test(codigo))
@@ -86,7 +80,6 @@ export const createUsuario = async (req: Request, res: Response) => {
     if (!Number.isInteger(Number(roles_idroles)) || Number(roles_idroles) < 1)
       return res.status(400).json({ error: "Datos de entrada inválidos" });
 
-    // Sanitizar después de validar
     nombre   = nombre.trim();
     apellido = apellido.trim();
     correo   = validator.normalizeEmail(correo.trim()) || "";
@@ -115,15 +108,15 @@ export const createUsuario = async (req: Request, res: Response) => {
 
     const hash = await bcrypt.hash(codigo, BCRYPT_ROUNDS);
 
-    const extrasUsuario   = extraerCampos(req.body, CAMPOS_USUARIO_EXTRA);
-    const extraKeys       = Object.keys(extrasUsuario);
-    const extraValues     = Object.values(extrasUsuario);
-    const baseColumns     = ["nombre", "apellido", "correo", "telefono", "codigo", "roles_idroles"];
+    const extrasUsuario    = extraerCampos(req.body, CAMPOS_USUARIO_EXTRA);
+    const extraKeys        = Object.keys(extrasUsuario);
+    const extraValues      = Object.values(extrasUsuario);
+    const baseColumns      = ["nombre", "apellido", "correo", "telefono", "codigo", "roles_idroles"];
     const basePlaceholders = ["$1", "$2", "$3", "$4", "$5", "$6"];
-    const baseValues      = [nombre, apellido, correo, telefono || null, hash, roles_idroles];
-    const allColumns      = [...baseColumns, ...extraKeys];
-    const allPlaceholders = [...basePlaceholders, ...extraKeys.map((_, i) => `$${i + 7}`)];
-    const allValues       = [...baseValues, ...extraValues];
+    const baseValues       = [nombre, apellido, correo, telefono || null, hash, roles_idroles];
+    const allColumns       = [...baseColumns, ...extraKeys];
+    const allPlaceholders  = [...basePlaceholders, ...extraKeys.map((_, i) => `$${i + 7}`)];
+    const allValues        = [...baseValues, ...extraValues];
 
     const resultUsuario = await client.query(
       `INSERT INTO usuarios (${allColumns.join(", ")})
@@ -171,8 +164,15 @@ export const createUsuario = async (req: Request, res: Response) => {
 
     res.status(201).json({
       message: "Usuario creado exitosamente",
-      usuario: { id: uid, nombre: nuevoUsuario.nombre, apellido: nuevoUsuario.apellido,
-                 correo: nuevoUsuario.correo, telefono: nuevoUsuario.telefono, rol: nuevoUsuario.roles_idroles },
+      usuario: {
+        id:       uid,
+        idusuario: uid,
+        nombre:   nuevoUsuario.nombre,
+        apellido: nuevoUsuario.apellido,
+        correo:   nuevoUsuario.correo,
+        telefono: nuevoUsuario.telefono,
+        rol:      nuevoUsuario.roles_idroles,
+      },
     });
   } catch (error: any) {
     await client.query("ROLLBACK");
@@ -209,7 +209,6 @@ export const getUsuarios = async (req: Request, res: Response) => {
       LIMIT 1000
     `);
 
-    // Normalizar fecha y generar URL firmada de foto
     const rows = await Promise.all(result.rows.map(async row => ({
       ...row,
       fecha_nacimiento: normalizarFecha(row.fecha_nacimiento),
@@ -258,10 +257,10 @@ export const getUsuarioById = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Usuario no encontrado" });
 
     const usuario = result.rows[0];
-
-    // Normalizar fecha_nacimiento y generar URL firmada de foto
     usuario.fecha_nacimiento = normalizarFecha(usuario.fecha_nacimiento);
-    usuario.foto_url = usuario.foto_public_id ? await getPresignedUrl(usuario.foto_public_id) : null;
+    usuario.foto_url = usuario.foto_public_id
+      ? await getPresignedUrl(usuario.foto_public_id)
+      : null;
 
     const privilegiosResult = await pool.query(`
       SELECT privilegios_idprivilegios
@@ -283,15 +282,12 @@ export const getUsuarioById = async (req: Request, res: Response) => {
 // ==========================
 export const updateUsuario = async (req: Request, res: Response) => {
   const client = await pool.connect();
-
   try {
     const { id } = req.params;
     let { nombre, apellido, correo, telefono, codigo, roles_idroles, privilegios } = req.body;
 
     if (!Number.isInteger(Number(id)) || Number(id) < 1)
       return res.status(400).json({ error: "ID inválido" });
-
-    // Validar ANTES de sanitizar
     if (!nombre?.trim() || !apellido?.trim() || !correo?.trim())
       return res.status(400).json({ error: "Nombre, apellido y correo son requeridos" });
     if (!validator.isEmail(correo.trim()))
@@ -299,7 +295,6 @@ export const updateUsuario = async (req: Request, res: Response) => {
     if (!Number.isInteger(Number(roles_idroles)) || Number(roles_idroles) < 1)
       return res.status(400).json({ error: "Debe seleccionar un rol válido" });
 
-    // Sanitizar después de validar
     nombre   = nombre.trim();
     apellido = apellido.trim();
     correo   = validator.normalizeEmail(correo.trim()) || "";
@@ -316,33 +311,47 @@ export const updateUsuario = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "El correo ya está registrado" });
     }
 
-    // ── Detectar si se está eliminando la foto ──
-    const eliminandoFoto = req.body.foto_id_archivo === null || req.body.foto_id_archivo === "";
-    let fotoPublicIdABorrar: string | null = null;
+    // ── Foto actual ───────────────────────────────────────────────────────────
+    const fotoActualResult = await client.query(
+      `SELECT u.foto_id_archivo, a.public_id AS foto_public_id
+       FROM usuarios u
+       LEFT JOIN archivos a ON a.id_archivo = u.foto_id_archivo
+       WHERE u.idusuario = $1`, [id]
+    );
+    const fotoActual         = fotoActualResult.rows[0];
+    const fotoIdActual       = fotoActual?.foto_id_archivo  ?? null;
+    const fotoPublicIdActual = fotoActual?.foto_public_id   ?? null;
+    const publicIdsABorrarDeS3: string[] = [];
 
+    // ── Caso 1: eliminando foto ───────────────────────────────────────────────
+    const eliminandoFoto =
+      req.body.foto_id_archivo === null || req.body.foto_id_archivo === "";
     if (eliminandoFoto) {
-      const fotoActual = await client.query(
-        `SELECT a.public_id, a.id_archivo
-         FROM usuarios u
-         JOIN archivos a ON a.id_archivo = u.foto_id_archivo
-         WHERE u.idusuario = $1`, [id]
-      );
-      if (fotoActual.rows.length > 0) {
-        fotoPublicIdABorrar = fotoActual.rows[0].public_id;
-        const idArchivoViejo = fotoActual.rows[0].id_archivo;
+      if (fotoIdActual) {
         await client.query("UPDATE usuarios SET foto_id_archivo = NULL WHERE idusuario = $1", [id]);
-        await client.query("DELETE FROM archivos WHERE id_archivo = $1", [idArchivoViejo]);
+        await client.query("DELETE FROM archivos WHERE id_archivo = $1", [fotoIdActual]);
+        if (fotoPublicIdActual) publicIdsABorrarDeS3.push(fotoPublicIdActual);
       }
       delete req.body.foto_id_archivo;
     }
 
+    // ── Caso 2: reemplazando foto ─────────────────────────────────────────────
+    const nuevaFotoId = req.body.foto_id_archivo ? Number(req.body.foto_id_archivo) : null;
+    if (nuevaFotoId && fotoIdActual && nuevaFotoId !== fotoIdActual) {
+      await client.query("DELETE FROM archivos WHERE id_archivo = $1", [fotoIdActual]);
+      if (fotoPublicIdActual) publicIdsABorrarDeS3.push(fotoPublicIdActual);
+    }
+
+    // ── Construir UPDATE ──────────────────────────────────────────────────────
     const extrasUsuario = extraerCampos(req.body, CAMPOS_USUARIO_EXTRA);
     const extraKeys     = Object.keys(extrasUsuario);
     const extraValues   = Object.values(extrasUsuario);
 
     let paramIndex = 5;
-    const setClauses: string[]  = [`nombre=$1`, `apellido=$2`, `correo=$3`, `telefono=$4`, `roles_idroles=$5`];
-    const updateValues: any[]   = [nombre, apellido, correo, telefono || null, roles_idroles];
+    const setClauses: string[] = [
+      `nombre=$1`, `apellido=$2`, `correo=$3`, `telefono=$4`, `roles_idroles=$5`,
+    ];
+    const updateValues: any[] = [nombre, apellido, correo, telefono || null, roles_idroles];
 
     if (codigo && codigo.trim() !== "") {
       if (!/^\d{5}$/.test(codigo)) {
@@ -350,7 +359,8 @@ export const updateUsuario = async (req: Request, res: Response) => {
         return res.status(400).json({ error: "Datos de entrada inválidos" });
       }
       const todosLosCodigos = await client.query(
-        "SELECT idusuario, codigo FROM usuarios WHERE idusuario != $1 LIMIT $2", [id, MAX_USERS_TO_CHECK]
+        "SELECT idusuario, codigo FROM usuarios WHERE idusuario != $1 LIMIT $2",
+        [id, MAX_USERS_TO_CHECK]
       );
       for (const row of todosLosCodigos.rows) {
         if (await bcrypt.compare(codigo, row.codigo)) {
@@ -420,18 +430,16 @@ export const updateUsuario = async (req: Request, res: Response) => {
 
     await client.query("COMMIT");
 
-    // Borrar foto de S3 fuera de la transacción si se eliminó
-    if (fotoPublicIdABorrar) {
+    for (const publicId of publicIdsABorrarDeS3) {
       try {
-        await deleteFromS3(fotoPublicIdABorrar);
-        console.log("🗑️ Foto eliminada de S3:", fotoPublicIdABorrar);
+        await deleteFromS3(publicId);
+        console.log("🗑️ Foto eliminada de S3:", publicId);
       } catch (s3Error) {
         console.error("⚠️ No se pudo borrar foto de S3:", s3Error);
       }
     }
 
     console.log("✅ Actualización completada");
-
     res.json({ message: "Usuario actualizado exitosamente", usuario: resultUsuario.rows[0] });
   } catch (error: any) {
     await client.query("ROLLBACK");
@@ -447,7 +455,6 @@ export const updateUsuario = async (req: Request, res: Response) => {
 // ==========================
 export const deleteUsuario = async (req: Request, res: Response) => {
   const client = await pool.connect();
-
   try {
     const { id } = req.params;
 
@@ -456,13 +463,12 @@ export const deleteUsuario = async (req: Request, res: Response) => {
 
     await client.query("BEGIN");
 
-    // Obtener foto_id_archivo antes de eliminar
+    // Foto de perfil
     const fotoResult = await client.query(
       "SELECT foto_id_archivo FROM usuarios WHERE idusuario = $1", [id]
     );
     const fotoIdArchivo = fotoResult.rows[0]?.foto_id_archivo || null;
 
-    // Si tiene foto, obtener public_id para borrar de S3
     let fotoPublicId: string | null = null;
     if (fotoIdArchivo) {
       const archivoResult = await client.query(
@@ -471,10 +477,15 @@ export const deleteUsuario = async (req: Request, res: Response) => {
       fotoPublicId = archivoResult.rows[0]?.public_id || null;
     }
 
-    // Eliminar privilegios
+    // Fotos INE — usar usuario_id
+    const ineResult = await client.query(
+      `SELECT public_id FROM archivos
+       WHERE usuario_id = $1 AND public_id LIKE '%usuarios-ine%'`, [id]
+    );
+    const inePublicIds: string[] = ineResult.rows.map((r: any) => r.public_id).filter(Boolean);
+
     await client.query("DELETE FROM privilegios_has_usuarios WHERE usuarios_idusuario = $1", [id]);
 
-    // Eliminar usuario (ON DELETE CASCADE borra direccion y ficha_medica)
     const result = await client.query(
       "DELETE FROM usuarios WHERE idusuario = $1 RETURNING idusuario", [id]
     );
@@ -484,20 +495,22 @@ export const deleteUsuario = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
-    // Eliminar registro de archivos si tenía foto
-    if (fotoIdArchivo) {
+    if (fotoIdArchivo)
       await client.query("DELETE FROM archivos WHERE id_archivo = $1", [fotoIdArchivo]);
-    }
+
+    if (inePublicIds.length > 0)
+      await client.query(
+        `DELETE FROM archivos WHERE usuario_id = $1 AND public_id LIKE '%usuarios-ine%'`, [id]
+      );
 
     await client.query("COMMIT");
 
-    // Borrar de S3 fuera de la transacción (no queremos rollback si falla S3)
-    if (fotoPublicId) {
+    for (const publicId of [fotoPublicId, ...inePublicIds].filter(Boolean) as string[]) {
       try {
-        await deleteFromS3(fotoPublicId);
-        console.log("🗑️ Foto eliminada de S3:", fotoPublicId);
+        await deleteFromS3(publicId);
+        console.log("🗑️ Archivo eliminado de S3:", publicId);
       } catch (s3Error) {
-        console.error("⚠️ No se pudo borrar foto de S3 (usuario ya eliminado):", s3Error);
+        console.error("⚠️ No se pudo borrar de S3:", s3Error);
       }
     }
 
@@ -525,8 +538,7 @@ export const toggleActivoUsuario = async (req: Request, res: Response) => {
     const result = await pool.query(
       `UPDATE usuarios SET activo = NOT activo
        WHERE idusuario = $1
-       RETURNING idusuario, nombre, apellido, activo`,
-      [id]
+       RETURNING idusuario, nombre, apellido, activo`, [id]
     );
 
     if ((result.rowCount ?? 0) === 0)
@@ -584,5 +596,40 @@ export const getUsuariosDiseno = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("❌ GET USUARIOS DISEÑO ERROR:", error.message);
     res.status(500).json({ error: "Error al obtener usuarios de diseño" });
+  }
+};
+
+// ==========================
+// OBTENER FOTOS INE DEL USUARIO
+// ==========================
+export const getFotosINE = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    if (!Number.isInteger(Number(id)) || Number(id) < 1)
+      return res.status(400).json({ error: "ID inválido" });
+
+    const result = await pool.query(
+      `SELECT id_archivo, nombre, public_id
+       FROM archivos
+       WHERE usuario_id = $1
+         AND public_id LIKE '%usuarios-ine%'
+       ORDER BY created_at ASC`,
+      [id]
+    );
+
+    const archivos = await Promise.all(
+      result.rows.map(async row => ({
+        id_archivo: row.id_archivo,
+        nombre:     row.nombre,
+        public_id:  row.public_id,
+        url:        await getPresignedUrl(row.public_id),
+      }))
+    );
+
+    res.json(archivos);
+  } catch (error: any) {
+    console.error("❌ GET FOTOS INE ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener fotos INE" });
   }
 };

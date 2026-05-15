@@ -171,18 +171,15 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           ON rd_final.orden_diseno_id = od.idorden_diseno
           AND rd_final.es_version_final = true
 
-      -- Render: categoria='render' de la revisión final
-      LEFT JOIN archivos ar
-          ON ar.revision_diseno_id = rd_final.idrevision
-          AND ar.categoria = 'render'
+     -- Render de la revisión final
+LEFT JOIN archivos ar
+    ON ar.revision_diseno_id = rd_final.idrevision
+    AND ar.categoria = 'render'
 
-      -- Master: categoria='master' de cualquier revisión de la misma orden
-      LEFT JOIN archivos am
-          ON am.revision_diseno_id IN (
-            SELECT idrevision FROM revision_diseno
-            WHERE orden_diseno_id = od.idorden_diseno
-          )
-          AND am.categoria = 'master'
+-- Master de la MISMA revisión final
+LEFT JOIN archivos am
+    ON am.revision_diseno_id = rd_final.idrevision
+    AND am.categoria = 'master'
 
       WHERE sp.solicitud_idsolicitud = $1
       ORDER BY sp.idsolicitud_producto
