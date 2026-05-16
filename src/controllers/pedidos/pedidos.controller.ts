@@ -335,6 +335,36 @@ export const actualizarPedido = async (req: Request, res: Response) => {
           `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
           [idsolicitud_producto]
         );
+
+        // Borrar orden_diseno y sus dependientes
+        const { rows: odRows } = await client.query(
+          `SELECT idorden_diseno FROM orden_diseno WHERE solicitud_producto_id = $1`,
+          [idsolicitud_producto]
+        );
+        const ordenDisenoIds: number[] = odRows.map((r: any) => r.idorden_diseno);
+        if (ordenDisenoIds.length > 0) {
+          await client.query(
+            `DELETE FROM orden_diseno_participante WHERE orden_diseno_id = ANY($1::int[])`,
+            [ordenDisenoIds]
+          );
+          await client.query(
+            `DELETE FROM archivos WHERE revision_diseno_id = ANY($1::int[])`,
+            [ordenDisenoIds]
+          );
+          await client.query(
+            `DELETE FROM orden_diseno WHERE idorden_diseno = ANY($1::int[])`,
+            [ordenDisenoIds]
+          );
+        }
+
+        await client.query(
+          `DELETE FROM diseno_producto WHERE solicitud_producto_idsolicitud_producto = $1`,
+          [idsolicitud_producto]
+        );
+        await client.query(
+          `DELETE FROM orden_produccion WHERE idsolicitud_producto = $1`,
+          [idsolicitud_producto]
+        );
         await client.query(
           `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = $1`,
           [idsolicitud_producto]
@@ -349,31 +379,31 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       // ── Resolver IDs de tintas/caras ────────────────────────────────────────
       const tintasId = await resolverIdTintas(client, tintas);
       const carasId = await resolverIdCaras(client, caras);
-      // Antes del UPDATE, limpiar pantones sobrantes
+
+      // Limpiar pantones sobrantes
       const pantonesLimpios = (() => {
         if (!pantones) return null;
         const arr = pantones.split(",").map((s: string) => s.trim()).filter(Boolean);
-        // Cortar al número de tintas actual
         const truncados = arr.slice(0, tintas);
         return truncados.length > 0 ? truncados.join(", ") : null;
       })();
+
       // ── Actualizar solicitud_producto ───────────────────────────────────────
-      // Después — siempre sobreescribe tintas y caras
       await client.query(
         `UPDATE solicitud_producto SET
-     tintas_idtintas = $1,
-     caras_idcaras   = $2,
-     pantones        = $3,
-     pigmentos       = $4,
-     observacion     = $5,
-     idsuaje         = $6,
-     id_color        = $7,
-     id_medidatro    = $8
-   WHERE idsolicitud_producto = $9`,
+           tintas_idtintas = $1,
+           caras_idcaras   = $2,
+           pantones        = $3,
+           pigmentos       = $4,
+           observacion     = $5,
+           idsuaje         = $6,
+           id_color        = $7,
+           id_medidatro    = $8
+         WHERE idsolicitud_producto = $9`,
         [
           tintasId,
           carasId,
-          pantonesLimpios,   // ← pantones truncados al nº de tintas
+          pantonesLimpios,
           pigmentos || null,
           observacion || null,
           prod.idsuaje ?? null,
@@ -502,6 +532,7 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     const solicitudId: number = pedRows[0].idsolicitud;
     const noCotizacion: number | null = pedRows[0].no_cotizacion;
 
+    // ── Validar pagos ─────────────────────────────────────────────────────────
     const { rows: pagosRows } = await client.query(
       `SELECT COUNT(*) AS total FROM venta_pago vp
        INNER JOIN ventas v ON v.idventas = vp.ventas_idventas
@@ -516,6 +547,7 @@ export const eliminarPedido = async (req: Request, res: Response) => {
       });
     }
 
+    // ── Validar diseño aprobado ───────────────────────────────────────────────
     const { rows: disenoRows } = await client.query(
       `SELECT COUNT(*) AS total FROM diseno_producto dp
        INNER JOIN diseno d ON d.iddiseno = dp.diseno_iddiseno
@@ -533,28 +565,77 @@ export const eliminarPedido = async (req: Request, res: Response) => {
 
     await client.query("BEGIN");
 
+    // ── Obtener IDs de productos ──────────────────────────────────────────────
     const { rows: prodRows } = await client.query(
-      `SELECT idsolicitud_producto FROM solicitud_producto WHERE solicitud_idsolicitud = $1`, [solicitudId]
+      `SELECT idsolicitud_producto FROM solicitud_producto WHERE solicitud_idsolicitud = $1`,
+      [solicitudId]
     );
     const productoIds: number[] = prodRows.map((r: any) => r.idsolicitud_producto);
 
     if (productoIds.length > 0) {
+      // 1. Herramental
       await client.query(
-        `DELETE FROM herramental WHERE idsolicitud_producto = ANY($1::int[])`, [productoIds]
+        `DELETE FROM herramental WHERE idsolicitud_producto = ANY($1::int[])`,
+        [productoIds]
       );
-      await client.query(
-        `DELETE FROM diseno_producto WHERE solicitud_producto_idsolicitud_producto = ANY($1::int[])`, [productoIds]
+
+      // 2. orden_diseno → participantes + archivos
+      const { rows: odRows } = await client.query(
+        `SELECT idorden_diseno FROM orden_diseno WHERE solicitud_producto_id = ANY($1::int[])`,
+        [productoIds]
       );
+      const ordenDisenoIds: number[] = odRows.map((r: any) => r.idorden_diseno);
+
+      if (ordenDisenoIds.length > 0) {
+        await client.query(
+          `DELETE FROM orden_diseno_participante WHERE orden_diseno_id = ANY($1::int[])`,
+          [ordenDisenoIds]
+        );
+        await client.query(
+          `DELETE FROM archivos WHERE revision_diseno_id = ANY($1::int[])`,
+          [ordenDisenoIds]
+        );
+        await client.query(
+          `DELETE FROM orden_diseno WHERE idorden_diseno = ANY($1::int[])`,
+          [ordenDisenoIds]
+        );
+      }
+
+      // 3. diseno_producto
       await client.query(
-        `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = ANY($1::int[])`, [productoIds]
+        `DELETE FROM diseno_producto WHERE solicitud_producto_idsolicitud_producto = ANY($1::int[])`,
+        [productoIds]
+      );
+
+      // 4. orden_produccion
+      await client.query(
+        `DELETE FROM orden_produccion WHERE idsolicitud_producto = ANY($1::int[])`,
+        [productoIds]
+      );
+
+      // 5. solicitud_detalle
+      await client.query(
+        `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = ANY($1::int[])`,
+        [productoIds]
       );
     }
 
-    await client.query(`DELETE FROM diseno WHERE solicitud_idsolicitud = $1`, [solicitudId]);
-    await client.query(`DELETE FROM solicitud_producto WHERE solicitud_idsolicitud = $1`, [solicitudId]);
+    // ── diseno (encabezado, sin productos ya) ─────────────────────────────────
+    await client.query(
+      `DELETE FROM diseno WHERE solicitud_idsolicitud = $1`,
+      [solicitudId]
+    );
 
+    // ── solicitud_producto ────────────────────────────────────────────────────
+    await client.query(
+      `DELETE FROM solicitud_producto WHERE solicitud_idsolicitud = $1`,
+      [solicitudId]
+    );
+
+    // ── ventas y pagos ────────────────────────────────────────────────────────
     const { rows: ventaRows } = await client.query(
-      `SELECT idventas FROM ventas WHERE solicitud_idsolicitud = $1`, [solicitudId]
+      `SELECT idventas FROM ventas WHERE solicitud_idsolicitud = $1`,
+      [solicitudId]
     );
     if (ventaRows.length > 0) {
       const ventaId = ventaRows[0].idventas;
@@ -562,7 +643,9 @@ export const eliminarPedido = async (req: Request, res: Response) => {
       await client.query(`DELETE FROM ventas WHERE idventas = $1`, [ventaId]);
     }
 
+    // ── solicitud ─────────────────────────────────────────────────────────────
     await client.query(`DELETE FROM solicitud WHERE idsolicitud = $1`, [solicitudId]);
+
     await client.query("COMMIT");
 
     return res.json({
