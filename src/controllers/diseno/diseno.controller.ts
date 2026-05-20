@@ -9,13 +9,17 @@ const ESTADO = {
 
 async function generarNoProduccion(client: any): Promise<string> {
   const anio = new Date().getFullYear().toString().slice(-2);
+  const prefijo = `OP${anio}`;
+
   const { rows } = await client.query(
-    `SELECT COUNT(*) AS total FROM orden_produccion 
-     WHERE no_produccion::text LIKE $1`,
-    [`OP${anio}%`]
+    `SELECT MAX(CAST(SUBSTRING(no_produccion FROM 5) AS INTEGER)) AS ultimo
+     FROM orden_produccion
+     WHERE no_produccion LIKE $1`,
+    [`${prefijo}%`]
   );
-  const siguiente = Number(rows[0].total) + 1;
-  return `OP${anio}${String(siguiente).padStart(3, "0")}`;
+
+  const siguiente = (rows[0].ultimo ?? 0) + 1;
+  return `${prefijo}${String(siguiente).padStart(3, "0")}`;
 }
 
 async function anticipoPagado(client: any, solicitudId: number): Promise<boolean> {
@@ -231,7 +235,6 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
   try {
     const { noPedido } = req.params;
 
-    // Consulta principal (cabecera)
     const { rows: solicitudRows } = await pool.query(
       `SELECT
         s.idsolicitud, s.no_pedido, s.no_cotizacion,
@@ -257,9 +260,6 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
     const disenoId         = solicitud.iddiseno;
     const anticupoCubierto = Number(solicitud.abono) >= Number(solicitud.anticipo);
 
-    // ============================================================
-    // CONSULTA DE PRODUCTOS
-    // ============================================================
     const { rows: productos } = await pool.query(`
       SELECT
         dp.iddiseno_producto,
@@ -311,9 +311,6 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
       ORDER BY dp.iddiseno_producto
     `, [disenoId]);
 
-    // ============================================================
-    // FORMATEO DE PRODUCTOS
-    // ============================================================
     const productosFormateados = productos.map((p: any) => ({
       iddiseno_producto:    p.iddiseno_producto,
       diseno_iddiseno:      p.diseno_iddiseno,
@@ -467,6 +464,12 @@ export const actualizarEstadoProducto = async (req: Request, res: Response) => {
       const cubierto = await anticipoPagado(client, solicitudId);
 
       if (cubierto) {
+        // Advisory lock por producto — evita race condition con aprobarOrdenDiseno
+        await client.query(
+          `SELECT pg_advisory_xact_lock($1)`,
+          [idsolicitudProducto]
+        );
+
         const { rows: ordenExistente } = await client.query(
           `SELECT idproduccion FROM orden_produccion WHERE idsolicitud_producto = $1`,
           [idsolicitudProducto]
@@ -496,7 +499,8 @@ export const actualizarEstadoProducto = async (req: Request, res: Response) => {
               pzas_merma,
               repeticion_kidder,
               repeticion_sicosa
-            ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+            ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+            ON CONFLICT (no_produccion) DO NOTHING`,
             [
               ESTADO.PENDIENTE,
               noProduccion,

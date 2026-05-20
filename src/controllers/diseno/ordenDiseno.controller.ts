@@ -50,18 +50,22 @@ const ESTADO = {
 } as const;
 
 // ============================================================
-// HELPERS DE PRODUCCIÓN (copiados de diseno.controller para reutilizar)
+// HELPERS DE PRODUCCIÓN
 // ============================================================
 
 async function generarNoProduccion(client: any): Promise<string> {
   const anio = new Date().getFullYear().toString().slice(-2);
+  const prefijo = `OP${anio}`;
+
   const { rows } = await client.query(
-    `SELECT COUNT(*) AS total FROM orden_produccion 
-     WHERE no_produccion::text LIKE $1`,
-    [`OP${anio}%`]
+    `SELECT MAX(CAST(SUBSTRING(no_produccion FROM 5) AS INTEGER)) AS ultimo
+     FROM orden_produccion
+     WHERE no_produccion LIKE $1`,
+    [`${prefijo}%`]
   );
-  const siguiente = Number(rows[0].total) + 1;
-  return `OP${anio}${String(siguiente).padStart(3, "0")}`;
+
+  const siguiente = (rows[0].ultimo ?? 0) + 1;
+  return `${prefijo}${String(siguiente).padStart(3, "0")}`;
 }
 
 async function anticipoPagado(client: any, solicitudId: number): Promise<boolean> {
@@ -419,7 +423,6 @@ export const getOrdenDisenoById = async (req: AuthRequest, res: Response) => {
 
     const orden = ordenRows[0];
 
-    // Participantes
     const { rows: participantes } = await pool.query(`
       SELECT DISTINCT ON (u.idusuario)
         COALESCE(odp.idparticipante, -u.idusuario)          AS idparticipante,
@@ -445,7 +448,6 @@ export const getOrdenDisenoById = async (req: AuthRequest, res: Response) => {
       ORDER BY u.idusuario, odp.agregado_at ASC NULLS LAST
     `, [id]);
 
-    // Revisiones con archivos
     const { rows: revisiones } = await pool.query(`
       SELECT
         rd.idrevision,
@@ -479,7 +481,6 @@ export const getOrdenDisenoById = async (req: AuthRequest, res: Response) => {
       ORDER BY rd.numero_version ASC, rd.created_at ASC
     `, [id]);
 
-    // Generar URLs firmadas S3
     const revisionesConUrls = await Promise.all(
       revisiones.map(async (rev) => ({
         ...rev,
@@ -587,9 +588,6 @@ export const enviarMensaje = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Orden no encontrada" });
     }
 
-    // ← ALTERACIÓN 2: ya no bloqueamos mensajes en órdenes aprobadas
-    // (se eliminó la validación que retornaba 400 cuando estado === "aprobado")
-
     const { rows: usuarioRows } = await client.query(
       `SELECT p.privilegio
        FROM usuarios u
@@ -670,9 +668,6 @@ export const subirRevision = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Orden no encontrada" });
     }
 
-    // Importante: una orden aprobada NO bloquea el chat ni la carga de archivos.
-    // Solo se valida que exista; se permite seguir subiendo renders/feedback.
-
     const versionActual = ordenRows[0].version_actual;
     const noPedido      = ordenRows[0].no_pedido;
     const nuevaVersion  = tipo === "render" ? versionActual + 1 : versionActual;
@@ -735,7 +730,6 @@ export const subirRevision = async (req: AuthRequest, res: Response) => {
 
 // ============================================================
 // APROBAR ORDEN DE DISEÑO
-// ← ALTERACIÓN 1: también aprueba diseno_producto y genera orden de producción
 // ============================================================
 export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
@@ -789,7 +783,6 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
       const disenoId    = dp.diseno_iddiseno;
       const solicitudId = dp.solicitud_idsolicitud;
 
-      // Actualizar estado del producto a APROBADO
       await client.query(
         `UPDATE diseno_producto
          SET estado_administrativo_cat_idestado_administrativo_cat = $1,
@@ -799,7 +792,6 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
         [ESTADO.APROBADO, dp.iddiseno_producto]
       );
 
-      // Recalcular estado cabecera diseno
       const { rows: todosProductos } = await client.query(
         `SELECT estado_administrativo_cat_idestado_administrativo_cat AS estado_id
          FROM diseno_producto WHERE diseno_iddiseno = $1`,
@@ -824,9 +816,15 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
         );
       }
 
-      // 3. Intentar generar orden de producción si anticipo está cubierto
+      // 3. Generar orden de producción si anticipo cubierto
       const cubierto = await anticipoPagado(client, solicitudId);
       if (cubierto) {
+        // Advisory lock por producto — evita race condition con actualizarEstadoProducto
+        await client.query(
+          `SELECT pg_advisory_xact_lock($1)`,
+          [solicitudProductoId]
+        );
+
         const { rows: ordenExistente } = await client.query(
           `SELECT idproduccion FROM orden_produccion WHERE idsolicitud_producto = $1`,
           [solicitudProductoId]
@@ -843,7 +841,8 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
               idestado_produccion_cat, repeticion_extrusion, repeticion_metro, metros,
               metros_merma, ancho_bobina, kilos, kilos_merma, pzas, pzas_merma,
               repeticion_kidder, repeticion_sicosa
-            ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+            ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+            ON CONFLICT (no_produccion) DO NOTHING`,
             [
               ESTADO.PENDIENTE, noProduccion, solicitudId, solicitudProductoId,
               ESTADO.PENDIENTE,
@@ -1109,7 +1108,9 @@ export const limpiarChatsAntiguos = async (req: Request, res: Response) => {
   }
 };
 
+// ============================================================
 // GET /orden-diseno/:id/observacion-producto
+// ============================================================
 export const getObservacionProducto = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
