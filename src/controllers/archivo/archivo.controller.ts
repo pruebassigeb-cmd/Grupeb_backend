@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { uploadToS3, deleteFromS3, getPresignedUrl, CarpetaS3, CARPETAS, MulterFile } from "../../config/multer";
+import { uploadToS3, deleteFromS3, getPresignedUrl, CarpetaS3, CARPETAS, MulterFile, SUBCARPETAS_PDF } from "../../config/multer";
 import { pool } from "../../config/db";
 
 type RequestConArchivo = Request & { file?: MulterFile };
@@ -16,10 +16,9 @@ const validarCarpeta = (carpeta: string): CarpetaS3 => {
   return "disenos";
 };
 
-const validarCategoria = (categoria: string): "render" | "master" | "otro" => {
-  if (categoria === "render") return "render";
-  if (categoria === "master") return "master";
-  return "otro";
+const validarSubcarpeta = (subcarpeta: string): string | undefined => {
+  if ((SUBCARPETAS_PDF as readonly string[]).includes(subcarpeta)) return subcarpeta;
+  return undefined;
 };
 
 export const subirArchivo = async (req: RequestConArchivo, res: Response): Promise<void> => {
@@ -29,13 +28,12 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
       return;
     }
 
-    const carpeta   = validarCarpeta(req.body.carpeta   || "disenos");
-    const categoria = validarCategoria(req.body.categoria || "otro");
+    const carpeta    = validarCarpeta(req.body.carpeta || "disenos");
+    const subcarpeta = req.body.subcarpeta ? validarSubcarpeta(req.body.subcarpeta) : undefined;
 
-    const { url, public_id, resource_type } = await uploadToS3(req.file, carpeta);
-    const tipo     = getTipo(req.file.mimetype);
-    const tamanoKb = Math.round(req.file.size / 1024);
-
+    const { url, public_id, resource_type } = await uploadToS3(req.file, carpeta, subcarpeta);
+    const tipo      = getTipo(req.file.mimetype);
+    const tamanoKb  = Math.round(req.file.size / 1024);
     const subidoPor = (req as any).user?.id || null;
     const usuarioId = req.body.usuario_id ? Number(req.body.usuario_id) : null;
 
@@ -44,7 +42,7 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
         (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria, usuario_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb, subidoPor, resource_type, categoria, usuarioId]
+      [req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb, subidoPor, resource_type, subcarpeta ?? null, usuarioId]
     );
 
     res.status(201).json(result.rows[0]);
@@ -63,11 +61,19 @@ export const listarArchivos = async (_req: Request, res: Response): Promise<void
     );
 
     const archivosConUrl = await Promise.all(
-      result.rows.map(async (archivo) => ({
-        ...archivo,
-        url:     await getPresignedUrl(archivo.public_id),
-        carpeta: archivo.public_id?.split("/")?.[1] ?? "disenos",
-      }))
+      result.rows.map(async (archivo) => {
+        const partes = archivo.public_id?.split("/") ?? [];
+        // key: grupeb/carpeta/subcarpeta?/uuid-nombre
+        const carpeta    = partes[1] ?? "disenos";
+        const subcarpeta = partes.length === 4 ? partes[2] : null;
+
+        return {
+          ...archivo,
+          url:        await getPresignedUrl(archivo.public_id),
+          carpeta,
+          subcarpeta,
+        };
+      })
     );
 
     res.json(archivosConUrl);
@@ -154,10 +160,10 @@ export const obtenerEstadisticas = async (_req: Request, res: Response): Promise
         COUNT(*) FILTER (WHERE tipo = 'image')                                     AS total_imagenes,
         COUNT(*) FILTER (WHERE tipo = 'pdf')                                       AS total_pdfs,
         COUNT(*) FILTER (WHERE tipo = 'document')                                  AS total_documentos,
-        COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%disenos%'),      0) AS kb_disenos,
-        COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%pdfs%'),         0) AS kb_pdfs,
-        COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%fotos-envios%'), 0) AS kb_fotos,
-        COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%backups%'),      0) AS kb_backups
+        COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%/disenos/%'),      0) AS kb_disenos,
+        COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%/pdfs/%'),         0) AS kb_pdfs,
+        COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%/fotos-envios/%'), 0) AS kb_fotos,
+        COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%/backups/%'),      0) AS kb_backups
       FROM archivos
     `);
 

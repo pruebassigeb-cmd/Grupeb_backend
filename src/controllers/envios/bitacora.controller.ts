@@ -20,6 +20,7 @@ export const getBitacora = async (req: Request, res: Response) => {
         e.idenvio,
         e.tipo,
         e.estado,
+        e.es_parcialidad, 
         e.numero_guia,
         s.no_pedido,
         cli.empresa,
@@ -42,31 +43,32 @@ export const getBitacora = async (req: Request, res: Response) => {
     `);
 
     res.json(rows.map((r: any) => ({
-      idbitacora:        Number(r.idbitacora),
-      fecha:             r.fecha,
-      hora_salida:       r.hora_salida     || null,
-      hora_llegada:      r.hora_llegada    || null,
-      observacion:       r.observacion     || null,
+      idbitacora: Number(r.idbitacora),
+      fecha: r.fecha,
+      hora_salida: r.hora_salida || null,
+      hora_llegada: r.hora_llegada || null,
+      observacion: r.observacion || null,
       observacion_extra: r.observacion_extra || null,
-      firma:             r.firma           || null,
-      created_at:        r.created_at,
-      updated_at:        r.updated_at,
+      firma: r.firma || null,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
       envio: {
-        idenvio:     Number(r.idenvio),
-        tipo:        r.tipo,
-        estado:      r.estado,
+        idenvio: Number(r.idenvio),
+        tipo: r.tipo,
+        estado: r.estado,
         numero_guia: r.numero_guia || null,
+        es_parcialidad: Boolean(r.es_parcialidad),
       },
-      no_pedido:  r.no_pedido,
-      cliente:    r.impresion || r.empresa || "",
+      no_pedido: r.no_pedido,
+      cliente: r.impresion || r.empresa || "",
       chofer: {
         idusuario: Number(r.idusuario),
-        nombre:    `${r.chofer_nombre} ${r.chofer_apellido}`,
+        nombre: `${r.chofer_nombre} ${r.chofer_apellido}`,
       },
       unidad: {
         idunidad: Number(r.idunidad),
-        tipo:     r.unidad_tipo,
-        nombre:   `${r.unidad_marca} ${r.unidad_modelo} — ${r.unidad_placa}`,
+        tipo: r.unidad_tipo,
+        nombre: `${r.unidad_marca} ${r.unidad_modelo} — ${r.unidad_placa}`,
       },
     })));
   } catch (error: any) {
@@ -97,6 +99,7 @@ export const getBitacoraById = async (req: Request, res: Response) => {
         e.tipo,
         e.estado,
         e.numero_guia,
+        e.es_parcialidad,
         s.no_pedido,
         cli.empresa,
         cli.impresion,
@@ -123,31 +126,32 @@ export const getBitacoraById = async (req: Request, res: Response) => {
 
     const r = rows[0];
     res.json({
-      idbitacora:        Number(r.idbitacora),
-      fecha:             r.fecha,
-      hora_salida:       r.hora_salida       || null,
-      hora_llegada:      r.hora_llegada      || null,
-      observacion:       r.observacion       || null,
+      idbitacora: Number(r.idbitacora),
+      fecha: r.fecha,
+      hora_salida: r.hora_salida || null,
+      hora_llegada: r.hora_llegada || null,
+      observacion: r.observacion || null,
       observacion_extra: r.observacion_extra || null,
-      firma:             r.firma             || null,
-      created_at:        r.created_at,
-      updated_at:        r.updated_at,
+      firma: r.firma || null,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
       envio: {
-        idenvio:     Number(r.idenvio),
-        tipo:        r.tipo,
-        estado:      r.estado,
+        idenvio: Number(r.idenvio),
+        tipo: r.tipo,
+        estado: r.estado,
         numero_guia: r.numero_guia || null,
+        es_parcialidad: Boolean(r.es_parcialidad),
       },
       no_pedido: r.no_pedido,
-      cliente:   r.impresion || r.empresa || "",
+      cliente: r.impresion || r.empresa || "",
       chofer: {
         idusuario: Number(r.idusuario),
-        nombre:    `${r.chofer_nombre} ${r.chofer_apellido}`,
+        nombre: `${r.chofer_nombre} ${r.chofer_apellido}`,
       },
       unidad: {
         idunidad: Number(r.idunidad),
-        tipo:     r.unidad_tipo,
-        nombre:   `${r.unidad_marca} ${r.unidad_modelo} — ${r.unidad_placa}`,
+        tipo: r.unidad_tipo,
+        nombre: `${r.unidad_marca} ${r.unidad_modelo} — ${r.unidad_placa}`,
       },
     });
   } catch (error: any) {
@@ -187,7 +191,7 @@ export const registrarHoraSalida = async (req: Request, res: Response) => {
 
     console.log("✅ Hora salida registrada:", ahora);
     res.json({
-      message:    "Hora de salida registrada",
+      message: "Hora de salida registrada",
       idbitacora: Number(result.rows[0].idbitacora),
       hora_salida: result.rows[0].hora_salida,
     });
@@ -208,19 +212,29 @@ export const registrarHoraLlegada = async (req: Request, res: Response) => {
 
     const result = await pool.query(
       `UPDATE bitacora_reparto
-       SET hora_llegada = $1, updated_at = NOW()
-       WHERE idbitacora = $2
-       RETURNING idbitacora, hora_llegada`,
+   SET hora_llegada = $1, updated_at = NOW()
+   WHERE idbitacora = $2
+   RETURNING idbitacora, hora_llegada`,
       [ahora, id]
     );
 
     if ((result.rowCount ?? 0) === 0)
       return res.status(404).json({ error: "Registro no encontrado" });
 
+    await pool.query(
+      `UPDATE envio 
+   SET estado = 'entregado'
+   WHERE idenvio = (
+     SELECT envio_idenvio 
+     FROM bitacora_reparto 
+     WHERE idbitacora = $1
+   )`,
+      [id]
+    );
     console.log("✅ Hora llegada registrada:", ahora);
     res.json({
-      message:     "Hora de llegada registrada",
-      idbitacora:  Number(result.rows[0].idbitacora),
+      message: "Hora de llegada registrada",
+      idbitacora: Number(result.rows[0].idbitacora),
       hora_llegada: result.rows[0].hora_llegada,
     });
   } catch (error: any) {
@@ -270,11 +284,11 @@ export const updateBitacora = async (req: Request, res: Response) => {
        WHERE idbitacora = $6
        RETURNING idbitacora, hora_salida, hora_llegada, observacion, observacion_extra, firma, updated_at`,
       [
-        hora_salida       || null,
-        hora_llegada      || null,
-        observacion       || null,
+        hora_salida || null,
+        hora_llegada || null,
+        observacion || null,
         observacion_extra || null,
-        firma             || null,
+        firma || null,
         id,
       ]
     );

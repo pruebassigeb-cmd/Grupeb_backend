@@ -258,7 +258,7 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
     const anticupoCubierto = Number(solicitud.abono) >= Number(solicitud.anticipo);
 
     // ============================================================
-    // CONSULTA DE PRODUCTOS CON JOIN A orden_diseno (POR PRODUCTO)
+    // CONSULTA DE PRODUCTOS
     // ============================================================
     const { rows: productos } = await pool.query(`
       SELECT
@@ -273,6 +273,7 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
         cfg.medida  AS cfg_medida,
         tpp.material_plastico_producto AS tipo_producto_nombre,
         mp.tipo_material               AS material_nombre,
+        sp.descripcion,
         sd.cantidad,
         sd.kilogramos,
         sd.modo_cantidad,
@@ -285,7 +286,6 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
         op.pzas_merma,
         op.metros,
         op.metros_merma,
-        -- Campos de orden_diseno por producto
         od.idorden_diseno,
         od.no_orden_diseno,
         od.estado               AS orden_diseno_estado
@@ -312,7 +312,7 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
     `, [disenoId]);
 
     // ============================================================
-    // FORMATEO DE PRODUCTOS CON CAMPOS DE ORDEN_DISENO
+    // FORMATEO DE PRODUCTOS
     // ============================================================
     const productosFormateados = productos.map((p: any) => ({
       iddiseno_producto:    p.iddiseno_producto,
@@ -325,6 +325,7 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
       observaciones:    p.observaciones,
       fecha:            p.fecha,
       fecha_aprobacion: p.fecha_aprobacion ?? null,
+      descripcion:      p.descripcion ?? null,
       cantidad:         p.cantidad    ? Number(p.cantidad)    : null,
       kilogramos:       p.kilogramos  ? Number(p.kilogramos)  : null,
       modo_cantidad:    p.modo_cantidad || "unidad",
@@ -338,7 +339,6 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
       pzas_merma:   p.pzas_merma   != null ? Number(p.pzas_merma)   : null,
       metros:       p.metros       != null ? Number(p.metros)       : null,
       metros_merma: p.metros_merma != null ? Number(p.metros_merma) : null,
-      // ========== CAMPOS AGREGADOS DE ORDEN_DISENO POR PRODUCTO ==========
       idorden_diseno:      p.idorden_diseno      ?? null,
       no_orden_diseno:     p.no_orden_diseno     ?? null,
       orden_diseno_estado: p.orden_diseno_estado ?? null,
@@ -363,7 +363,6 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
       anticipo_cubierto:        anticupoCubierto,
       anticipo:                 Number(solicitud.anticipo),
       abono:                    Number(solicitud.abono),
-      // Campos de orden_diseno a nivel de pedido (ya existentes)
       no_orden_diseno:          solicitud.no_orden_diseno     ?? null,
       idorden_diseno:           solicitud.idorden_diseno       ?? null,
       orden_diseno_estado:      solicitud.orden_diseno_estado  ?? null,
@@ -499,22 +498,22 @@ export const actualizarEstadoProducto = async (req: Request, res: Response) => {
               repeticion_sicosa
             ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
             [
-              ESTADO.PENDIENTE,                  // $1
-              noProduccion,                      // $2
-              solicitudId,                       // $3
-              idsolicitudProducto,               // $4
-              ESTADO.PENDIENTE,                  // $5
-              datosOrden.repeticion_extrusion,   // $6
-              datosOrden.repeticion_metro,       // $7
-              datosOrden.metros,                 // $8
-              datosOrden.metros_merma,           // $9
-              datosOrden.ancho_bobina,           // $10
-              datosOrden.kilos,                  // $11
-              datosOrden.kilos_merma,            // $12
-              datosOrden.pzas,                   // $13
-              datosOrden.pzas_merma,             // $14
-              datosOrden.repeticion_kidder,      // $15
-              datosOrden.repeticion_sicosa,      // $16
+              ESTADO.PENDIENTE,
+              noProduccion,
+              solicitudId,
+              idsolicitudProducto,
+              ESTADO.PENDIENTE,
+              datosOrden.repeticion_extrusion,
+              datosOrden.repeticion_metro,
+              datosOrden.metros,
+              datosOrden.metros_merma,
+              datosOrden.ancho_bobina,
+              datosOrden.kilos,
+              datosOrden.kilos_merma,
+              datosOrden.pzas,
+              datosOrden.pzas_merma,
+              datosOrden.repeticion_kidder,
+              datosOrden.repeticion_sicosa,
             ]
           );
 

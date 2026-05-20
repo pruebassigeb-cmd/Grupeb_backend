@@ -1108,3 +1108,37 @@ export const limpiarChatsAntiguos = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
+// GET /orden-diseno/:id/observacion-producto
+export const getObservacionProducto = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const { rows } = await pool.query(`
+      SELECT
+        sp.observacion,
+        sp.descripcion,
+        sp.pigmentos,
+        sp.pantones,
+        sp.perforacion,
+        tpp.material_plastico_producto AS nombre_producto,
+        cfg.medida
+      FROM orden_diseno od
+      JOIN solicitud_producto sp
+          ON sp.idsolicitud_producto = od.solicitud_producto_id
+      LEFT JOIN configuracion_plastico cfg
+          ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
+      LEFT JOIN tipo_producto_plastico tpp
+          ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
+      WHERE od.idorden_diseno = $1
+    `, [id]);
+
+    if (rows.length === 0)
+      return res.status(404).json({ error: "Orden no encontrada" });
+
+    return res.json(rows[0]);
+  } catch (error: any) {
+    console.error("❌ GET OBSERVACION PRODUCTO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al obtener observación" });
+  }
+};

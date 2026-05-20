@@ -9,7 +9,7 @@ export const createCliente = async (req: Request, res: Response) => {
 
   try {
     const {
-      empresa, correo, telefono, atencion, razon_social, impresion, celular,
+      empresa, correo, telefono, atencion, razon_social, rfc_rs, cp_rs, impresion, celular,
       regimen_fiscal_idregimen_fiscal, metodo_pago_idmetodo_pago, forma_pago_idforma_pago,
       rfc, correo_facturacion, uso_cfdi, moneda,
       domicilio, numero, colonia, codigo_postal, poblacion, estado,
@@ -22,13 +22,17 @@ export const createCliente = async (req: Request, res: Response) => {
 
     await client.query("BEGIN");
 
+    // Generar identificador único
+    const identificar = await generarIdentificador(client);
+    console.log("🔑 Identificador generado:", identificar);
+
     // 1. Insertar CLIENTE
     const resultCliente = await client.query(
       `INSERT INTO clientes (
         regimen_fiscal_idregimen_fiscal, metodo_pago_idmetodo_pago, forma_pago_idforma_pago,
-        empresa, correo, telefono, atencion, razon_social, impresion, celular, fecha
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CURRENT_TIMESTAMP)
-      RETURNING idclientes, empresa, correo, telefono, fecha`,
+        empresa, correo, telefono, atencion, razon_social, rfc_rs, cp_rs, impresion, celular, fecha, identificar
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CURRENT_TIMESTAMP,$13)
+      RETURNING idclientes, empresa, correo, telefono, fecha, identificar`,
       [
         regimen_fiscal_idregimen_fiscal || null,
         metodo_pago_idmetodo_pago       || null,
@@ -38,13 +42,16 @@ export const createCliente = async (req: Request, res: Response) => {
         telefono     || null,
         atencion     || null,
         razon_social || null,
+        rfc_rs       || null,
+        cp_rs        || null,
         impresion    || null,
         celular      || null,
+        identificar,
       ]
     );
 
     const nuevoCliente = resultCliente.rows[0];
-    const idclientes   = nuevoCliente.idclientes;
+    const idclientes = nuevoCliente.idclientes;
     console.log("✅ Cliente creado:", { id: idclientes, empresa: nuevoCliente.empresa });
 
     // 2. Insertar DOMICILIO
@@ -55,12 +62,12 @@ export const createCliente = async (req: Request, res: Response) => {
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING iddomicilio`,
         [
           idclientes,
-          domicilio     || null,
-          numero        || null,
-          colonia       || null,
+          domicilio || null,
+          numero || null,
+          colonia || null,
           codigo_postal || null,
-          poblacion     || null,
-          estado        || null,
+          poblacion || null,
+          estado || null,
         ]
       );
       iddomicilio = resultDomicilio.rows[0].iddomicilio;
@@ -75,10 +82,10 @@ export const createCliente = async (req: Request, res: Response) => {
          VALUES ($1,$2,$3,$4,$5) RETURNING iddatos_facturacion`,
         [
           idclientes,
-          rfc                || null,
+          rfc || null,
           correo_facturacion || null,
-          uso_cfdi           || null,
-          moneda             || null,
+          uso_cfdi || null,
+          moneda || null,
         ]
       );
       iddatos_facturacion = resultFacturacion.rows[0].iddatos_facturacion;
@@ -88,20 +95,20 @@ export const createCliente = async (req: Request, res: Response) => {
     // 4. Insertar DIRECCION_ENVIO
     let iddireccion_envio = null;
     const hayDatosEnvio = envio_domicilio || envio_numero || envio_colonia ||
-                          envio_codigo_postal || envio_poblacion || envio_estado || envio_referencia;
+      envio_codigo_postal || envio_poblacion || envio_estado || envio_referencia;
     if (hayDatosEnvio) {
       const resultEnvio = await client.query(
         `INSERT INTO direccion_envio (clientes_idclientes, domicilio, numero, colonia, codigo_postal, poblacion, estado, referencia)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING iddireccion`,
         [
           idclientes,
-          envio_domicilio     || null,
-          envio_numero        || null,
-          envio_colonia       || null,
+          envio_domicilio || null,
+          envio_numero || null,
+          envio_colonia || null,
           envio_codigo_postal || null,
-          envio_poblacion     || null,
-          envio_estado        || null,
-          envio_referencia    || null,
+          envio_poblacion || null,
+          envio_estado || null,
+          envio_referencia || null,
         ]
       );
       iddireccion_envio = resultEnvio.rows[0].iddireccion;
@@ -114,13 +121,13 @@ export const createCliente = async (req: Request, res: Response) => {
     res.status(201).json({
       message: "Cliente creado exitosamente",
       cliente: {
-        id:                 idclientes,
-        empresa:            nuevoCliente.empresa,
-        correo:             nuevoCliente.correo,
-        telefono:           nuevoCliente.telefono,
-        fecha:              nuevoCliente.fecha,
-        domicilio_id:       iddomicilio,
-        facturacion_id:     iddatos_facturacion,
+        id: idclientes,
+        empresa: nuevoCliente.empresa,
+        correo: nuevoCliente.correo,
+        telefono: nuevoCliente.telefono,
+        fecha: nuevoCliente.fecha,
+        domicilio_id: iddomicilio,
+        facturacion_id: iddatos_facturacion,
         direccion_envio_id: iddireccion_envio,
       },
     });
@@ -141,11 +148,14 @@ export const getClientes = async (req: Request, res: Response) => {
     const result = await pool.query(`
       SELECT
         c.idclientes,
+        c.identificar,
         c.empresa,
         c.correo,
         c.telefono,
         c.atencion,
         c.razon_social,
+        c.rfc_rs,
+        c.cp_rs,
         c.impresion,
         c.celular,
         c.fecha,
@@ -201,11 +211,14 @@ export const getClienteById = async (req: Request, res: Response) => {
     const result = await pool.query(
       `SELECT
         c.idclientes,
+        c.identificar,
         c.empresa,
         c.correo,
         c.telefono,
         c.atencion,
         c.razon_social,
+        c.rfc_rs,
+        c.cp_rs,
         c.impresion,
         c.celular,
         c.fecha,
@@ -258,9 +271,6 @@ export const getClienteById = async (req: Request, res: Response) => {
   }
 };
 
-// ==========================
-// BUSCAR CLIENTES
-// ==========================
 export const searchClientes = async (req: Request, res: Response) => {
   try {
     const { query } = req.query;
@@ -269,7 +279,8 @@ export const searchClientes = async (req: Request, res: Response) => {
       const result = await pool.query(`
         SELECT
           c.idclientes, c.empresa, c.correo, c.telefono,
-          c.atencion, c.celular, c.razon_social, c.impresion
+          c.atencion, c.celular, c.razon_social, c.impresion,
+          c.identificar
         FROM clientes c
         ORDER BY c.idclientes DESC
         LIMIT 50
@@ -282,10 +293,12 @@ export const searchClientes = async (req: Request, res: Response) => {
     const result = await pool.query(
       `SELECT
         c.idclientes, c.empresa, c.correo, c.telefono,
-        c.atencion, c.celular, c.razon_social, c.impresion
+        c.atencion, c.celular, c.razon_social, c.impresion,
+        c.identificar
       FROM clientes c
       WHERE
         c.idclientes::text ILIKE $1 OR
+        c.identificar      ILIKE $1 OR
         c.atencion         ILIKE $1 OR
         c.empresa          ILIKE $1 OR
         c.telefono         ILIKE $1 OR
@@ -313,7 +326,7 @@ export const updateCliente = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const {
-      empresa, correo, telefono, atencion, razon_social, impresion, celular,
+      empresa, correo, telefono, atencion, razon_social, rfc_rs, cp_rs, impresion, celular,
       regimen_fiscal_idregimen_fiscal, metodo_pago_idmetodo_pago, forma_pago_idforma_pago,
       rfc, correo_facturacion, uso_cfdi, moneda,
       domicilio, numero, colonia, codigo_postal, poblacion, estado,
@@ -335,13 +348,13 @@ export const updateCliente = async (req: Request, res: Response) => {
     }
 
     // Verificar registros relacionados existentes
-    const domicilioExistente   = await client.query(
+    const domicilioExistente = await client.query(
       "SELECT iddomicilio FROM domicilio WHERE clientes_idclientes = $1 LIMIT 1", [id]
     );
     const facturacionExistente = await client.query(
       "SELECT iddatos_facturacion FROM datos_facturacion WHERE clientes_idclientes = $1 LIMIT 1", [id]
     );
-    const envioExistente       = await client.query(
+    const envioExistente = await client.query(
       "SELECT iddireccion FROM direccion_envio WHERE clientes_idclientes = $1 LIMIT 1", [id]
     );
 
@@ -353,12 +366,12 @@ export const updateCliente = async (req: Request, res: Response) => {
            SET domicilio=$1, numero=$2, colonia=$3, codigo_postal=$4, poblacion=$5, estado=$6
            WHERE iddomicilio=$7`,
           [
-            domicilio     || null,
-            numero        || null,
-            colonia       || null,
+            domicilio || null,
+            numero || null,
+            colonia || null,
             codigo_postal || null,
-            poblacion     || null,
-            estado        || null,
+            poblacion || null,
+            estado || null,
             domicilioExistente.rows[0].iddomicilio,
           ]
         );
@@ -369,12 +382,12 @@ export const updateCliente = async (req: Request, res: Response) => {
            VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING iddomicilio`,
           [
             id,
-            domicilio     || null,
-            numero        || null,
-            colonia       || null,
+            domicilio || null,
+            numero || null,
+            colonia || null,
             codigo_postal || null,
-            poblacion     || null,
-            estado        || null,
+            poblacion || null,
+            estado || null,
           ]
         );
         console.log("✅ Domicilio creado:", res2.rows[0].iddomicilio);
@@ -389,10 +402,10 @@ export const updateCliente = async (req: Request, res: Response) => {
            SET rfc=$1, correo_facturacion=$2, uso_cfdi=$3, moneda=$4
            WHERE iddatos_facturacion=$5`,
           [
-            rfc                || null,
+            rfc || null,
             correo_facturacion || null,
-            uso_cfdi           || null,
-            moneda             || null,
+            uso_cfdi || null,
+            moneda || null,
             facturacionExistente.rows[0].iddatos_facturacion,
           ]
         );
@@ -403,10 +416,10 @@ export const updateCliente = async (req: Request, res: Response) => {
            VALUES ($1,$2,$3,$4,$5) RETURNING iddatos_facturacion`,
           [
             id,
-            rfc                || null,
+            rfc || null,
             correo_facturacion || null,
-            uso_cfdi           || null,
-            moneda             || null,
+            uso_cfdi || null,
+            moneda || null,
           ]
         );
         console.log("✅ Facturación creada:", res2.rows[0].iddatos_facturacion);
@@ -415,7 +428,7 @@ export const updateCliente = async (req: Request, res: Response) => {
 
     // 3. DIRECCION_ENVIO — update o insert
     const hayDatosEnvio = envio_domicilio || envio_numero || envio_colonia ||
-                          envio_codigo_postal || envio_poblacion || envio_estado || envio_referencia;
+      envio_codigo_postal || envio_poblacion || envio_estado || envio_referencia;
     if (hayDatosEnvio) {
       if ((envioExistente.rowCount ?? 0) > 0) {
         await client.query(
@@ -423,13 +436,13 @@ export const updateCliente = async (req: Request, res: Response) => {
            SET domicilio=$1, numero=$2, colonia=$3, codigo_postal=$4, poblacion=$5, estado=$6, referencia=$7
            WHERE iddireccion=$8`,
           [
-            envio_domicilio     || null,
-            envio_numero        || null,
-            envio_colonia       || null,
+            envio_domicilio || null,
+            envio_numero || null,
+            envio_colonia || null,
             envio_codigo_postal || null,
-            envio_poblacion     || null,
-            envio_estado        || null,
-            envio_referencia    || null,
+            envio_poblacion || null,
+            envio_estado || null,
+            envio_referencia || null,
             envioExistente.rows[0].iddireccion,
           ]
         );
@@ -440,13 +453,13 @@ export const updateCliente = async (req: Request, res: Response) => {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING iddireccion`,
           [
             id,
-            envio_domicilio     || null,
-            envio_numero        || null,
-            envio_colonia       || null,
+            envio_domicilio || null,
+            envio_numero || null,
+            envio_colonia || null,
             envio_codigo_postal || null,
-            envio_poblacion     || null,
-            envio_estado        || null,
-            envio_referencia    || null,
+            envio_poblacion || null,
+            envio_estado || null,
+            envio_referencia || null,
           ]
         );
         console.log("✅ Dirección de envío creada:", res2.rows[0].iddireccion);
@@ -461,24 +474,28 @@ export const updateCliente = async (req: Request, res: Response) => {
            telefono     = $3,
            atencion     = $4,
            razon_social = $5,
-           impresion    = $6,
-           celular      = $7,
-           regimen_fiscal_idregimen_fiscal = $8,
-           metodo_pago_idmetodo_pago       = $9,
-           forma_pago_idforma_pago         = $10
-       WHERE idclientes = $11
+           rfc_rs       = $6,
+           cp_rs        = $7,
+           impresion    = $8,
+           celular      = $9,
+           regimen_fiscal_idregimen_fiscal = $10,
+           metodo_pago_idmetodo_pago       = $11,
+           forma_pago_idforma_pago         = $12
+       WHERE idclientes = $13
        RETURNING idclientes, empresa, correo, telefono, fecha`,
       [
-        empresa      || null,
-        correo       || null,
-        telefono     || null,
-        atencion     || null,
+        empresa || null,
+        correo || null,
+        telefono || null,
+        atencion || null,
         razon_social || null,
-        impresion    || null,
-        celular      || null,
+        rfc_rs || null,
+        cp_rs || null,
+        impresion || null,
+        celular || null,
         regimen_fiscal_idregimen_fiscal || null,
-        metodo_pago_idmetodo_pago       || null,
-        forma_pago_idforma_pago         || null,
+        metodo_pago_idmetodo_pago || null,
+        forma_pago_idforma_pago || null,
         id,
       ]
     );
@@ -490,11 +507,11 @@ export const updateCliente = async (req: Request, res: Response) => {
     res.json({
       message: "Cliente actualizado exitosamente",
       cliente: {
-        id:       clienteActualizado.idclientes,
-        empresa:  clienteActualizado.empresa,
-        correo:   clienteActualizado.correo,
+        id: clienteActualizado.idclientes,
+        empresa: clienteActualizado.empresa,
+        correo: clienteActualizado.correo,
         telefono: clienteActualizado.telefono,
-        fecha:    clienteActualizado.fecha,
+        fecha: clienteActualizado.fecha,
       },
     });
   } catch (error: any) {
@@ -557,13 +574,15 @@ export const createClienteLigero = async (req: Request, res: Response) => {
 
     await client.query("BEGIN");
 
+    const identificar = await generarIdentificador(client);
+
     const resultCliente = await client.query(
       `INSERT INTO clientes (
         regimen_fiscal_idregimen_fiscal, metodo_pago_idmetodo_pago, forma_pago_idforma_pago,
-        empresa, correo, telefono, atencion, fecha
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP)
-      RETURNING idclientes, empresa, correo, telefono, atencion`,
-      [null, null, null, empresa || null, correo || null, telefono || null, nombre || null]
+        empresa, correo, telefono, atencion, fecha, identificar
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP,$8)
+      RETURNING idclientes, empresa, correo, telefono, atencion, identificar`,
+      [null, null, null, empresa || null, correo || null, telefono || null, nombre || null, identificar]
     );
 
     const nuevoCliente = resultCliente.rows[0];
@@ -573,10 +592,11 @@ export const createClienteLigero = async (req: Request, res: Response) => {
     res.status(201).json({
       message: "Cliente creado exitosamente",
       cliente: {
-        id:       nuevoCliente.idclientes,
-        nombre:   nuevoCliente.atencion,
-        empresa:  nuevoCliente.empresa,
-        correo:   nuevoCliente.correo,
+        id: nuevoCliente.idclientes,
+        identificar: nuevoCliente.identificar,
+        nombre: nuevoCliente.atencion,
+        empresa: nuevoCliente.empresa,
+        correo: nuevoCliente.correo,
         telefono: nuevoCliente.telefono,
       },
     });
@@ -587,4 +607,24 @@ export const createClienteLigero = async (req: Request, res: Response) => {
   } finally {
     client.release();
   }
+};
+
+// ==========================
+// HELPER: Generar identificador
+// ==========================
+const generarIdentificador = async (client: any): Promise<string> => {
+  const result = await client.query(
+    `SELECT identificar FROM clientes
+     WHERE identificar ~ '^[0-9]+$'
+     ORDER BY CAST(identificar AS INTEGER) DESC
+     LIMIT 1`
+  );
+
+  let nextNum = 600;
+  if (result.rowCount > 0) {
+    const lastNum = parseInt(result.rows[0].identificar, 10);
+    if (!isNaN(lastNum) && lastNum >= 600) nextNum = lastNum + 1;
+  }
+
+  return String(nextNum);  // "600", "601", "602", ...
 };

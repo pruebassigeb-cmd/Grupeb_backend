@@ -139,6 +139,7 @@ export const getBultosPedido = async (req: Request, res: Response) => {
         END AS proceso_origen,
         op.no_produccion,
         sp.idsolicitud_producto,
+        sp.descripcion,
         tpp.material_plastico_producto AS nombre_producto,
         cfg.medida,
         CASE
@@ -184,6 +185,7 @@ export const getBultosPedido = async (req: Request, res: Response) => {
       no_produccion:     r.no_produccion,
       nombre_producto:   r.nombre_producto   || "",
       medida:            r.medida            || "",
+      descripcion:       r.descripcion       || null,
       estado_bulto:      r.estado_bulto,
       idenvio:           r.idenvio != null ? Number(r.idenvio) : null,
       estado_envio:      r.estado_envio      || null,
@@ -196,6 +198,15 @@ export const getBultosPedido = async (req: Request, res: Response) => {
 
 // ==========================
 // CREAR ENVÍO
+// ==========================
+// ============================================================
+// PARCHE BACKEND — envios.controller.ts
+// Reemplaza la función createEnvio completa y agrega
+// getEnviosRecoleccion al final del archivo.
+// ============================================================
+
+// ==========================
+// CREAR ENVÍO (reemplazar la existente)
 // ==========================
 export const createEnvio = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -216,7 +227,7 @@ export const createEnvio = async (req: Request, res: Response) => {
     if (!idsolicitud || !tipo || !bultos_ids || !Array.isArray(bultos_ids) || bultos_ids.length === 0)
       return res.status(400).json({ error: "Faltan datos requeridos" });
 
-    if (!["local", "paqueteria"].includes(tipo))
+    if (!["local", "paqueteria", "recoleccion"].includes(tipo))
       return res.status(400).json({ error: "Tipo de envío inválido" });
 
     if (tipo === "local" && (!usuarios_idusuario || !unidades_idunidad))
@@ -225,9 +236,10 @@ export const createEnvio = async (req: Request, res: Response) => {
     if (tipo === "paqueteria" && !paqueteria_idpaqueteria)
       return res.status(400).json({ error: "Para envío por paquetería se requiere seleccionar una paquetería" });
 
+    // recoleccion: no requiere nada extra
+
     await client.query("BEGIN");
 
-    // Verificar bultos no asignados
     const { rows: bultosOcupados } = await client.query(
       `SELECT bultos_idbulto FROM envio_bulto WHERE bultos_idbulto = ANY($1)`,
       [bultos_ids]
@@ -239,7 +251,6 @@ export const createEnvio = async (req: Request, res: Response) => {
       });
     }
 
-    // Verificar que los bultos pertenecen al pedido
     const { rows: bultosValidos } = await client.query(`
       SELECT b.idbulto
       FROM bultos b
@@ -259,7 +270,6 @@ export const createEnvio = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Algunos bultos no pertenecen a este pedido" });
     }
 
-    // ── Calcular es_parcialidad ──
     const { rows: totalRows } = await client.query(`
       SELECT COUNT(DISTINCT b.idbulto) AS total
       FROM solicitud_producto sp
@@ -303,7 +313,6 @@ export const createEnvio = async (req: Request, res: Response) => {
       !produccionCompleta ||
       totalDespuesDeEsteEnvio < totalBultosPedido;
 
-    // Crear envío
     const { rows: envioRows } = await client.query(
       `INSERT INTO envio (
         solicitud_idsolicitud, tipo,
@@ -335,6 +344,8 @@ export const createEnvio = async (req: Request, res: Response) => {
       );
     }
 
+    // Solo reparto local inserta en bitacora_reparto
+    // recoleccion NO genera bitácora de chofer/unidad
     if (tipo === "local") {
       await client.query(
         `INSERT INTO bitacora_reparto (envio_idenvio, unidades_idunidad, usuarios_idusuario)
@@ -344,7 +355,7 @@ export const createEnvio = async (req: Request, res: Response) => {
     }
 
     await client.query("COMMIT");
-    console.log(`✅ Envío creado: ${idenvio} | parcialidad: ${es_parcialidad}`);
+    console.log(`✅ Envío creado: ${idenvio} | tipo: ${tipo} | parcialidad: ${es_parcialidad}`);
 
     res.status(201).json({
       message: "Envío creado exitosamente",
@@ -361,6 +372,56 @@ export const createEnvio = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Error al crear envío" });
   } finally {
     client.release();
+  }
+};
+
+
+// ==========================
+// OBTENER ENVÍOS DE RECOLECCIÓN
+// (agregar al final del archivo)
+// ==========================
+export const getEnviosRecoleccion = async (req: Request, res: Response) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        e.idenvio,
+        e.estado,
+        e.es_parcialidad,
+        e.fecha_envio,
+        e.fecha_entrega_estimada,
+        e.observaciones,
+        s.no_pedido,
+        cli.empresa,
+        cli.impresion,
+        cli.razon_social,
+        COUNT(eb.idenvio_bulto) AS total_bultos
+      FROM envio e
+      JOIN solicitud s       ON s.idsolicitud     = e.solicitud_idsolicitud
+      JOIN clientes cli      ON cli.idclientes     = s.clientes_idclientes
+      LEFT JOIN envio_bulto eb ON eb.envio_idenvio = e.idenvio
+      WHERE e.tipo = 'recoleccion'
+      GROUP BY
+        e.idenvio, e.estado, e.es_parcialidad,
+        e.fecha_envio, e.fecha_entrega_estimada, e.observaciones,
+        s.no_pedido, cli.empresa, cli.impresion, cli.razon_social
+      ORDER BY e.fecha_envio DESC
+    `);
+
+    res.json(rows.map((r: any) => ({
+      idenvio:                Number(r.idenvio),
+      estado:                 r.estado,
+      es_parcialidad:         r.es_parcialidad,
+      fecha_envio:            r.fecha_envio,
+      fecha_entrega_estimada: r.fecha_entrega_estimada || null,
+      observaciones:          r.observaciones          || null,
+      no_pedido:              r.no_pedido,
+      cliente:                r.impresion || r.empresa || r.razon_social || "",
+      empresa:                r.empresa   || "",
+      total_bultos:           Number(r.total_bultos),
+    })));
+  } catch (error: any) {
+    console.error("❌ GET ENVIOS RECOLECCION ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener recolecciones" });
   }
 };
 
@@ -615,7 +676,6 @@ export const getGuiaGeneral = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    // ── Datos del envío + cliente + paquetería ──
     const { rows: envioRows } = await pool.query(`
       SELECT
         e.idenvio,
@@ -651,7 +711,6 @@ export const getGuiaGeneral = async (req: Request, res: Response) => {
 
     const envio = envioRows[0];
 
-    // ── Datos remitente (empresa) ──
     const { rows: empresaRows } = await pool.query(`
       SELECT
         e.nombre_empresa,
@@ -679,7 +738,6 @@ export const getGuiaGeneral = async (req: Request, res: Response) => {
 
     const empresa = empresaRows[0];
 
-    // ── Bultos del envío (incluye claves SAT guardadas) ──
     const { rows: bultosRows } = await pool.query(`
       SELECT
         b.idbulto,
@@ -708,7 +766,6 @@ export const getGuiaGeneral = async (req: Request, res: Response) => {
       ORDER BY b.idbulto ASC
     `, [id]);
 
-    // ── Construir respuesta ──
     const dirRemitente = [
       empresa.domicilio,
       empresa.numero ? `#${empresa.numero}` : null,
@@ -810,14 +867,12 @@ export const updateClavesSatBultos = async (req: Request, res: Response) => {
 
 // ==========================
 // BULTOS POR ORDEN DE PRODUCCIÓN
-// Reemplaza únicamente esta función al final de envios.controller.ts
 // ==========================
 export const getBultosPorProduccion = async (req: Request, res: Response) => {
   try {
     const idsolicitud  = Number(req.params.idsolicitud);
     const idproduccion = Number(req.params.idproduccion);
 
-    // ── Verificar que la orden pertenece a esa solicitud ──────────────────────
     const { rows: ordenRows } = await pool.query(
       `SELECT op.idproduccion, op.no_produccion
        FROM orden_produccion op
@@ -829,7 +884,6 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
     if (ordenRows.length === 0)
       return res.status(404).json({ error: "Orden no encontrada para este pedido" });
 
-    // ── Obtener todos los bultos de esta orden con su estado de envío ─────────
     const { rows: bultosRows } = await pool.query(
       `SELECT
          b.idbulto,
@@ -846,6 +900,7 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
          END AS proceso_origen,
          tpp.material_plastico_producto AS nombre_producto,
          cfg.medida,
+         sp.descripcion,
          CASE
            WHEN e.estado = 'entregado'  THEN 'entregado'
            WHEN e.estado = 'en_camino'  THEN 'en_camino'
@@ -872,7 +927,6 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
            ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
        JOIN tipo_producto_plastico tpp
            ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
-       -- Envío activo más reciente para este bulto
        LEFT JOIN (
          SELECT DISTINCT ON (eb_inner.bultos_idbulto)
            eb_inner.bultos_idbulto,
@@ -886,7 +940,6 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
       [idproduccion]
     );
 
-    // ── Obtener todos los envíos que contienen al menos un bulto de esta orden ─
     const { rows: enviosRows } = await pool.query(
       `SELECT DISTINCT
          e.idenvio,
@@ -950,6 +1003,7 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
         proceso_origen:    r.proceso_origen    as "bolseo" | "asa_flexible",
         nombre_producto:   r.nombre_producto   || "",
         medida:            r.medida            || "",
+        descripcion:       r.descripcion       || null,
         estado_bulto:      r.estado_bulto      as "sin_enviar" | "preparando" | "en_camino" | "entregado",
         idenvio:           r.idenvio           != null ? Number(r.idenvio) : null,
         estado_envio:      r.estado_envio      || null,
@@ -985,4 +1039,3 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
     return res.status(500).json({ error: "Error al obtener bultos por producción" });
   }
 };
- 

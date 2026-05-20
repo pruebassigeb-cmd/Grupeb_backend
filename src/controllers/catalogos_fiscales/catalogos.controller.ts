@@ -29,6 +29,8 @@ export const getRegimenesFiscales = async (req: Request, res: Response) => {
 // ==========================
 export const getMetodosPago = async (req: Request, res: Response) => {
   try {
+    await pool.query("SET client_encoding TO 'UTF8'");
+
     const result = await pool.query(`
       SELECT 
         idmetodo_pago,
@@ -38,7 +40,13 @@ export const getMetodosPago = async (req: Request, res: Response) => {
       ORDER BY tipo_pago ASC
     `);
 
-    res.json(result.rows);
+    console.log("MÉTODOS PAGO:", result.rows);
+
+    res
+      .setHeader("Content-Type", "application/json; charset=utf-8")
+      .status(200)
+      .json(result.rows);
+
   } catch (error: any) {
     console.error("❌ GET MÉTODOS DE PAGO ERROR:", error.message);
     res.status(500).json({ 

@@ -9,7 +9,7 @@ const ESTADO = {
 } as const;
 
 const IVA_PORCENTAJE      = 0.16;
-const ANTICIPO_PORCENTAJE = 0.50; // lo que ve el cliente
+const ANTICIPO_PORCENTAJE = 0.50;
 
 type TipoDocumento = "cotizacion" | "pedido";
 
@@ -77,7 +77,6 @@ async function generarFolioOrdenDiseno(client: any): Promise<string> {
   return `OD${yy}${String(rows[0].siguiente).padStart(3, "0")}`;
 }
 
-// ── sin_iva: si es true el IVA es 0, el total = subtotal ─────────────────────
 async function crearVentaYDiseno(
   client:      any,
   solicitudId: number,
@@ -152,7 +151,7 @@ export const crearCotizacion = async (req: Request, res: Response) => {
       clienteId, productos,
       tipo      = "cotizacion",
       prioridad = false,
-      sin_iva   = false,       // ← NUEVO
+      sin_iva   = false,
     } = req.body;
 
     console.log("🔍 prioridad en controller:", prioridad, "| sin_iva:", sin_iva);
@@ -207,7 +206,10 @@ export const crearCotizacion = async (req: Request, res: Response) => {
     for (const producto of productos) {
       const {
         productoId, tintasId, carasId, detalles,
-        observacion = null, bk = null, foil = null,
+        observacion = null,
+        descripcion = null,
+        perforacion = false,   // ← NUEVO
+        bk = null, foil = null,
         idsuaje = null, altoRel = null, laminado = null,
         uvBr = null, pigmentos = null, pantones = null,
         porKilo = null, colorAsaId = null, idMedidaTroquel = null,
@@ -232,6 +234,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
       const pantonesGuardar      = typeof pantones   === "string" && pantones.trim()   !== "" ? pantones.trim()   : null;
       const colorAsaGuardar      = colorAsaId      != null ? Number(colorAsaId)      : null;
       const medidaTroquelGuardar = idMedidaTroquel != null ? Number(idMedidaTroquel) : null;
+      const descripcionGuardar   = typeof descripcion === "string" && descripcion.trim() !== "" ? descripcion.trim() : null;
+      const perforacionGuardar   = perforacion === true;   // ← NUEVO
 
       const { rows: prodRows } = await client.query(
         `INSERT INTO solicitud_producto (
@@ -239,12 +243,16 @@ export const crearCotizacion = async (req: Request, res: Response) => {
           configuracion_plastico_idconfiguracion_plastico,
           tintas_idtintas, caras_idcaras,
           bk, foil, idsuaje, alto_rel, laminado, uv_br,
-          pigmentos, pantones, observacion, id_color, id_medidatro
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+          pigmentos, pantones, observacion, descripcion,
+          perforacion,
+          id_color, id_medidatro
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
         RETURNING idsolicitud_producto`,
         [solicitudId, productoId, tintasId, carasId,
          bk, foil, idsuaje, altoRel, laminado, uvBr,
          pigmentosGuardar, pantonesGuardar, observacion,
+         descripcionGuardar,
+         perforacionGuardar,
          colorAsaGuardar, medidaTroquelGuardar]
       );
 
@@ -347,6 +355,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           cli.correo        AS cliente_correo,
           cli.impresion     AS cliente_impresion,
           cli.razon_social  AS cliente_razon_social,
+          cli.identificar   AS cliente_identificar,
 
           est.nombre        AS estado_nombre,
 
@@ -366,6 +375,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           sp.bk, sp.foil, sp.idsuaje, sp.alto_rel,
           sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones,
           sp.observacion,
+          sp.descripcion,
+          sp.perforacion,
           sp.id_color,
           sp.id_medidatro,
 
@@ -465,6 +476,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           estado_id:      row.estado_administrativo_cat_idestado_administrativo_cat,
           estado:         normalizarNombreEstado(row.estado_nombre || ""),
           cliente_id:     row.clientes_idclientes,
+          identificar:    row.cliente_identificar  || null,
           cliente:        row.cliente_nombre       || "",
           telefono:       row.cliente_telefono     || "",
           correo:         row.cliente_correo       || "",
@@ -547,6 +559,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
               ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
               : null,
             observacion:              row.observacion,
+            descripcion:              row.descripcion  ?? null,
+            perforacion:              row.perforacion  ?? false,   // ← NUEVO
             por_kilo:                 row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
             id_color:                 row.id_color         ?? null,
             color_asa_nombre:         row.color_asa_nombre  ?? null,
@@ -664,7 +678,6 @@ export const actualizarEstadoCotizacion = async (req: Request, res: Response) =>
         Number(subtotalRows[0].subtotal_detalles) +
         Number(subtotalRows[0].subtotal_herramental);
 
-      // Pasar sinIva al crear la venta desde la cotización aprobada
       await crearVentaYDiseno(
         client,
         doc.idsolicitud,

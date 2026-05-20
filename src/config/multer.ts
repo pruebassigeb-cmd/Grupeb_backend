@@ -1,11 +1,9 @@
-//import * as multer from "multer";
 const multer = require("multer");
 import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { s3Client, S3_BUCKET } from "./s3";
 import { v4 as uuidv4 } from "uuid";
 
-// Tipo propio para evitar dependencia de @types/multer
 export interface MulterFile {
   fieldname:    string;
   originalname: string;
@@ -24,7 +22,20 @@ export const CARPETAS = {
   usuarios_ine: "usuarios-ine",
 } as const;
 
+export const SUBCARPETAS_PDF = [
+  "cotizaciones",
+  "pedidos",
+  "ordenes-produccion",
+  "estados-cuenta-detallado",
+  "estados-cuenta-simple",
+  "historial-pagos",
+  "etiquetas",
+  "notas-remision",
+  "formas-envio",
+] as const;
+
 export type CarpetaS3 = typeof CARPETAS[keyof typeof CARPETAS];
+export type SubcarpetaPDF = typeof SUBCARPETAS_PDF[number];
 
 export const upload = multer({
   storage: multer.memoryStorage(),
@@ -33,7 +44,8 @@ export const upload = multer({
 
 export const uploadToS3 = async (
   file: MulterFile,
-  carpeta: CarpetaS3 = "disenos"
+  carpeta: CarpetaS3 = "disenos",
+  subcarpeta?: string
 ): Promise<{ url: string; public_id: string; resource_type: string }> => {
   const isPdf = file.mimetype === "application/pdf";
 
@@ -45,7 +57,12 @@ export const uploadToS3 = async (
     ? ".pdf"
     : file.originalname.match(/\.[^/.]+$/)?.[0] || "";
 
-  const key = `grupeb/${carpeta}/${uuidv4()}-${nombreSinExtension}${extension}`;
+  // Si hay subcarpeta la incluye en el key
+  const rutaCarpeta = subcarpeta
+    ? `grupeb/${carpeta}/${subcarpeta}`
+    : `grupeb/${carpeta}`;
+
+  const key = `${rutaCarpeta}/${uuidv4()}-${nombreSinExtension}${extension}`;
 
   await s3Client.send(
     new PutObjectCommand({

@@ -62,12 +62,14 @@ setupSecurity(app);
 // MIDDLEWARES BASE
 // ==========================
 app.use(cors(corsOptions));
-app.use(express.json({ limit: "5mb" }));
+//app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 app.use(cookieParser());
 
+app.use(express.json({ limit: "5mb", type: "application/json" }));
+
 app.use((req, res, next) => {
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.charset = "utf-8";
   next();
 });
 

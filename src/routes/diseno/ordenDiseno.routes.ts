@@ -12,6 +12,7 @@ import {
   marcarNotificacionesLeidas,
   marcarVersionFinal,
   limpiarChatsAntiguos,
+  getObservacionProducto
 } from "../../controllers/diseno/ordenDiseno.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 
@@ -36,5 +37,6 @@ router.post("/:id/participante", authMiddleware, agregarParticipante);
 // ── Versión final y limpieza ─────────────────────────────────
 router.patch("/:id/revision/:revId/version-final", authMiddleware, marcarVersionFinal);
 router.post("/limpiar-chats",                       authMiddleware, limpiarChatsAntiguos);
+router.get("/:id/observacion-producto", authMiddleware, getObservacionProducto);
 
 export default router;

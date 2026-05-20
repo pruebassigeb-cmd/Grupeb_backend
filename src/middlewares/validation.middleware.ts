@@ -271,6 +271,8 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
     telefono,
     atencion,
     razon_social,
+    rfc_rs,
+    cp_rs,
     impresion,
     celular,
     regimen_fiscal_idregimen_fiscal,
@@ -340,6 +342,22 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
     razon_social = validator.escape(razon_social.trim());
     if (razon_social.length > 128) {
       return res.status(400).json({ error: "La razón social no puede exceder 128 caracteres" });
+    }
+  }
+
+  // ── RFC de Razón Social (opcional) ──
+  if (rfc_rs) {
+    rfc_rs = validator.escape(rfc_rs.trim().toUpperCase());
+    if (rfc_rs.length > 16) {
+      return res.status(400).json({ error: "El RFC de razón social no puede exceder 16 caracteres" });
+    }
+  }
+
+  // ── CP de Razón Social (opcional) ──
+  if (cp_rs) {
+    cp_rs = validator.escape(cp_rs.trim());
+    if (!/^\d{5}$/.test(cp_rs)) {
+      return res.status(400).json({ error: "El CP de razón social debe tener 5 dígitos" });
     }
   }
 
@@ -444,13 +462,14 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
   }
 
   // Actualizar body con datos sanitizados
-  // Los campos envio_* se pasan sin validación tal cual llegaron
   req.body = {
     empresa:                         empresa      || null,
     correo:                          correo       || null,
     telefono:                        telefono     || null,
     atencion:                        atencion     || null,
     razon_social:                    razon_social || null,
+    rfc_rs:                          rfc_rs       || null,
+    cp_rs:                           cp_rs        || null,
     impresion:                       impresion    || null,
     celular:                         celular      || null,
     regimen_fiscal_idregimen_fiscal: regimenId,
