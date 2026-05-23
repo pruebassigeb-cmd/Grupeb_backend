@@ -1,8 +1,11 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
+import { uploadToS3, MulterFile, CARPETAS } from "../../config/multer";
+
+type RequestConArchivo = Request & { file?: MulterFile };
 
 // ==========================
-// OBTENER BITÁCORA COMPLETA
+// OBTENER BITÁCORA COMPLETA (solo reparto local)
 // ==========================
 export const getBitacora = async (req: Request, res: Response) => {
   try {
@@ -20,7 +23,7 @@ export const getBitacora = async (req: Request, res: Response) => {
         e.idenvio,
         e.tipo,
         e.estado,
-        e.es_parcialidad, 
+        e.es_parcialidad,
         e.numero_guia,
         s.no_pedido,
         cli.empresa,
@@ -37,39 +40,40 @@ export const getBitacora = async (req: Request, res: Response) => {
       JOIN envio e        ON e.idenvio               = br.envio_idenvio
       JOIN solicitud s    ON s.idsolicitud            = e.solicitud_idsolicitud
       JOIN clientes cli   ON cli.idclientes           = s.clientes_idclientes
-      JOIN usuarios u     ON u.idusuario              = br.usuarios_idusuario
-      JOIN unidades un    ON un.idunidad              = br.unidades_idunidad
+      LEFT JOIN usuarios u     ON u.idusuario         = br.usuarios_idusuario
+      LEFT JOIN unidades un    ON un.idunidad         = br.unidades_idunidad
+      WHERE e.tipo = 'local'
       ORDER BY br.fecha DESC, br.idbitacora DESC
     `);
 
     res.json(rows.map((r: any) => ({
-      idbitacora: Number(r.idbitacora),
-      fecha: r.fecha,
-      hora_salida: r.hora_salida || null,
-      hora_llegada: r.hora_llegada || null,
-      observacion: r.observacion || null,
+      idbitacora:        Number(r.idbitacora),
+      fecha:             r.fecha,
+      hora_salida:       r.hora_salida  || null,
+      hora_llegada:      r.hora_llegada || null,
+      observacion:       r.observacion  || null,
       observacion_extra: r.observacion_extra || null,
-      firma: r.firma || null,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
+      firma:             r.firma        || null,
+      created_at:        r.created_at,
+      updated_at:        r.updated_at,
       envio: {
-        idenvio: Number(r.idenvio),
-        tipo: r.tipo,
-        estado: r.estado,
-        numero_guia: r.numero_guia || null,
+        idenvio:        Number(r.idenvio),
+        tipo:           r.tipo,
+        estado:         r.estado,
+        numero_guia:    r.numero_guia || null,
         es_parcialidad: Boolean(r.es_parcialidad),
       },
       no_pedido: r.no_pedido,
-      cliente: r.impresion || r.empresa || "",
-      chofer: {
+      cliente:   r.impresion || r.empresa || "",
+      chofer: r.idusuario ? {
         idusuario: Number(r.idusuario),
-        nombre: `${r.chofer_nombre} ${r.chofer_apellido}`,
-      },
-      unidad: {
+        nombre:    `${r.chofer_nombre} ${r.chofer_apellido}`,
+      } : null,
+      unidad: r.idunidad ? {
         idunidad: Number(r.idunidad),
-        tipo: r.unidad_tipo,
-        nombre: `${r.unidad_marca} ${r.unidad_modelo} — ${r.unidad_placa}`,
-      },
+        tipo:     r.unidad_tipo,
+        nombre:   `${r.unidad_marca} ${r.unidad_modelo} — ${r.unidad_placa}`,
+      } : null,
     })));
   } catch (error: any) {
     console.error("❌ GET BITACORA ERROR:", error.message);
@@ -86,73 +90,55 @@ export const getBitacoraById = async (req: Request, res: Response) => {
 
     const { rows } = await pool.query(`
       SELECT
-        br.idbitacora,
-        br.fecha,
-        br.hora_salida,
-        br.hora_llegada,
-        br.observacion,
-        br.observacion_extra,
-        br.firma,
-        br.created_at,
-        br.updated_at,
-        e.idenvio,
-        e.tipo,
-        e.estado,
-        e.numero_guia,
-        e.es_parcialidad,
-        s.no_pedido,
-        cli.empresa,
-        cli.impresion,
-        u.idusuario,
-        u.nombre   AS chofer_nombre,
-        u.apellido AS chofer_apellido,
-        un.idunidad,
-        un.tipo    AS unidad_tipo,
-        un.marca   AS unidad_marca,
-        un.modelo  AS unidad_modelo,
-        un.placa   AS unidad_placa
+        br.idbitacora, br.fecha, br.hora_salida, br.hora_llegada,
+        br.observacion, br.observacion_extra, br.firma,
+        br.created_at, br.updated_at,
+        e.idenvio, e.tipo, e.estado, e.numero_guia, e.es_parcialidad,
+        s.no_pedido, cli.empresa, cli.impresion,
+        u.idusuario, u.nombre AS chofer_nombre, u.apellido AS chofer_apellido,
+        un.idunidad, un.tipo AS unidad_tipo, un.marca AS unidad_marca,
+        un.modelo AS unidad_modelo, un.placa AS unidad_placa
       FROM bitacora_reparto br
       JOIN envio e      ON e.idenvio     = br.envio_idenvio
       JOIN solicitud s  ON s.idsolicitud = e.solicitud_idsolicitud
       JOIN clientes cli ON cli.idclientes = s.clientes_idclientes
-      JOIN usuarios u   ON u.idusuario   = br.usuarios_idusuario
-      JOIN unidades un  ON un.idunidad   = br.unidades_idunidad
+      LEFT JOIN usuarios u   ON u.idusuario  = br.usuarios_idusuario
+      LEFT JOIN unidades un  ON un.idunidad  = br.unidades_idunidad
       WHERE br.idbitacora = $1
       LIMIT 1
     `, [id]);
 
-    if ((rows.length ?? 0) === 0)
-      return res.status(404).json({ error: "Registro no encontrado" });
+    if (!rows.length) return res.status(404).json({ error: "Registro no encontrado" });
 
     const r = rows[0];
     res.json({
-      idbitacora: Number(r.idbitacora),
-      fecha: r.fecha,
-      hora_salida: r.hora_salida || null,
-      hora_llegada: r.hora_llegada || null,
-      observacion: r.observacion || null,
+      idbitacora:        Number(r.idbitacora),
+      fecha:             r.fecha,
+      hora_salida:       r.hora_salida  || null,
+      hora_llegada:      r.hora_llegada || null,
+      observacion:       r.observacion  || null,
       observacion_extra: r.observacion_extra || null,
-      firma: r.firma || null,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
+      firma:             r.firma        || null,
+      created_at:        r.created_at,
+      updated_at:        r.updated_at,
       envio: {
-        idenvio: Number(r.idenvio),
-        tipo: r.tipo,
-        estado: r.estado,
-        numero_guia: r.numero_guia || null,
+        idenvio:        Number(r.idenvio),
+        tipo:           r.tipo,
+        estado:         r.estado,
+        numero_guia:    r.numero_guia || null,
         es_parcialidad: Boolean(r.es_parcialidad),
       },
       no_pedido: r.no_pedido,
-      cliente: r.impresion || r.empresa || "",
-      chofer: {
+      cliente:   r.impresion || r.empresa || "",
+      chofer: r.idusuario ? {
         idusuario: Number(r.idusuario),
         nombre: `${r.chofer_nombre} ${r.chofer_apellido}`,
-      },
-      unidad: {
+      } : null,
+      unidad: r.idunidad ? {
         idunidad: Number(r.idunidad),
-        tipo: r.unidad_tipo,
-        nombre: `${r.unidad_marca} ${r.unidad_modelo} — ${r.unidad_placa}`,
-      },
+        tipo:     r.unidad_tipo,
+        nombre:   `${r.unidad_marca} ${r.unidad_modelo} — ${r.unidad_placa}`,
+      } : null,
     });
   } catch (error: any) {
     console.error("❌ GET BITACORA BY ID ERROR:", error.message);
@@ -162,39 +148,27 @@ export const getBitacoraById = async (req: Request, res: Response) => {
 
 // ==========================
 // REGISTRAR HORA DE SALIDA
-// (timestamp completo: fecha + hora)
 // ==========================
 export const registrarHoraSalida = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const ahora = new Date();
+    const ahora  = new Date();
 
     const result = await pool.query(
-      `UPDATE bitacora_reparto
-       SET hora_salida = $1, updated_at = NOW()
-       WHERE idbitacora = $2
-       RETURNING idbitacora, hora_salida`,
+      `UPDATE bitacora_reparto SET hora_salida = $1, updated_at = NOW()
+       WHERE idbitacora = $2 RETURNING idbitacora, hora_salida`,
       [ahora, id]
     );
 
-    if ((result.rowCount ?? 0) === 0)
-      return res.status(404).json({ error: "Registro no encontrado" });
+    if (!result.rowCount) return res.status(404).json({ error: "Registro no encontrado" });
 
-    // Actualizar estado del envío a en_camino
     await pool.query(
       `UPDATE envio SET estado = 'en_camino'
-       WHERE idenvio = (
-         SELECT envio_idenvio FROM bitacora_reparto WHERE idbitacora = $1
-       )`,
+       WHERE idenvio = (SELECT envio_idenvio FROM bitacora_reparto WHERE idbitacora = $1)`,
       [id]
     );
 
-    console.log("✅ Hora salida registrada:", ahora);
-    res.json({
-      message: "Hora de salida registrada",
-      idbitacora: Number(result.rows[0].idbitacora),
-      hora_salida: result.rows[0].hora_salida,
-    });
+    res.json({ message: "Hora de salida registrada", idbitacora: Number(result.rows[0].idbitacora), hora_salida: result.rows[0].hora_salida });
   } catch (error: any) {
     console.error("❌ HORA SALIDA ERROR:", error.message);
     res.status(500).json({ error: "Error al registrar hora de salida" });
@@ -203,40 +177,27 @@ export const registrarHoraSalida = async (req: Request, res: Response) => {
 
 // ==========================
 // REGISTRAR HORA DE LLEGADA
-// (timestamp completo: fecha + hora)
 // ==========================
 export const registrarHoraLlegada = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const ahora = new Date();
+    const ahora  = new Date();
 
     const result = await pool.query(
-      `UPDATE bitacora_reparto
-   SET hora_llegada = $1, updated_at = NOW()
-   WHERE idbitacora = $2
-   RETURNING idbitacora, hora_llegada`,
+      `UPDATE bitacora_reparto SET hora_llegada = $1, updated_at = NOW()
+       WHERE idbitacora = $2 RETURNING idbitacora, hora_llegada`,
       [ahora, id]
     );
 
-    if ((result.rowCount ?? 0) === 0)
-      return res.status(404).json({ error: "Registro no encontrado" });
+    if (!result.rowCount) return res.status(404).json({ error: "Registro no encontrado" });
 
     await pool.query(
-      `UPDATE envio 
-   SET estado = 'entregado'
-   WHERE idenvio = (
-     SELECT envio_idenvio 
-     FROM bitacora_reparto 
-     WHERE idbitacora = $1
-   )`,
+      `UPDATE envio SET estado = 'entregado'
+       WHERE idenvio = (SELECT envio_idenvio FROM bitacora_reparto WHERE idbitacora = $1)`,
       [id]
     );
-    console.log("✅ Hora llegada registrada:", ahora);
-    res.json({
-      message: "Hora de llegada registrada",
-      idbitacora: Number(result.rows[0].idbitacora),
-      hora_llegada: result.rows[0].hora_llegada,
-    });
+
+    res.json({ message: "Hora de llegada registrada", idbitacora: Number(result.rows[0].idbitacora), hora_llegada: result.rows[0].hora_llegada });
   } catch (error: any) {
     console.error("❌ HORA LLEGADA ERROR:", error.message);
     res.status(500).json({ error: "Error al registrar hora de llegada" });
@@ -249,26 +210,16 @@ export const registrarHoraLlegada = async (req: Request, res: Response) => {
 export const updateBitacora = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const {
-      hora_salida,
-      hora_llegada,
-      observacion,
-      observacion_extra,
-      firma,
-      numero_guia,
-    } = req.body;
+    const { hora_salida, hora_llegada, observacion, observacion_extra, firma, numero_guia } = req.body;
 
     const observacionesValidas = ["E", "RA", "RD", "PD"];
     if (observacion && !observacionesValidas.includes(observacion))
       return res.status(400).json({ error: "Observación inválida. Valores: E, RA, RD, PD" });
 
-    // Actualizar número de guía en la tabla envio si viene
     if (numero_guia !== undefined) {
       await pool.query(
         `UPDATE envio SET numero_guia = $1
-         WHERE idenvio = (
-           SELECT envio_idenvio FROM bitacora_reparto WHERE idbitacora = $2
-         )`,
+         WHERE idenvio = (SELECT envio_idenvio FROM bitacora_reparto WHERE idbitacora = $2)`,
         [numero_guia || null, id]
       );
     }
@@ -283,23 +234,190 @@ export const updateBitacora = async (req: Request, res: Response) => {
            updated_at        = NOW()
        WHERE idbitacora = $6
        RETURNING idbitacora, hora_salida, hora_llegada, observacion, observacion_extra, firma, updated_at`,
-      [
-        hora_salida || null,
-        hora_llegada || null,
-        observacion || null,
-        observacion_extra || null,
-        firma || null,
-        id,
-      ]
+      [hora_salida || null, hora_llegada || null, observacion || null, observacion_extra || null, firma || null, id]
     );
 
-    if ((result.rowCount ?? 0) === 0)
-      return res.status(404).json({ error: "Registro no encontrado" });
+    if (!result.rowCount) return res.status(404).json({ error: "Registro no encontrado" });
 
-    console.log("✅ Bitácora actualizada:", id);
     res.json({ message: "Registro actualizado exitosamente", bitacora: result.rows[0] });
   } catch (error: any) {
     console.error("❌ UPDATE BITACORA ERROR:", error.message);
     res.status(500).json({ error: "Error al actualizar registro" });
+  }
+};
+
+// ==========================
+// GET RECOLECCIONES
+// ==========================
+export const getRecolecciones = async (req: Request, res: Response) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        e.idenvio,
+        e.estado,
+        e.es_parcialidad,
+        e.fecha_envio,
+        e.fecha_entrega_estimada,
+        e.observaciones,
+        s.no_pedido,
+        cli.empresa,
+        cli.impresion,
+        cli.razon_social,
+        COUNT(eb.idenvio_bulto)                  AS total_bultos,
+        br.idbitacora,
+        br.recoleccion_nombre_quien_recogio,
+        br.recoleccion_empresa,
+        br.recoleccion_unidad_marca,
+        br.recoleccion_unidad_modelo,
+        br.recoleccion_unidad_placas,
+        br.recoleccion_foto_url,
+        br.hora_llegada
+      FROM envio e
+      JOIN solicitud s         ON s.idsolicitud      = e.solicitud_idsolicitud
+      JOIN clientes cli        ON cli.idclientes      = s.clientes_idclientes
+      LEFT JOIN envio_bulto eb ON eb.envio_idenvio    = e.idenvio
+      LEFT JOIN bitacora_reparto br ON br.envio_idenvio = e.idenvio
+      WHERE e.tipo = 'recoleccion'
+      GROUP BY
+        e.idenvio, e.estado, e.es_parcialidad,
+        e.fecha_envio, e.fecha_entrega_estimada, e.observaciones,
+        s.no_pedido, cli.empresa, cli.impresion, cli.razon_social,
+        br.idbitacora, br.recoleccion_nombre_quien_recogio, br.recoleccion_empresa,
+        br.recoleccion_unidad_marca, br.recoleccion_unidad_modelo, br.recoleccion_unidad_placas,
+        br.recoleccion_foto_url, br.hora_llegada
+      ORDER BY e.fecha_envio DESC
+    `);
+
+    res.json(rows.map((r: any) => ({
+      idenvio:                Number(r.idenvio),
+      estado:                 r.estado,
+      es_parcialidad:         r.es_parcialidad,
+      fecha_envio:            r.fecha_envio,
+      fecha_entrega_estimada: r.fecha_entrega_estimada || null,
+      observaciones:          r.observaciones          || null,
+      no_pedido:              r.no_pedido,
+      cliente:                r.impresion || r.empresa || r.razon_social || "",
+      empresa:                r.empresa   || "",
+      total_bultos:           Number(r.total_bultos),
+      idbitacora:             r.idbitacora ? Number(r.idbitacora) : null,
+      recoleccion_datos: r.recoleccion_nombre_quien_recogio ? {
+        nombre_quien_recogio: r.recoleccion_nombre_quien_recogio,
+        empresa:              r.recoleccion_empresa        || null,
+        unidad_marca:         r.recoleccion_unidad_marca   || null,
+        unidad_modelo:        r.recoleccion_unidad_modelo  || null,
+        unidad_placas:        r.recoleccion_unidad_placas  || null,
+        tiene_foto:           !!r.recoleccion_foto_url,
+        foto_url:             r.recoleccion_foto_url       || null,
+        fecha_recogido:       r.hora_llegada               || null,
+      } : null,
+    })));
+  } catch (error: any) {
+    console.error("❌ GET RECOLECCIONES ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener recolecciones" });
+  }
+};
+
+// ==========================
+// MARCAR RECOLECCIÓN COMO ENTREGADA
+// PATCH /bitacora/recoleccion/:idenvio/marcar-recogido
+// ==========================
+export const marcarRecolectado = async (req: RequestConArchivo, res: Response) => {
+  try {
+    const { idenvio } = req.params;
+    const {
+      nombre_quien_recogio,
+      empresa,
+      unidad_marca,
+      unidad_modelo,
+      unidad_placas,
+    } = req.body;
+
+    if (!nombre_quien_recogio?.trim())
+      return res.status(400).json({ error: "El nombre de quien recogió es requerido" });
+
+    // Subir foto a S3 si viene
+    let foto_url: string | null = null;
+    if (req.file) {
+      const resultado = await uploadToS3(req.file, CARPETAS.fotos_envios);
+      foto_url = resultado.public_id;
+    }
+
+    // Buscar registro de bitacora_reparto
+    const { rows: brRows } = await pool.query(
+      `SELECT idbitacora FROM bitacora_reparto WHERE envio_idenvio = $1 LIMIT 1`,
+      [idenvio]
+    );
+console.log("BITACORA ROWS:", brRows);  // ← agrega esto
+
+    if (!brRows.length)
+      return res.status(404).json({ error: "Registro de bitácora no encontrado para este envío" });
+
+    const idbitacora = brRows[0].idbitacora;
+
+    // Actualizar con los nombres de columna correctos
+    await pool.query(
+      `UPDATE bitacora_reparto
+       SET recoleccion_nombre_quien_recogio = $1,
+           recoleccion_empresa              = $2,
+           recoleccion_unidad_marca         = $3,
+           recoleccion_unidad_modelo        = $4,
+           recoleccion_unidad_placas        = $5,
+           recoleccion_foto_url             = COALESCE($6, recoleccion_foto_url),
+           hora_llegada                     = NOW(),
+           updated_at                       = NOW()
+       WHERE idbitacora = $7`,
+      [
+        nombre_quien_recogio.trim(),
+        empresa?.trim()       || null,
+        unidad_marca?.trim()  || null,
+        unidad_modelo?.trim() || null,
+        unidad_placas?.trim() || null,
+        foto_url,
+        idbitacora,
+      ]
+    );
+
+    // Marcar envío como entregado
+    await pool.query(
+      `UPDATE envio SET estado = 'entregado' WHERE idenvio = $1`,
+      [idenvio]
+    );
+
+    res.json({
+      message:    "Recolección registrada correctamente",
+      idbitacora,
+      foto_subida: foto_url !== null,
+    });
+  } catch (error: any) {
+    console.error("❌ MARCAR RECOLECTADO ERROR:", error.message);
+    res.status(500).json({ error: "Error al registrar recolección" });
+  }
+};
+
+// ==========================
+// GET URL FIRMADA DE FOTO
+// GET /bitacora/recoleccion/:idenvio/foto
+// ==========================
+export const getFotoRecoleccion = async (req: Request, res: Response) => {
+  try {
+    const { idenvio } = req.params;
+    const { getPresignedUrl } = await import("../../config/multer");
+
+    const { rows } = await pool.query(
+      `SELECT recoleccion_foto_url
+       FROM bitacora_reparto
+       WHERE envio_idenvio = $1 AND recoleccion_foto_url IS NOT NULL
+       LIMIT 1`,
+      [idenvio]
+    );
+
+    if (!rows.length || !rows[0].recoleccion_foto_url)
+      return res.status(404).json({ error: "No hay foto registrada para esta recolección" });
+
+    const url = await getPresignedUrl(rows[0].recoleccion_foto_url);
+    res.json({ url });
+  } catch (error: any) {
+    console.error("❌ GET FOTO RECOLECCION ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener foto" });
   }
 };

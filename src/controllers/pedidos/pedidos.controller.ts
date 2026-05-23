@@ -104,6 +104,7 @@ export const getPedidos = async (req: Request, res: Response) => {
           sd.idsolicitud_detalle,
           sd.cantidad,
           sd.precio_total,
+          sd.precio_unitario,
           sd.aprobado,
           sd.kilogramos,
           sd.modo_cantidad,
@@ -239,11 +240,12 @@ export const getPedidos = async (req: Request, res: Response) => {
             medidasFormateadas:      row.cfg_medida    || "",
             medidas,
             tintas:                  row.tintas_cantidad ?? row.tintas_idtintas,
+            tintas_idtintas:         row.tintas_idtintas,
             caras:                   row.caras_cantidad  ?? row.caras_idcaras,
             bk:                      row.bk,
             foil:                    row.foil,
             idsuaje:                 row.idsuaje         ?? null,
-            asa_suaje:               row.suaje_tipo       ?? null,
+            asa_suaje:               row.suaje_tipo      ?? null,
             alto_rel:                row.alto_rel,
             laminado:                row.laminado,
             uv_br:                   row.uv_br,
@@ -253,10 +255,10 @@ export const getPedidos = async (req: Request, res: Response) => {
               : null,
             observacion:             row.observacion,
             descripcion:             row.descripcion  ?? null,
-            perforacion:             row.perforacion  ?? false,   // ← NUEVO
+            perforacion:             row.perforacion  ?? false,
             por_kilo:                row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
             id_color:                row.id_color         ?? null,
-            color_asa_nombre:        row.color_asa_nombre  ?? null,
+            color_asa_nombre:        row.color_asa_nombre ?? null,
             id_medidatro:            row.id_medidatro     ?? null,
             medida_troquel:          row.medida_troquel   ?? null,
             herramental_descripcion: row.herramental_descripcion ?? null,
@@ -271,12 +273,13 @@ export const getPedidos = async (req: Request, res: Response) => {
 
         if (row.idsolicitud_detalle) {
           producto.detalles.push({
-            iddetalle:     row.idsolicitud_detalle,
-            cantidad:      Number(row.cantidad),
-            precio_total:  Number(row.precio_total),
-            aprobado:      row.aprobado,
-            kilogramos:    row.kilogramos != null ? Number(row.kilogramos) : null,
-            modo_cantidad: row.modo_cantidad || "unidad",
+            iddetalle:       row.idsolicitud_detalle,
+            cantidad:        Number(row.cantidad),
+            precio_total:    Number(row.precio_total),
+            precio_unitario: row.precio_unitario != null ? Number(row.precio_unitario) : null,
+            aprobado:        row.aprobado,
+            kilogramos:      row.kilogramos != null ? Number(row.kilogramos) : null,
+            modo_cantidad:   row.modo_cantidad || "unidad",
           });
           producto.subtotal += Number(row.precio_total);
         }
@@ -330,7 +333,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
         pigmentos,
         observacion,
         descripcion,
-        perforacion,   // ← NUEVO
+        perforacion,
         herramental_descripcion,
         herramental_precio,
         detalles,
@@ -412,7 +415,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
           pigmentos   || null,
           observacion || null,
           descripcion || null,
-          perforacion === true,   // ← NUEVO
+          perforacion === true,
           prod.idsuaje      ?? null,
           prod.id_color     ?? null,
           prod.id_medidatro ?? null,
@@ -429,10 +432,13 @@ export const actualizarPedido = async (req: Request, res: Response) => {
 
       if (herrRows.length > 0) {
         if (tieneHerramental) {
+          // UPDATE: set aprobado=true automatically — editing an existing herramental
+          // means it's been reviewed and confirmed. The approval is implicit on save.
           await client.query(
             `UPDATE herramental SET
                herramental_descripcion = $1,
-               herramental_precio      = $2
+               herramental_precio      = $2,
+               aprobado                = true
              WHERE idsolicitud_producto = $3`,
             [herramental_descripcion, herramental_precio, idsolicitud_producto]
           );
@@ -443,34 +449,37 @@ export const actualizarPedido = async (req: Request, res: Response) => {
           );
         }
       } else if (tieneHerramental) {
+        // INSERT: new herramental starts as aprobado=true when created via edit pedido
+        // (the user is explicitly adding it during an edit, so it's intentional).
         await client.query(
           `INSERT INTO herramental
              (idsolicitud_producto, herramental_descripcion, herramental_precio, aprobado)
-           VALUES ($1, $2, $3, false)`,
+           VALUES ($1, $2, $3, true)`,
           [idsolicitud_producto, herramental_descripcion, herramental_precio]
         );
       }
 
       // ── Detalles ────────────────────────────────────────────────────────────
       for (const det of (detalles as any[])) {
-        const { iddetalle, cantidad, precio_total, kilogramos, modo_cantidad } = det;
+        const { iddetalle, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad } = det;
 
         if (iddetalle) {
           await client.query(
             `UPDATE solicitud_detalle SET
-               cantidad      = $1,
-               precio_total  = $2,
-               kilogramos    = $3,
-               modo_cantidad = $4
-             WHERE idsolicitud_detalle = $5`,
-            [cantidad, precio_total, kilogramos, modo_cantidad, iddetalle]
+               cantidad        = $1,
+               precio_total    = $2,
+               precio_unitario = $3,
+               kilogramos      = $4,
+               modo_cantidad   = $5
+             WHERE idsolicitud_detalle = $6`,
+            [cantidad, precio_total, precio_unitario ?? null, kilogramos, modo_cantidad, iddetalle]
           );
         } else {
           await client.query(
             `INSERT INTO solicitud_detalle
-               (solicitud_producto_id, cantidad, precio_total, kilogramos, modo_cantidad, aprobado)
-             VALUES ($1, $2, $3, $4, $5, false)`,
-            [idsolicitud_producto, cantidad, precio_total, kilogramos, modo_cantidad]
+               (solicitud_producto_id, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad, aprobado)
+             VALUES ($1, $2, $3, $4, $5, $6, false)`,
+            [idsolicitud_producto, cantidad, precio_total, precio_unitario ?? null, kilogramos, modo_cantidad]
           );
         }
       }
@@ -478,16 +487,22 @@ export const actualizarPedido = async (req: Request, res: Response) => {
 
     // ── Recalcular totales en ventas ──────────────────────────────────────────
     const { rows: ventaRows } = await client.query(
-      `SELECT idventas FROM ventas WHERE solicitud_idsolicitud = $1`,
+      `SELECT v.idventas, v.abono, s.sin_iva
+       FROM ventas v
+       JOIN solicitud s ON s.idsolicitud = v.solicitud_idsolicitud
+       WHERE v.solicitud_idsolicitud = $1`,
       [solicitudId]
     );
     if (ventaRows.length > 0) {
       const ventaId = ventaRows[0].idventas;
+      const abono   = Number(ventaRows[0].abono  ?? 0);
+      const sinIva  = ventaRows[0].sin_iva === true;
 
       const { rows: sumRows } = await client.query(
         `SELECT
-           COALESCE(SUM(sd.precio_total), 0)      AS subtotal_prods,
-           COALESCE(SUM(h.herramental_precio), 0) AS subtotal_herr
+           COALESCE(SUM(sd.precio_total), 0)                          AS subtotal_prods,
+           COALESCE(SUM(CASE WHEN h.aprobado = true THEN h.herramental_precio ELSE 0 END), 0)
+                                                                       AS subtotal_herr
          FROM solicitud_producto sp
          LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id = sp.idsolicitud_producto
          LEFT JOIN herramental h        ON h.idsolicitud_producto   = sp.idsolicitud_producto
@@ -496,16 +511,50 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       );
 
       const subtotalNuevo = Number(sumRows[0].subtotal_prods) + Number(sumRows[0].subtotal_herr);
-      const ivaNuevo      = Math.round(subtotalNuevo * 0.16 * 100) / 100;
+      const ivaNuevo      = sinIva ? 0 : Math.round(subtotalNuevo * 0.16 * 100) / 100;
       const totalNuevo    = Math.round((subtotalNuevo + ivaNuevo) * 100) / 100;
+
+      // anticipo documental = 50% del nuevo total
+      const anticipoNuevo = Math.round(totalNuevo * 0.50 * 100) / 100;
+      // saldo = lo que falta pagar (nunca negativo)
+      const saldoNuevo    = Math.max(Math.round((totalNuevo - abono) * 100) / 100, 0);
+
+      // Recalcular estado según nuevo total y abono actual
+      const ANTICIPO_VALIDACION_MIN = 0.40;
+      const umbral = Math.round(totalNuevo * ANTICIPO_VALIDACION_MIN * 100) / 100;
+
+      const { rows: creditoRows } = await client.query(
+        `SELECT 1 FROM venta_pago
+         WHERE ventas_idventas = $1 AND es_credito_anticipo = true LIMIT 1`,
+        [ventaId]
+      );
+      const tieneCredito   = creditoRows.length > 0;
+      const anticipoCubierto = abono >= umbral || tieneCredito;
+
+      let nuevoEstado: number;
+      if (saldoNuevo <= 0)         nuevoEstado = 6; // PAGADO
+      else if (anticipoCubierto)   nuevoEstado = 2; // ANTICIPO_PAGADO / EN_PROCESO
+      else                         nuevoEstado = 1; // PENDIENTE
 
       await client.query(
         `UPDATE ventas SET
-           subtotal_real = $1,
-           iva_real      = $2,
-           total_real    = $3
-         WHERE idventas = $4`,
-        [subtotalNuevo, ivaNuevo, totalNuevo, ventaId]
+           subtotal         = $1,
+           iva              = $2,
+           total            = $3,
+           anticipo         = $4,
+           saldo            = $5,
+           subtotal_real    = $1,
+           iva_real         = $2,
+           total_real       = $3,
+           estado_administrativo_cat_idestado_administrativo_cat = $6
+         WHERE idventas = $7`,
+        [subtotalNuevo, ivaNuevo, totalNuevo, anticipoNuevo, saldoNuevo, nuevoEstado, ventaId]
+      );
+
+      console.log(
+        `💰 Ventas recalculadas: subtotal=${subtotalNuevo} | iva=${ivaNuevo} | ` +
+        `total=${totalNuevo} | anticipo=${anticipoNuevo} | saldo=${saldoNuevo} | ` +
+        `estado=${nuevoEstado} | sinIva=${sinIva}`
       );
     }
 
@@ -536,7 +585,7 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     if (pedRows.length === 0)
       return res.status(404).json({ error: "Pedido no encontrado" });
 
-    const solicitudId: number    = pedRows[0].idsolicitud;
+    const solicitudId: number         = pedRows[0].idsolicitud;
     const noCotizacion: number | null = pedRows[0].no_cotizacion;
 
     const { rows: pagosRows } = await client.query(
@@ -645,6 +694,243 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     await client.query("ROLLBACK");
     console.error("❌ CANCELAR PEDIDO ERROR:", error.message);
     return res.status(500).json({ error: "Error al cancelar pedido", detalle: error.message });
+  } finally {
+    client.release();
+  }
+};
+
+export const eliminarPedidoCompleto = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+
+  try {
+    const { noPedido } = req.params;
+
+    await client.query("BEGIN");
+
+    const pedido = await client.query(
+      `
+      SELECT idsolicitud
+      FROM solicitud
+      WHERE no_pedido = $1
+      `,
+      [noPedido]
+    );
+
+    if (pedido.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Pedido no encontrado" });
+    }
+
+    const idsolicitud = pedido.rows[0].idsolicitud;
+
+    const params = [idsolicitud];
+
+    await client.query(`
+      DELETE FROM envio_bulto
+      WHERE bultos_idbulto IN (
+        SELECT b.idbulto
+        FROM bultos b
+        WHERE b.bolseo_idbolseo IN (
+          SELECT idbolseo FROM bolseo
+          WHERE orden_produccion_idproduccion IN (
+            SELECT idproduccion FROM orden_produccion
+            WHERE idsolicitud_producto IN (
+              SELECT idsolicitud_producto FROM solicitud_producto
+              WHERE solicitud_idsolicitud = $1
+            )
+          )
+        )
+        OR b.asa_flexible_idasa_flexible IN (
+          SELECT idasa_flexible FROM asa_flexible
+          WHERE orden_produccion_idproduccion IN (
+            SELECT idproduccion FROM orden_produccion
+            WHERE idsolicitud_producto IN (
+              SELECT idsolicitud_producto FROM solicitud_producto
+              WHERE solicitud_idsolicitud = $1
+            )
+          )
+        )
+      )
+    `, params);
+
+    await client.query(`
+      DELETE FROM bultos
+      WHERE bolseo_idbolseo IN (
+        SELECT idbolseo FROM bolseo
+        WHERE orden_produccion_idproduccion IN (
+          SELECT idproduccion FROM orden_produccion
+          WHERE idsolicitud_producto IN (
+            SELECT idsolicitud_producto FROM solicitud_producto
+            WHERE solicitud_idsolicitud = $1
+          )
+        )
+      )
+      OR asa_flexible_idasa_flexible IN (
+        SELECT idasa_flexible FROM asa_flexible
+        WHERE orden_produccion_idproduccion IN (
+          SELECT idproduccion FROM orden_produccion
+          WHERE idsolicitud_producto IN (
+            SELECT idsolicitud_producto FROM solicitud_producto
+            WHERE solicitud_idsolicitud = $1
+          )
+        )
+      )
+    `, params);
+
+    await client.query(`
+      DELETE FROM avance_proceso
+      WHERE orden_produccion_idproduccion IN (
+        SELECT idproduccion FROM orden_produccion
+        WHERE idsolicitud_producto IN (
+          SELECT idsolicitud_producto FROM solicitud_producto
+          WHERE solicitud_idsolicitud = $1
+        )
+      )
+    `, params);
+
+    for (const tabla of ["extrusion", "impresion", "bolseo", "asa_flexible"]) {
+      await client.query(`
+        DELETE FROM ${tabla}
+        WHERE orden_produccion_idproduccion IN (
+          SELECT idproduccion FROM orden_produccion
+          WHERE idsolicitud_producto IN (
+            SELECT idsolicitud_producto FROM solicitud_producto
+            WHERE solicitud_idsolicitud = $1
+          )
+        )
+      `, params);
+    }
+
+    await client.query(`
+      DELETE FROM orden_produccion
+      WHERE idsolicitud_producto IN (
+        SELECT idsolicitud_producto FROM solicitud_producto
+        WHERE solicitud_idsolicitud = $1
+      )
+    `, params);
+
+    await client.query(`
+      DELETE FROM mensaje_diseno
+      WHERE orden_diseno_id IN (
+        SELECT idorden_diseno FROM orden_diseno
+        WHERE solicitud_producto_id IN (
+          SELECT idsolicitud_producto FROM solicitud_producto
+          WHERE solicitud_idsolicitud = $1
+        )
+      )
+    `, params);
+
+    await client.query(`
+      DELETE FROM revision_diseno
+      WHERE orden_diseno_id IN (
+        SELECT idorden_diseno FROM orden_diseno
+        WHERE solicitud_producto_id IN (
+          SELECT idsolicitud_producto FROM solicitud_producto
+          WHERE solicitud_idsolicitud = $1
+        )
+      )
+    `, params);
+
+    await client.query(`
+      DELETE FROM orden_diseno_participante
+      WHERE orden_diseno_id IN (
+        SELECT idorden_diseno FROM orden_diseno
+        WHERE solicitud_producto_id IN (
+          SELECT idsolicitud_producto FROM solicitud_producto
+          WHERE solicitud_idsolicitud = $1
+        )
+      )
+    `, params);
+
+    await client.query(`
+      DELETE FROM orden_diseno
+      WHERE solicitud_producto_id IN (
+        SELECT idsolicitud_producto FROM solicitud_producto
+        WHERE solicitud_idsolicitud = $1
+      )
+    `, params);
+
+    await client.query(`
+      DELETE FROM diseno_producto
+      WHERE solicitud_producto_idsolicitud_producto IN (
+        SELECT idsolicitud_producto FROM solicitud_producto
+        WHERE solicitud_idsolicitud = $1
+      )
+    `, params);
+
+    await client.query(`DELETE FROM diseno WHERE solicitud_idsolicitud = $1`, params);
+
+    await client.query(`
+      DELETE FROM venta_pago
+      WHERE ventas_idventas IN (
+        SELECT idventas FROM ventas
+        WHERE solicitud_idsolicitud = $1
+      )
+    `, params);
+
+    await client.query(`DELETE FROM ventas WHERE solicitud_idsolicitud = $1`, params);
+
+    await client.query(`
+      DELETE FROM bitacora_reparto
+      WHERE envio_idenvio IN (
+        SELECT idenvio FROM envio
+        WHERE solicitud_idsolicitud = $1
+      )
+    `, params);
+
+    await client.query(`
+      DELETE FROM nota_remision
+      WHERE envio_idenvio IN (
+        SELECT idenvio FROM envio
+        WHERE solicitud_idsolicitud = $1
+      )
+    `, params);
+
+    await client.query(`
+      DELETE FROM envio_bulto
+      WHERE envio_idenvio IN (
+        SELECT idenvio FROM envio
+        WHERE solicitud_idsolicitud = $1
+      )
+    `, params);
+
+    await client.query(`DELETE FROM envio WHERE solicitud_idsolicitud = $1`, params);
+
+    await client.query(`
+      DELETE FROM solicitud_detalle
+      WHERE solicitud_producto_id IN (
+        SELECT idsolicitud_producto FROM solicitud_producto
+        WHERE solicitud_idsolicitud = $1
+      )
+    `, params);
+
+    await client.query(`
+      DELETE FROM herramental
+      WHERE idsolicitud_producto IN (
+        SELECT idsolicitud_producto FROM solicitud_producto
+        WHERE solicitud_idsolicitud = $1
+      )
+    `, params);
+
+    await client.query(`DELETE FROM solicitud_producto WHERE solicitud_idsolicitud = $1`, params);
+
+    await client.query(`DELETE FROM solicitud WHERE idsolicitud = $1`, params);
+
+    await client.query("COMMIT");
+
+    return res.json({
+      message: `Pedido ${noPedido} eliminado completamente`,
+    });
+
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    console.error("❌ ELIMINAR PEDIDO COMPLETO ERROR:", error.message);
+
+    return res.status(500).json({
+      error: "Error al eliminar completamente el pedido",
+      detalle: error.message,
+    });
+
   } finally {
     client.release();
   }

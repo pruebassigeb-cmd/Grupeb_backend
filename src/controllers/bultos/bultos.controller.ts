@@ -70,6 +70,78 @@ async function getModoOrden(idproduccion: number): Promise<"unidad" | "kilo"> {
 }
 
 // ─────────────────────────────────────────────
+// HELPER — valida estado de orden y proceso final
+// ─────────────────────────────────────────────
+function validarEstadoOrden(ordenRow: any): string | null {
+  const estadoOrden       = Number(ordenRow.idestado_produccion_cat);
+  const procesoActual     = ordenRow.proceso_actual;
+  const bultosFinalizados = Boolean(ordenRow.bultos_finalizado);
+
+  const ordenTerminada    = estadoOrden === ESTADO_PROD.TERMINADO && procesoActual === null;
+  const esProcesosFinales =
+    Number(procesoActual) === PROCESO.BOLSEO ||
+    Number(procesoActual) === PROCESO.ASA_FLEXIBLE;
+
+  if (!ordenTerminada && !esProcesosFinales) {
+    return "La orden debe estar en el último proceso de producción para registrar bultos";
+  }
+  if (bultosFinalizados) {
+    return "Los bultos de esta orden ya fueron finalizados. No se pueden agregar más.";
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// HELPER — calcula límite disponible y empacado
+// ─────────────────────────────────────────────
+async function calcularLimiteYEmpacado(
+  idproduccion: number,
+  fk: FkBulto,
+  modoOrden: "unidad" | "kilo"
+): Promise<{ limiteDisponible: number | null; totalEmpacado: number }> {
+  const tablaProceso = fk.tipo;
+  const campoFinal   = modoOrden === "kilo"
+    ? (tablaProceso === "bolseo" ? "kilos_bolseados"  : "kilos_finales")
+    : (tablaProceso === "bolseo" ? "piezas_bolseadas" : "pzas_finales");
+
+  const { rows: procesoRows } = await pool.query(
+    `SELECT estado_produccion_cat_idestado_produccion_cat AS estado, ${campoFinal} AS campo_final
+     FROM ${tablaProceso} WHERE orden_produccion_idproduccion = $1`,
+    [idproduccion]
+  );
+
+  let limiteDisponible: number | null = null;
+  if (procesoRows.length > 0) {
+    const estProc = Number(procesoRows[0].estado);
+    if (estProc === ESTADO_PROD.TERMINADO) {
+      const v = procesoRows[0].campo_final;
+      limiteDisponible = v != null ? Number(v) : null;
+    } else {
+      const { rows: avRows } = await pool.query(
+        `SELECT COALESCE(SUM(cantidad), 0) AS total
+         FROM avance_proceso
+         WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2`,
+        [idproduccion, tablaProceso]
+      );
+      const totalAv = Number(avRows[0]?.total ?? 0);
+      limiteDisponible = totalAv > 0 ? totalAv : null;
+    }
+  }
+
+  const { rows: totalBultosRows } = await pool.query(
+    `SELECT COALESCE(SUM(${modoOrden === "kilo" ? "peso_producto" : "cantidad_unidades"}), 0) AS total
+     FROM bultos b
+     WHERE
+       b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = $1)
+       OR b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1)`,
+    [idproduccion]
+  );
+  const totalEmpacado = Number(totalBultosRows[0]?.total ?? 0);
+
+  return { limiteDisponible, totalEmpacado };
+}
+
+// ─────────────────────────────────────────────
 // GET /api/seguimiento/:idproduccion/bultos
 // ─────────────────────────────────────────────
 export const getBultos = async (req: Request, res: Response): Promise<Response> => {
@@ -97,6 +169,7 @@ export const getBultos = async (req: Request, res: Response): Promise<Response> 
          b.alto,
          b.largo,
          b.ancho,
+         b.numero_parcialidad,
          CASE
            WHEN b.bolseo_idbolseo             IS NOT NULL THEN 'bolseo'
            WHEN b.asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
@@ -114,7 +187,6 @@ export const getBultos = async (req: Request, res: Response): Promise<Response> 
       [idproduccion]
     );
 
-    // Total principal según modo
     const total_unidades = rows.reduce((sum: number, r: any) => sum + Number(r.cantidad_unidades ?? 0), 0);
     const total_kg       = rows.reduce((sum: number, r: any) => sum + Number(r.peso_producto ?? 0), 0);
 
@@ -122,10 +194,11 @@ export const getBultos = async (req: Request, res: Response): Promise<Response> 
       bultos_finalizado,
       modo_cantidad: modoOrden,
       bultos: rows.map((r: any) => ({
-        idbulto:           Number(r.idbulto),
-        cantidad_unidades: Number(r.cantidad_unidades),
-        fecha_creacion:    r.fecha_creacion,
-        proceso_origen:    r.proceso_origen as ProcesoOrigen,
+        idbulto:             Number(r.idbulto),
+        cantidad_unidades:   Number(r.cantidad_unidades),
+        fecha_creacion:      r.fecha_creacion,
+        proceso_origen:      r.proceso_origen as ProcesoOrigen,
+        numero_parcialidad:  r.numero_parcialidad != null ? Number(r.numero_parcialidad) : null,
         peso_producto: r.peso_producto != null ? Number(r.peso_producto) : null,
         peso:  r.peso  != null ? Number(r.peso)  : null,
         alto:  r.alto  != null ? Number(r.alto)  : null,
@@ -156,7 +229,6 @@ export const agregarBulto = async (req: Request, res: Response): Promise<Respons
     const largo             = req.body.largo             != null ? Number(req.body.largo)             : null;
     const ancho             = req.body.ancho             != null ? Number(req.body.ancho)             : null;
 
-    // Validar orden
     const { rows: ordenRows } = await pool.query(
       `SELECT idestado_produccion_cat, proceso_actual, bultos_finalizado
        FROM orden_produccion WHERE idproduccion = $1`,
@@ -166,44 +238,21 @@ export const agregarBulto = async (req: Request, res: Response): Promise<Respons
       return res.status(404).json({ error: "Orden no encontrada" });
     }
 
-    const estadoOrden       = Number(ordenRows[0].idestado_produccion_cat);
-    const procesoActual     = ordenRows[0].proceso_actual;
-    const bultosFinalizados = Boolean(ordenRows[0].bultos_finalizado);
+    const errorEstado = validarEstadoOrden(ordenRows[0]);
+    if (errorEstado) return res.status(400).json({ error: errorEstado });
 
-    const ordenTerminada    = estadoOrden === ESTADO_PROD.TERMINADO && procesoActual === null;
-    const esProcesosFinales =
-      Number(procesoActual) === PROCESO.BOLSEO ||
-      Number(procesoActual) === PROCESO.ASA_FLEXIBLE;
-
-    if (!ordenTerminada && !esProcesosFinales) {
-      return res.status(400).json({
-        error: "La orden debe estar en el último proceso de producción para registrar bultos",
-      });
-    }
-    if (bultosFinalizados) {
-      return res.status(400).json({
-        error: "Los bultos de esta orden ya fueron finalizados. No se pueden agregar más.",
-      });
-    }
-
-    // Validación según modo_cantidad
     const modoOrden = await getModoOrden(idproduccion);
 
     if (modoOrden === "kilo") {
-      // Principal = peso_producto
       if (!peso_producto || peso_producto <= 0) {
         return res.status(400).json({ error: "El peso del producto es requerido y debe ser mayor a 0" });
       }
     } else {
-      // Principal = cantidad_unidades
       if (!cantidad_unidades || cantidad_unidades <= 0) {
         return res.status(400).json({ error: "La cantidad de unidades debe ser mayor a 0" });
       }
     }
 
-    // ── Validar límite: no empacar más de lo producido ─────────────────────────
-    // En curso → límite = total avances acumulados
-    // Terminado → límite = campo final del proceso (piezas o kilos según modo)
     const fk = await resolverFkBulto(idproduccion);
     if (!fk) {
       return res.status(404).json({
@@ -211,55 +260,11 @@ export const agregarBulto = async (req: Request, res: Response): Promise<Respons
       });
     }
 
-    // Obtener límite disponible y total ya empacado
-    const tablaProceso = fk.tipo; // "bolseo" o "asa_flexible"
-
-    // Campo final según modo y proceso
-    const campoFinal = modoOrden === "kilo"
-      ? (tablaProceso === "bolseo" ? "kilos_bolseados" : "kilos_finales")
-      : (tablaProceso === "bolseo" ? "piezas_bolseadas" : "pzas_finales");
-
-    const { rows: procesoRows } = await pool.query(
-      `SELECT estado_produccion_cat_idestado_produccion_cat AS estado, ${campoFinal} AS campo_final
-       FROM ${tablaProceso} WHERE orden_produccion_idproduccion = $1`,
-      [idproduccion]
-    );
-
-    let limiteDisponible: number | null = null;
-
-    if (procesoRows.length > 0) {
-      const estProc = Number(procesoRows[0].estado);
-      if (estProc === ESTADO_PROD.TERMINADO) {
-        // Proceso terminado → límite = campo final
-        const v = procesoRows[0].campo_final;
-        limiteDisponible = v != null ? Number(v) : null;
-      } else {
-        // Proceso en curso → límite = avances acumulados
-        const { rows: avRows } = await pool.query(
-          `SELECT COALESCE(SUM(cantidad), 0) AS total
-           FROM avance_proceso
-           WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2`,
-          [idproduccion, tablaProceso]
-        );
-        const totalAv = Number(avRows[0]?.total ?? 0);
-        limiteDisponible = totalAv > 0 ? totalAv : null;
-      }
-    }
-
+    const { limiteDisponible, totalEmpacado } = await calcularLimiteYEmpacado(idproduccion, fk, modoOrden);
     if (limiteDisponible !== null) {
-      // Total ya empacado en bultos
-      const { rows: totalBultosRows } = await pool.query(
-        `SELECT COALESCE(SUM(${modoOrden === "kilo" ? "peso_producto" : "cantidad_unidades"}), 0) AS total
-         FROM bultos b
-         WHERE
-           b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = $1)
-           OR b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1)`,
-        [idproduccion]
-      );
-      const totalEmpacado = Number(totalBultosRows[0]?.total ?? 0);
-      const valorNuevo    = modoOrden === "kilo" ? (peso_producto ?? 0) : (cantidad_unidades ?? 0);
-      const proyectado    = totalEmpacado + valorNuevo;
-      const unidad        = modoOrden === "kilo" ? "kg" : "pzas";
+      const valorNuevo = modoOrden === "kilo" ? (peso_producto ?? 0) : (cantidad_unidades ?? 0);
+      const proyectado = totalEmpacado + valorNuevo;
+      const unidad     = modoOrden === "kilo" ? "kg" : "pzas";
 
       if (proyectado > limiteDisponible) {
         const restante = Math.max(limiteDisponible - totalEmpacado, 0);
@@ -275,9 +280,7 @@ export const agregarBulto = async (req: Request, res: Response): Promise<Respons
       }
     }
 
-    const columnaFk = fk.tipo === "bolseo"
-      ? "bolseo_idbolseo"
-      : "asa_flexible_idasa_flexible";
+    const columnaFk = fk.tipo === "bolseo" ? "bolseo_idbolseo" : "asa_flexible_idasa_flexible";
 
     const { rows: inserted } = await pool.query(
       `INSERT INTO bultos (${columnaFk}, cantidad_unidades, peso_producto, peso, alto, largo, ancho)
@@ -288,10 +291,11 @@ export const agregarBulto = async (req: Request, res: Response): Promise<Respons
 
     const r = inserted[0];
     return res.status(201).json({
-      idbulto:           Number(r.idbulto),
-      cantidad_unidades: Number(r.cantidad_unidades),
-      fecha_creacion:    r.fecha_creacion,
-      proceso_origen:    fk.tipo,
+      idbulto:             Number(r.idbulto),
+      cantidad_unidades:   Number(r.cantidad_unidades),
+      fecha_creacion:      r.fecha_creacion,
+      proceso_origen:      fk.tipo,
+      numero_parcialidad:  null,
       peso_producto: r.peso_producto != null ? Number(r.peso_producto) : null,
       peso:  r.peso  != null ? Number(r.peso)  : null,
       alto:  r.alto  != null ? Number(r.alto)  : null,
@@ -301,6 +305,125 @@ export const agregarBulto = async (req: Request, res: Response): Promise<Respons
   } catch (error: any) {
     console.error("❌ AGREGAR BULTO ERROR:", error.message);
     return res.status(500).json({ error: "Error al agregar bulto" });
+  }
+};
+
+// ─────────────────────────────────────────────
+// POST /api/seguimiento/:idproduccion/bultos/batch
+// ─────────────────────────────────────────────
+export const agregarBultosBatch = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const idproduccion = Number(req.params.idproduccion);
+
+    const cantidad_unidades = req.body.cantidad_unidades != null ? Number(req.body.cantidad_unidades) : null;
+    const repeticiones      = Math.max(1, Math.min(50, Number(req.body.repeticiones) || 1));
+    const peso_producto     = req.body.peso_producto != null ? Number(req.body.peso_producto) : null;
+    const peso              = req.body.peso  != null ? Number(req.body.peso)  : null;
+    const alto              = req.body.alto  != null ? Number(req.body.alto)  : null;
+    const largo             = req.body.largo != null ? Number(req.body.largo) : null;
+    const ancho             = req.body.ancho != null ? Number(req.body.ancho) : null;
+
+    const { rows: ordenRows } = await pool.query(
+      `SELECT idestado_produccion_cat, proceso_actual, bultos_finalizado
+       FROM orden_produccion WHERE idproduccion = $1`,
+      [idproduccion]
+    );
+    if (ordenRows.length === 0) {
+      return res.status(404).json({ error: "Orden no encontrada" });
+    }
+
+    const errorEstado = validarEstadoOrden(ordenRows[0]);
+    if (errorEstado) return res.status(400).json({ error: errorEstado });
+
+    const modoOrden = await getModoOrden(idproduccion);
+
+    if (modoOrden === "kilo") {
+      if (!peso_producto || peso_producto <= 0) {
+        return res.status(400).json({ error: "El peso del producto es requerido y debe ser mayor a 0" });
+      }
+    } else {
+      if (!cantidad_unidades || cantidad_unidades <= 0) {
+        return res.status(400).json({ error: "La cantidad de unidades debe ser mayor a 0" });
+      }
+    }
+
+    const fk = await resolverFkBulto(idproduccion);
+    if (!fk) {
+      return res.status(404).json({
+        error: "No existe registro de bolseo ni asa_flexible para esta orden",
+      });
+    }
+
+    const { limiteDisponible, totalEmpacado } = await calcularLimiteYEmpacado(idproduccion, fk, modoOrden);
+    if (limiteDisponible !== null) {
+      const valorUnitario = modoOrden === "kilo" ? (peso_producto ?? 0) : (cantidad_unidades ?? 0);
+      const proyectado    = totalEmpacado + valorUnitario * repeticiones;
+      const unidad        = modoOrden === "kilo" ? "kg" : "pzas";
+
+      if (proyectado > limiteDisponible) {
+        const restante        = Math.max(limiteDisponible - totalEmpacado, 0);
+        const maxRepeticiones = valorUnitario > 0 ? Math.floor(restante / valorUnitario) : 0;
+        return res.status(400).json({
+          error:
+            `No puedes empacar más de lo producido. ` +
+            `Límite: ${limiteDisponible.toLocaleString("es-MX")} ${unidad}. ` +
+            `Ya empacaste ${totalEmpacado.toLocaleString("es-MX")} ${unidad}. ` +
+            `Con ${valorUnitario.toLocaleString("es-MX")} ${unidad}/bulto puedes registrar máximo ${maxRepeticiones} bulto(s) más.`,
+          limite:           limiteDisponible,
+          empacado:         totalEmpacado,
+          restante,
+          max_repeticiones: maxRepeticiones,
+        });
+      }
+    }
+
+    const columnaFk = fk.tipo === "bolseo" ? "bolseo_idbolseo" : "asa_flexible_idasa_flexible";
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const insertados: any[] = [];
+      for (let i = 0; i < repeticiones; i++) {
+        const { rows: inserted } = await client.query(
+          `INSERT INTO bultos (${columnaFk}, cantidad_unidades, peso_producto, peso, alto, largo, ancho)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING idbulto, cantidad_unidades, fecha_creacion, peso_producto, peso, alto, largo, ancho`,
+          [fk.id, cantidad_unidades ?? null, peso_producto, peso, alto, largo, ancho]
+        );
+        insertados.push(inserted[0]);
+      }
+
+      await client.query("COMMIT");
+
+      const valorUnitario = modoOrden === "kilo" ? (peso_producto ?? 0) : (cantidad_unidades ?? 0);
+
+      return res.status(201).json({
+        bultos: insertados.map(r => ({
+          idbulto:             Number(r.idbulto),
+          cantidad_unidades:   Number(r.cantidad_unidades),
+          fecha_creacion:      r.fecha_creacion,
+          proceso_origen:      fk.tipo,
+          numero_parcialidad:  null,
+          peso_producto: r.peso_producto != null ? Number(r.peso_producto) : null,
+          peso:  r.peso  != null ? Number(r.peso)  : null,
+          alto:  r.alto  != null ? Number(r.alto)  : null,
+          largo: r.largo != null ? Number(r.largo) : null,
+          ancho: r.ancho != null ? Number(r.ancho) : null,
+        })),
+        repeticiones,
+        total_bultos_agregados:   repeticiones,
+        total_unidades_agregadas: Math.round(valorUnitario * repeticiones * 100) / 100,
+      });
+    } catch (txError) {
+      await client.query("ROLLBACK");
+      throw txError;
+    } finally {
+      client.release();
+    }
+  } catch (error: any) {
+    console.error("❌ AGREGAR BULTOS BATCH ERROR:", error.message);
+    return res.status(500).json({ error: "Error al agregar bultos en lote" });
   }
 };
 
@@ -383,9 +506,6 @@ export const finalizarBultos = async (req: Request, res: Response): Promise<Resp
       return res.status(400).json({ error: "Debes registrar al menos un bulto antes de finalizar" });
     }
 
-    // ── Validar que el proceso final esté TERMINADO ───────────────────────────
-    // El proceso final puede ser bolseo o asa_flexible; verificamos el que existe
-    // con estado TERMINADO para esta orden
     const { rows: procesoFinalRows } = await pool.query(`
       SELECT
         COALESCE(af.estado_produccion_cat_idestado_produccion_cat,
@@ -402,8 +522,8 @@ export const finalizarBultos = async (req: Request, res: Response): Promise<Resp
     `, [idproduccion]);
 
     if (procesoFinalRows.length > 0) {
-      const estadoFinal  = Number(procesoFinalRows[0].estado_final);
-      const nombreFinal  = procesoFinalRows[0].proceso_final === "asa_flexible" ? "Asa flexible" : "Bolseo";
+      const estadoFinal = Number(procesoFinalRows[0].estado_final);
+      const nombreFinal = procesoFinalRows[0].proceso_final === "asa_flexible" ? "Asa flexible" : "Bolseo";
       if (estadoFinal !== ESTADO_PROD.TERMINADO) {
         return res.status(400).json({
           error: `El proceso de ${nombreFinal} debe estar finalizado antes de poder cerrar los bultos.`,
@@ -425,22 +545,23 @@ export const finalizarBultos = async (req: Request, res: Response): Promise<Resp
 
 // ─────────────────────────────────────────────
 // GET /api/seguimiento/:idproduccion/bultos/etiqueta
-// ─────────────────────────────────────────────
-// ─────────────────────────────────────────────
-// GET /api/seguimiento/:idproduccion/bultos/etiqueta
+// Solo trae bultos con numero_parcialidad IS NULL (aún no enviados)
+// Calcula numero_envio_parcial = MAX(numero_parcialidad) + 1
 // ─────────────────────────────────────────────
 export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Response> => {
   try {
     const idproduccion = Number(req.params.idproduccion);
+    const parcialidadParam = req.query.parcialidad
+      ? Number(req.query.parcialidad)
+      : null;
+    const esReimpresion = parcialidadParam !== null;
 
     const { rows: pedidoRows } = await pool.query(`
       SELECT
         s.no_pedido, s.fecha,
-        op.no_produccion, op.idproduccion, op.fecha_entrega, op.bultos_finalizado,
+        op.no_produccion, op.idproduccion, op.fecha_entrega, op.bultos_finalizado, op.es_parcialidad,
         cli.razon_social AS cliente, cli.atencion, cli.empresa,
         cli.telefono, cli.celular, cli.correo, cli.impresion AS cliente_impresion,
-
-        -- Prioriza direccion_envio, si no hay cae a domicilio
         COALESCE(de.domicilio,     dom.domicilio)     AS calle,
         COALESCE(de.numero,        dom.numero)        AS numero,
         COALESCE(de.colonia,       dom.colonia)       AS colonia,
@@ -448,7 +569,6 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
         COALESCE(de.poblacion,     dom.poblacion)     AS poblacion,
         COALESCE(de.estado,        dom.estado)        AS estado,
         de.referencia                                 AS referencia_envio,
-
         tpp.material_plastico_producto AS nombre_producto,
         cfg.medida,
         mp.tipo_material AS material,
@@ -474,24 +594,17 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
       return res.status(404).json({ error: "Orden no encontrada" });
     }
     const pedido = pedidoRows[0];
-    if (!pedido.bultos_finalizado) {
-      return res.status(403).json({ error: "Los bultos aún no están finalizados" });
-    }
 
-    const { rows: bultosRows } = await pool.query(`
-      SELECT
-        b.idbulto,
-        b.cantidad_unidades,
-        b.fecha_creacion,
-        b.peso_producto,
-        b.peso,
-        b.alto,
-        b.largo,
-        b.ancho,
-        CASE
-          WHEN b.asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
-          ELSE 'bolseo'
-        END AS proceso_origen
+    const esParcialidad = Boolean(pedido.es_parcialidad);
+
+     if (!esReimpresion && !pedido.bultos_finalizado && !esParcialidad)
+      return res.status(403).json({ error: "Los bultos aún no están finalizados" });
+
+    // ── Calcular número de este envío parcial ────────────────────────────────
+    // = MAX(numero_parcialidad) de bultos ya marcados + 1
+    // Si ningún bulto tiene numero_parcialidad → es el primero → 1
+    const { rows: maxRows } = await pool.query(`
+      SELECT COALESCE(MAX(b.numero_parcialidad), 0) AS max_parcialidad
       FROM bultos b
       WHERE
         b.bolseo_idbolseo IN (
@@ -501,8 +614,46 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
         b.asa_flexible_idasa_flexible IN (
           SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1
         )
+    `, [idproduccion]);
+
+    const numeroEnvioParcial = esReimpresion
+      ? parcialidadParam
+      : esParcialidad
+        ? Number(maxRows[0].max_parcialidad) + 1
+        : null;
+
+    // ── Solo bultos pendientes (numero_parcialidad IS NULL) ──────────────────
+    const { rows: bultosRows } = await pool.query(`
+      SELECT
+        b.idbulto, b.cantidad_unidades, b.fecha_creacion,
+        b.peso_producto, b.peso, b.alto, b.largo, b.ancho,
+        CASE
+          WHEN b.asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
+          ELSE 'bolseo'
+        END AS proceso_origen
+      FROM bultos b
+      WHERE
+        ${esReimpresion
+          ? `b.numero_parcialidad = ${parcialidadParam}`
+          : `b.numero_parcialidad IS NULL`
+        }
+        AND (
+          b.bolseo_idbolseo IN (
+            SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = $1
+          )
+          OR
+          b.asa_flexible_idasa_flexible IN (
+            SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1
+          )
+        )
       ORDER BY b.idbulto ASC
     `, [idproduccion]);
+
+    if (bultosRows.length === 0) {
+      return res.status(400).json({
+        error: "No hay bultos pendientes de etiquetar. Todos los bultos ya fueron incluidos en un envío parcial anterior.",
+      });
+    }
 
     const modoOrden = (pedido.modo_cantidad === "kilo") ? "kilo" : "unidad";
     const total_kg  = bultosRows.reduce((sum: number, b: any) => sum + Number(b.peso_producto ?? 0), 0);
@@ -536,6 +687,8 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
       modo_cantidad:     modoOrden,
       total_bultos:      bultosRows.length,
       total_kg:          Math.round(total_kg * 100) / 100,
+      es_parcialidad:    esReimpresion ? true : esParcialidad,
+      numero_envio_parcial: numeroEnvioParcial,
       bultos: bultosRows.map((b: any) => ({
         idbulto:           Number(b.idbulto),
         cantidad_unidades: Number(b.cantidad_unidades),
@@ -551,6 +704,61 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
   } catch (error: any) {
     console.error("❌ GET BULTOS ETIQUETA ERROR:", error.message);
     return res.status(500).json({ error: "Error al obtener datos de etiqueta" });
+  }
+};
+
+// ─────────────────────────────────────────────
+// PATCH /api/seguimiento/:idproduccion/bultos/marcar-parcialidad
+// Body: { numero_parcialidad: number, idbultos: number[] }
+// Estampa numero_parcialidad en los bultos recién etiquetados
+// ─────────────────────────────────────────────
+export const marcarBultosParcialidad = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const idproduccion      = Number(req.params.idproduccion);
+    const { numero_parcialidad, idbultos } = req.body as {
+      numero_parcialidad: number;
+      idbultos: number[];
+    };
+
+    if (!numero_parcialidad || numero_parcialidad < 1) {
+      return res.status(400).json({ error: "numero_parcialidad debe ser mayor a 0" });
+    }
+    if (!idbultos || !Array.isArray(idbultos) || idbultos.length === 0) {
+      return res.status(400).json({ error: "idbultos debe ser un array no vacío" });
+    }
+
+    // Verificar que los bultos pertenecen a esta orden
+    const { rows: verificacion } = await pool.query(`
+      SELECT COUNT(*) AS total FROM bultos b
+      WHERE b.idbulto = ANY($1::int[])
+        AND (
+          b.bolseo_idbolseo IN (
+            SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = $2
+          )
+          OR
+          b.asa_flexible_idasa_flexible IN (
+            SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $2
+          )
+        )
+    `, [idbultos, idproduccion]);
+
+    if (Number(verificacion[0].total) !== idbultos.length) {
+      return res.status(400).json({ error: "Algunos bultos no pertenecen a esta orden" });
+    }
+
+    await pool.query(
+      `UPDATE bultos SET numero_parcialidad = $1 WHERE idbulto = ANY($2::int[])`,
+      [numero_parcialidad, idbultos]
+    );
+
+    return res.json({
+      message: `${idbultos.length} bulto(s) marcados como envío parcial ${numero_parcialidad}`,
+      numero_parcialidad,
+      total_marcados: idbultos.length,
+    });
+  } catch (error: any) {
+    console.error("❌ MARCAR PARCIALIDAD ERROR:", error.message);
+    return res.status(500).json({ error: "Error al marcar parcialidad de bultos" });
   }
 };
 
@@ -608,7 +816,7 @@ export const editarBulto = async (req: Request, res: Response): Promise<Response
            largo             = $5,
            ancho             = $6
        WHERE idbulto = $7
-       RETURNING idbulto, cantidad_unidades, fecha_creacion, peso_producto, peso, alto, largo, ancho`,
+       RETURNING idbulto, cantidad_unidades, fecha_creacion, peso_producto, peso, alto, largo, ancho, numero_parcialidad`,
       [cantidad_unidades ?? null, peso_producto, peso, alto, largo, ancho, idbulto]
     );
 
@@ -620,10 +828,11 @@ export const editarBulto = async (req: Request, res: Response): Promise<Response
     );
 
     return res.json({
-      idbulto:           Number(r.idbulto),
-      cantidad_unidades: Number(r.cantidad_unidades),
-      fecha_creacion:    r.fecha_creacion,
-      proceso_origen:    origenRows[0]?.proceso_origen ?? "bolseo",
+      idbulto:             Number(r.idbulto),
+      cantidad_unidades:   Number(r.cantidad_unidades),
+      fecha_creacion:      r.fecha_creacion,
+      proceso_origen:      origenRows[0]?.proceso_origen ?? "bolseo",
+      numero_parcialidad:  r.numero_parcialidad != null ? Number(r.numero_parcialidad) : null,
       peso_producto: r.peso_producto != null ? Number(r.peso_producto) : null,
       peso:  r.peso  != null ? Number(r.peso)  : null,
       alto:  r.alto  != null ? Number(r.alto)  : null,

@@ -7,6 +7,7 @@ import {
   getPedidos,
   eliminarPedido,
   actualizarPedido,       // ← nuevo
+  eliminarPedidoCompleto
 } from "../../controllers/pedidos/pedidos.controller";
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 
@@ -49,4 +50,10 @@ router.delete(
   eliminarPedido
 );
 
+router.delete(
+  "/:noPedido/completo",
+  authMiddleware,
+  checkPermiso("Eliminar Pedido"),
+  eliminarPedidoCompleto
+);
 export default router;

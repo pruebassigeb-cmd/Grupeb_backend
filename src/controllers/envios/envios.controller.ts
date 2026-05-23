@@ -75,35 +75,35 @@ export const getPedidosDisponibles = async (req: Request, res: Response) => {
     `);
 
     const resultado = rows.map((row: any) => {
-      const totalBultos      = Number(row.total_bultos);
-      const bultosEnviados   = Number(row.bultos_enviados);
+      const totalBultos = Number(row.total_bultos);
+      const bultosEnviados = Number(row.bultos_enviados);
       const bultosPendientes = Number(row.bultos_pendientes);
 
       let estado_envio: "sin_iniciar" | "parcial" | "completo";
-      if (bultosEnviados === 0)        estado_envio = "sin_iniciar";
+      if (bultosEnviados === 0) estado_envio = "sin_iniciar";
       else if (bultosPendientes === 0) estado_envio = "completo";
-      else                             estado_envio = "parcial";
+      else estado_envio = "parcial";
 
       return {
-        idsolicitud:              Number(row.idsolicitud),
-        no_pedido:                row.no_pedido,
-        fecha:                    row.fecha,
-        idclientes:               Number(row.idclientes),
-        empresa:                  row.empresa          || "",
-        razon_social:             row.razon_social     || "",
-        impresion:                row.impresion        || "",
-        telefono:                 row.telefono         || "",
-        celular:                  row.celular          || "",
-        calle:                    row.calle            || "",
-        numero:                   row.numero           || "",
-        colonia:                  row.colonia          || "",
-        codigo_postal:            row.codigo_postal    || "",
-        poblacion:                row.poblacion        || "",
-        estado:                   row.estado           || "",
-        referencia_envio:         row.referencia_envio || null,
-        total_bultos:             totalBultos,
-        bultos_enviados:          bultosEnviados,
-        bultos_pendientes:        bultosPendientes,
+        idsolicitud: Number(row.idsolicitud),
+        no_pedido: row.no_pedido,
+        fecha: row.fecha,
+        idclientes: Number(row.idclientes),
+        empresa: row.empresa || "",
+        razon_social: row.razon_social || "",
+        impresion: row.impresion || "",
+        telefono: row.telefono || "",
+        celular: row.celular || "",
+        calle: row.calle || "",
+        numero: row.numero || "",
+        colonia: row.colonia || "",
+        codigo_postal: row.codigo_postal || "",
+        poblacion: row.poblacion || "",
+        estado: row.estado || "",
+        referencia_envio: row.referencia_envio || null,
+        total_bultos: totalBultos,
+        bultos_enviados: bultosEnviados,
+        bultos_pendientes: bultosPendientes,
         estado_envio,
         completado_recientemente: bultosPendientes === 0 && bultosEnviados > 0,
       };
@@ -173,22 +173,22 @@ export const getBultosPedido = async (req: Request, res: Response) => {
     `, [idsolicitud]);
 
     res.json(rows.map((r: any) => ({
-      idbulto:           Number(r.idbulto),
+      idbulto: Number(r.idbulto),
       cantidad_unidades: r.cantidad_unidades != null ? Number(r.cantidad_unidades) : null,
-      peso_producto:     r.peso_producto     != null ? Number(r.peso_producto)     : null,
-      peso:              r.peso              != null ? Number(r.peso)              : null,
-      alto:              r.alto              != null ? Number(r.alto)              : null,
-      largo:             r.largo             != null ? Number(r.largo)             : null,
-      ancho:             r.ancho             != null ? Number(r.ancho)             : null,
-      fecha_creacion:    r.fecha_creacion,
-      proceso_origen:    r.proceso_origen,
-      no_produccion:     r.no_produccion,
-      nombre_producto:   r.nombre_producto   || "",
-      medida:            r.medida            || "",
-      descripcion:       r.descripcion       || null,
-      estado_bulto:      r.estado_bulto,
-      idenvio:           r.idenvio != null ? Number(r.idenvio) : null,
-      estado_envio:      r.estado_envio      || null,
+      peso_producto: r.peso_producto != null ? Number(r.peso_producto) : null,
+      peso: r.peso != null ? Number(r.peso) : null,
+      alto: r.alto != null ? Number(r.alto) : null,
+      largo: r.largo != null ? Number(r.largo) : null,
+      ancho: r.ancho != null ? Number(r.ancho) : null,
+      fecha_creacion: r.fecha_creacion,
+      proceso_origen: r.proceso_origen,
+      no_produccion: r.no_produccion,
+      nombre_producto: r.nombre_producto || "",
+      medida: r.medida || "",
+      descripcion: r.descripcion || null,
+      estado_bulto: r.estado_bulto,
+      idenvio: r.idenvio != null ? Number(r.idenvio) : null,
+      estado_envio: r.estado_envio || null,
     })));
   } catch (error: any) {
     console.error("❌ GET BULTOS PEDIDO ERROR:", error.message);
@@ -293,7 +293,7 @@ export const createEnvio = async (req: Request, res: Response) => {
       WHERE e.solicitud_idsolicitud = $1
     `, [idsolicitud]);
 
-    const bultosYaEnviados        = Number(yaEnviadosRows[0].enviados);
+    const bultosYaEnviados = Number(yaEnviadosRows[0].enviados);
     const totalDespuesDeEsteEnvio = bultosYaEnviados + bultos_ids.length;
 
     const { rows: produccionRows } = await client.query(`
@@ -305,8 +305,8 @@ export const createEnvio = async (req: Request, res: Response) => {
       WHERE sp.solicitud_idsolicitud = $1
     `, [idsolicitud]);
 
-    const totalProcesos      = Number(produccionRows[0].total_procesos);
-    const terminados         = Number(produccionRows[0].terminados);
+    const totalProcesos = Number(produccionRows[0].total_procesos);
+    const terminados = Number(produccionRows[0].terminados);
     const produccionCompleta = totalProcesos > 0 && totalProcesos === terminados;
 
     const es_parcialidad =
@@ -324,13 +324,13 @@ export const createEnvio = async (req: Request, res: Response) => {
       RETURNING idenvio, estado, fecha_envio, es_parcialidad`,
       [
         idsolicitud, tipo,
-        tipo === "local"      ? usuarios_idusuario     : null,
-        tipo === "local"      ? unidades_idunidad       : null,
+        tipo === "local" ? usuarios_idusuario : null,
+        tipo === "local" ? unidades_idunidad : null,
         tipo === "paqueteria" ? paqueteria_idpaqueteria : null,
-        tipo === "paqueteria" ? (numero_guia || null)   : null,
-        costo_flete            || null,
+        tipo === "paqueteria" ? (numero_guia || null) : null,
+        costo_flete || null,
         fecha_entrega_estimada || null,
-        observaciones          || null,
+        observaciones || null,
         es_parcialidad,
       ]
     );
@@ -349,8 +349,13 @@ export const createEnvio = async (req: Request, res: Response) => {
     if (tipo === "local") {
       await client.query(
         `INSERT INTO bitacora_reparto (envio_idenvio, unidades_idunidad, usuarios_idusuario)
-         VALUES ($1,$2,$3)`,
+     VALUES ($1,$2,$3)`,
         [idenvio, unidades_idunidad, usuarios_idusuario]
+      );
+    } else if (tipo === "recoleccion") {
+      await client.query(
+        `INSERT INTO bitacora_reparto (envio_idenvio) VALUES ($1)`,
+        [idenvio]
       );
     }
 
@@ -361,8 +366,8 @@ export const createEnvio = async (req: Request, res: Response) => {
       message: "Envío creado exitosamente",
       envio: {
         idenvio,
-        estado:         envioRows[0].estado,
-        fecha_envio:    envioRows[0].fecha_envio,
+        estado: envioRows[0].estado,
+        fecha_envio: envioRows[0].fecha_envio,
         es_parcialidad: envioRows[0].es_parcialidad,
       },
     });
@@ -408,16 +413,16 @@ export const getEnviosRecoleccion = async (req: Request, res: Response) => {
     `);
 
     res.json(rows.map((r: any) => ({
-      idenvio:                Number(r.idenvio),
-      estado:                 r.estado,
-      es_parcialidad:         r.es_parcialidad,
-      fecha_envio:            r.fecha_envio,
+      idenvio: Number(r.idenvio),
+      estado: r.estado,
+      es_parcialidad: r.es_parcialidad,
+      fecha_envio: r.fecha_envio,
       fecha_entrega_estimada: r.fecha_entrega_estimada || null,
-      observaciones:          r.observaciones          || null,
-      no_pedido:              r.no_pedido,
-      cliente:                r.impresion || r.empresa || r.razon_social || "",
-      empresa:                r.empresa   || "",
-      total_bultos:           Number(r.total_bultos),
+      observaciones: r.observaciones || null,
+      no_pedido: r.no_pedido,
+      cliente: r.impresion || r.empresa || r.razon_social || "",
+      empresa: r.empresa || "",
+      total_bultos: Number(r.total_bultos),
     })));
   } catch (error: any) {
     console.error("❌ GET ENVIOS RECOLECCION ERROR:", error.message);
@@ -469,26 +474,26 @@ export const getEnviosPedido = async (req: Request, res: Response) => {
     `, [idsolicitud]);
 
     res.json(rows.map((r: any) => ({
-      idenvio:                Number(r.idenvio),
-      tipo:                   r.tipo,
-      estado:                 r.estado,
-      es_parcialidad:         r.es_parcialidad,
-      numero_guia:            r.numero_guia            || null,
-      costo_flete:            r.costo_flete != null ? Number(r.costo_flete) : null,
-      fecha_envio:            r.fecha_envio,
+      idenvio: Number(r.idenvio),
+      tipo: r.tipo,
+      estado: r.estado,
+      es_parcialidad: r.es_parcialidad,
+      numero_guia: r.numero_guia || null,
+      costo_flete: r.costo_flete != null ? Number(r.costo_flete) : null,
+      fecha_envio: r.fecha_envio,
       fecha_entrega_estimada: r.fecha_entrega_estimada || null,
-      observaciones:          r.observaciones          || null,
+      observaciones: r.observaciones || null,
       chofer: r.idusuario ? {
         idusuario: Number(r.idusuario),
-        nombre:    `${r.chofer_nombre} ${r.chofer_apellido}`,
+        nombre: `${r.chofer_nombre} ${r.chofer_apellido}`,
       } : null,
       unidad: r.idunidad ? {
         idunidad: Number(r.idunidad),
-        nombre:   `${r.unidad_marca} ${r.unidad_modelo} — ${r.unidad_placa}`,
+        nombre: `${r.unidad_marca} ${r.unidad_modelo} — ${r.unidad_placa}`,
       } : null,
       paqueteria: r.idpaqueteria ? {
         idpaqueteria: Number(r.idpaqueteria),
-        nombre:       r.paqueteria_nombre,
+        nombre: r.paqueteria_nombre,
       } : null,
       total_bultos: Number(r.total_bultos),
     })));
@@ -601,20 +606,20 @@ export const getEnviosPaqueteria = async (req: Request, res: Response) => {
     `);
 
     res.json(rows.map((r: any) => ({
-      idenvio:                Number(r.idenvio),
-      estado:                 r.estado,
-      es_parcialidad:         r.es_parcialidad,
-      numero_guia:            r.numero_guia            || null,
-      costo_flete:            r.costo_flete != null ? Number(r.costo_flete) : null,
-      fecha_envio:            r.fecha_envio,
+      idenvio: Number(r.idenvio),
+      estado: r.estado,
+      es_parcialidad: r.es_parcialidad,
+      numero_guia: r.numero_guia || null,
+      costo_flete: r.costo_flete != null ? Number(r.costo_flete) : null,
+      fecha_envio: r.fecha_envio,
       fecha_entrega_estimada: r.fecha_entrega_estimada || null,
-      observaciones:          r.observaciones          || null,
-      no_pedido:              r.no_pedido,
-      cliente:                r.impresion || r.empresa || r.cliente || "",
-      empresa:                r.empresa   || "",
+      observaciones: r.observaciones || null,
+      no_pedido: r.no_pedido,
+      cliente: r.impresion || r.empresa || r.cliente || "",
+      empresa: r.empresa || "",
       paqueteria: {
         idpaqueteria: Number(r.idpaqueteria),
-        nombre:       r.paqueteria_nombre,
+        nombre: r.paqueteria_nombre,
       },
       total_bultos: Number(r.total_bultos),
     })));
@@ -660,8 +665,8 @@ export const getProductosSat = async (req: Request, res: Response) => {
 
     res.json(rows.map((r: any) => ({
       idproducto_sat: Number(r.idproducto_sat),
-      clave:          r.clave,
-      descripcion:    r.descripcion,
+      clave: r.clave,
+      descripcion: r.descripcion,
     })));
   } catch (error: any) {
     console.error("❌ GET PRODUCTOS SAT ERROR:", error.message);
@@ -779,46 +784,46 @@ export const getGuiaGeneral = async (req: Request, res: Response) => {
     const telDest = [envio.cli_telefono, envio.cli_celular].filter(Boolean).join(" / ");
 
     res.json({
-      idenvio:      Number(id),
-      no_pedido:    envio.no_pedido,
-      fecha_envio:  envio.fecha_envio,
+      idenvio: Number(id),
+      no_pedido: envio.no_pedido,
+      fecha_envio: envio.fecha_envio,
       total_bultos: bultosRows.length,
-      paqueteria:   envio.paqueteria_nombre,
+      paqueteria: envio.paqueteria_nombre,
       observaciones: envio.observaciones || null,
       remitente: {
         nombre_empresa: empresa.nombre_empresa || "",
-        razon_social:   empresa.razon_social   || "",
-        rfc:            empresa.rfc            || "",
-        telefonos:      empresa.telefonos      || "",
-        domicilio:      dirRemitente,
-        colonia:        empresa.colonia        || "",
-        ciudad:         empresa.poblacion      || "",
-        estado:         empresa.estado         || "",
-        codigo_postal:  empresa.codigo_postal  || "",
+        razon_social: empresa.razon_social || "",
+        rfc: empresa.rfc || "",
+        telefonos: empresa.telefonos || "",
+        domicilio: dirRemitente,
+        colonia: empresa.colonia || "",
+        ciudad: empresa.poblacion || "",
+        estado: empresa.estado || "",
+        codigo_postal: empresa.codigo_postal || "",
       },
       destinatario: {
-        nombre:        envio.razon_social || envio.empresa || "",
-        impresion:     envio.impresion    || envio.empresa || "",
-        rfc:           envio.cli_rfc      || "",
-        telefonos:     telDest,
-        domicilio:     dirDest,
-        colonia:       envio.cli_colonia  || "",
-        ciudad:        envio.cli_ciudad   || "",
-        estado:        envio.cli_estado   || "",
-        codigo_postal: envio.cli_cp       || "",
-        correo:        "",
+        nombre: envio.razon_social || envio.empresa || "",
+        impresion: envio.impresion || envio.empresa || "",
+        rfc: envio.cli_rfc || "",
+        telefonos: telDest,
+        domicilio: dirDest,
+        colonia: envio.cli_colonia || "",
+        ciudad: envio.cli_ciudad || "",
+        estado: envio.cli_estado || "",
+        codigo_postal: envio.cli_cp || "",
+        correo: "",
       },
       bultos: bultosRows.map((b: any) => ({
-        idbulto:            Number(b.idbulto),
-        nombre_producto:    b.nombre_producto   || "",
-        medida:             b.medida            || "",
-        cantidad_unidades:  b.cantidad_unidades != null ? Number(b.cantidad_unidades) : null,
-        peso:               b.peso   != null ? Number(b.peso)   : null,
-        alto:               b.alto   != null ? Number(b.alto)   : null,
-        largo:              b.largo  != null ? Number(b.largo)  : null,
-        ancho:              b.ancho  != null ? Number(b.ancho)  : null,
+        idbulto: Number(b.idbulto),
+        nombre_producto: b.nombre_producto || "",
+        medida: b.medida || "",
+        cantidad_unidades: b.cantidad_unidades != null ? Number(b.cantidad_unidades) : null,
+        peso: b.peso != null ? Number(b.peso) : null,
+        alto: b.alto != null ? Number(b.alto) : null,
+        largo: b.largo != null ? Number(b.largo) : null,
+        ancho: b.ancho != null ? Number(b.ancho) : null,
         clave_producto_sat: b.clave_producto_sat || "",
-        clave_unidad_sat:   b.clave_unidad_sat   || "",
+        clave_unidad_sat: b.clave_unidad_sat || "",
       })),
     });
   } catch (error: any) {
@@ -870,7 +875,7 @@ export const updateClavesSatBultos = async (req: Request, res: Response) => {
 // ==========================
 export const getBultosPorProduccion = async (req: Request, res: Response) => {
   try {
-    const idsolicitud  = Number(req.params.idsolicitud);
+    const idsolicitud = Number(req.params.idsolicitud);
     const idproduccion = Number(req.params.idproduccion);
 
     const { rows: ordenRows } = await pool.query(
@@ -992,44 +997,44 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
 
     return res.json({
       bultos: bultosRows.map((r: any) => ({
-        idbulto:           Number(r.idbulto),
+        idbulto: Number(r.idbulto),
         cantidad_unidades: r.cantidad_unidades != null ? Number(r.cantidad_unidades) : null,
-        peso_producto:     r.peso_producto     != null ? Number(r.peso_producto)     : null,
-        peso:              r.peso              != null ? Number(r.peso)              : null,
-        alto:              r.alto              != null ? Number(r.alto)              : null,
-        largo:             r.largo             != null ? Number(r.largo)             : null,
-        ancho:             r.ancho             != null ? Number(r.ancho)             : null,
-        fecha_creacion:    r.fecha_creacion,
-        proceso_origen:    r.proceso_origen    as "bolseo" | "asa_flexible",
-        nombre_producto:   r.nombre_producto   || "",
-        medida:            r.medida            || "",
-        descripcion:       r.descripcion       || null,
-        estado_bulto:      r.estado_bulto      as "sin_enviar" | "preparando" | "en_camino" | "entregado",
-        idenvio:           r.idenvio           != null ? Number(r.idenvio) : null,
-        estado_envio:      r.estado_envio      || null,
+        peso_producto: r.peso_producto != null ? Number(r.peso_producto) : null,
+        peso: r.peso != null ? Number(r.peso) : null,
+        alto: r.alto != null ? Number(r.alto) : null,
+        largo: r.largo != null ? Number(r.largo) : null,
+        ancho: r.ancho != null ? Number(r.ancho) : null,
+        fecha_creacion: r.fecha_creacion,
+        proceso_origen: r.proceso_origen as "bolseo" | "asa_flexible",
+        nombre_producto: r.nombre_producto || "",
+        medida: r.medida || "",
+        descripcion: r.descripcion || null,
+        estado_bulto: r.estado_bulto as "sin_enviar" | "preparando" | "en_camino" | "entregado",
+        idenvio: r.idenvio != null ? Number(r.idenvio) : null,
+        estado_envio: r.estado_envio || null,
       })),
       envios: enviosRows.map((e: any) => ({
-        idenvio:                Number(e.idenvio),
-        tipo:                   e.tipo          as "local" | "paqueteria",
-        estado:                 e.estado        as "preparando" | "en_camino" | "entregado",
-        es_parcialidad:         Boolean(e.es_parcialidad),
-        numero_guia:            e.numero_guia            || null,
-        costo_flete:            e.costo_flete   != null ? Number(e.costo_flete) : null,
-        fecha_envio:            e.fecha_envio,
+        idenvio: Number(e.idenvio),
+        tipo: e.tipo as "local" | "paqueteria",
+        estado: e.estado as "preparando" | "en_camino" | "entregado",
+        es_parcialidad: Boolean(e.es_parcialidad),
+        numero_guia: e.numero_guia || null,
+        costo_flete: e.costo_flete != null ? Number(e.costo_flete) : null,
+        fecha_envio: e.fecha_envio,
         fecha_entrega_estimada: e.fecha_entrega_estimada || null,
-        observaciones:          e.observaciones          || null,
-        total_bultos:           Number(e.total_bultos),
+        observaciones: e.observaciones || null,
+        total_bultos: Number(e.total_bultos),
         chofer: e.idusuario ? {
           idusuario: Number(e.idusuario),
-          nombre:    e.chofer_nombre,
+          nombre: e.chofer_nombre,
         } : null,
         unidad: e.idunidad ? {
           idunidad: Number(e.idunidad),
-          nombre:   `${e.marca} ${e.modelo} - ${e.placa}`,
+          nombre: `${e.marca} ${e.modelo} - ${e.placa}`,
         } : null,
         paqueteria: e.idpaqueteria ? {
           idpaqueteria: Number(e.idpaqueteria),
-          nombre:       e.paqueteria_nombre,
+          nombre: e.paqueteria_nombre,
         } : null,
       })),
     });
@@ -1037,5 +1042,168 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("❌ GET BULTOS POR PRODUCCION ERROR:", error.message);
     return res.status(500).json({ error: "Error al obtener bultos por producción" });
+  }
+};
+
+export const getEtiquetasEnvio = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // ── 1. Datos del envío ─────────────────────────────────────────────────
+    const { rows: envioRows } = await pool.query(`
+      SELECT
+        e.idenvio,
+        e.es_parcialidad,
+        e.solicitud_idsolicitud,
+        s.no_pedido,
+        op.idproduccion,
+        op.no_produccion,
+        s.fecha,
+        op.fecha_entrega,
+        cli.razon_social   AS cliente,
+        cli.atencion,
+        cli.empresa,
+        cli.telefono,
+        cli.celular,
+        cli.impresion      AS cliente_impresion,
+        COALESCE(de.domicilio,     dom.domicilio)     AS calle,
+        COALESCE(de.numero,        dom.numero)        AS numero,
+        COALESCE(de.colonia,       dom.colonia)       AS colonia,
+        COALESCE(de.codigo_postal, dom.codigo_postal) AS codigo_postal,
+        COALESCE(de.poblacion,     dom.poblacion)     AS poblacion,
+        COALESCE(de.estado,        dom.estado)        AS estado,
+        de.referencia                                 AS referencia_envio,
+        tpp.material_plastico_producto AS nombre_producto,
+        cfg.medida,
+        mp.tipo_material               AS material,
+        sd.cantidad,
+        sd.kilogramos,
+        sd.modo_cantidad,
+        COALESCE(af.pzas_finales, bol.piezas_bolseadas) AS cantidad_real
+      FROM envio e
+      JOIN solicitud s ON s.idsolicitud = e.solicitud_idsolicitud
+      JOIN clientes cli ON cli.idclientes = s.clientes_idclientes
+      -- Llegar a la orden de producción a través de uno de los bultos del envío
+      JOIN envio_bulto eb_ref ON eb_ref.envio_idenvio = e.idenvio
+      JOIN bultos b_ref ON b_ref.idbulto = eb_ref.bultos_idbulto
+      LEFT JOIN bolseo bol_ref ON bol_ref.idbolseo = b_ref.bolseo_idbolseo
+      LEFT JOIN asa_flexible af_ref ON af_ref.idasa_flexible = b_ref.asa_flexible_idasa_flexible
+      JOIN orden_produccion op ON op.idproduccion = COALESCE(
+        bol_ref.orden_produccion_idproduccion,
+        af_ref.orden_produccion_idproduccion
+      )
+      JOIN solicitud_producto sp ON sp.idsolicitud_producto = op.idsolicitud_producto
+      LEFT JOIN domicilio dom ON dom.clientes_idclientes = cli.idclientes
+      LEFT JOIN direccion_envio de ON de.clientes_idclientes = cli.idclientes
+      LEFT JOIN configuracion_plastico cfg
+        ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
+      LEFT JOIN tipo_producto_plastico tpp
+        ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
+      LEFT JOIN material_plastico mp
+        ON mp.idmaterial_plastico = cfg.material_plastico_plastico_idmaterial_plastico
+      LEFT JOIN solicitud_detalle sd
+        ON sd.solicitud_producto_id = sp.idsolicitud_producto AND sd.aprobado = true
+      LEFT JOIN asa_flexible af ON af.orden_produccion_idproduccion = op.idproduccion
+      LEFT JOIN bolseo bol ON bol.orden_produccion_idproduccion = op.idproduccion
+      WHERE e.idenvio = $1
+      LIMIT 1
+    `, [id]);
+
+    if (envioRows.length === 0)
+      return res.status(404).json({ error: "Envío no encontrado" });
+
+    const envio = envioRows[0];
+
+    // ── 2. Número de envío parcial ─────────────────────────────────────────
+    // Cuenta cuántos envíos ANTERIORES (idenvio menor) tiene este mismo pedido.
+    // Si este es el primero → numero_envio_parcial = 1
+    let numero_envio_parcial: number | null = null;
+
+    if (envio.es_parcialidad) {
+      const { rows: countRows } = await pool.query(`
+        SELECT COUNT(*) AS total
+        FROM envio
+        WHERE solicitud_idsolicitud = $1
+          AND idenvio <= $2
+          AND es_parcialidad = true
+      `, [envio.solicitud_idsolicitud, id]);
+
+      numero_envio_parcial = Number(countRows[0].total);
+    }
+
+    // ── 3. Bultos del envío ────────────────────────────────────────────────
+    const { rows: bultosRows } = await pool.query(`
+      SELECT
+        b.idbulto,
+        b.cantidad_unidades,
+        b.fecha_creacion,
+        b.peso_producto,
+        b.peso,
+        b.alto,
+        b.largo,
+        b.ancho,
+        CASE
+          WHEN b.asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
+          ELSE 'bolseo'
+        END AS proceso_origen
+      FROM envio_bulto eb
+      JOIN bultos b ON b.idbulto = eb.bultos_idbulto
+      WHERE eb.envio_idenvio = $1
+      ORDER BY b.idbulto ASC
+    `, [id]);
+
+    const modoOrden = (envio.modo_cantidad === "kilo") ? "kilo" : "unidad";
+    const total_kg = bultosRows.reduce(
+      (sum: number, b: any) => sum + Number(b.peso_producto ?? 0), 0
+    );
+
+    return res.json({
+      // ── Datos del pedido / cliente ──
+      no_pedido: envio.no_pedido,
+      no_produccion: envio.no_produccion,
+      fecha: envio.fecha,
+      fecha_entrega: envio.fecha_entrega ?? null,
+      cliente: envio.cliente || "",
+      atencion: envio.atencion || null,
+      empresa: envio.empresa || "",
+      telefono: envio.telefono || "",
+      celular: envio.celular || "",
+      cliente_impresion: envio.cliente_impresion || "",
+      calle: envio.calle || "",
+      numero: envio.numero || "",
+      colonia: envio.colonia || "",
+      codigo_postal: envio.codigo_postal || "",
+      poblacion: envio.poblacion || "",
+      estado: envio.estado || "",
+      referencia_envio: envio.referencia_envio || null,
+      nombre_producto: envio.nombre_producto || "",
+      medida: envio.medida || "",
+      material: envio.material || "",
+      cantidad_total: envio.cantidad_real != null
+        ? Number(envio.cantidad_real)
+        : envio.cantidad ? Number(envio.cantidad) : null,
+      kilogramos: envio.kilogramos ? Number(envio.kilogramos) : null,
+      modo_cantidad: modoOrden,
+      total_bultos: bultosRows.length,
+      total_kg: Math.round(total_kg * 100) / 100,
+      // ── Parcialidad ──
+      es_parcialidad: Boolean(envio.es_parcialidad),
+      numero_envio_parcial, // null si no es parcial, 1-N si lo es
+      // ── Bultos ──
+      bultos: bultosRows.map((b: any) => ({
+        idbulto: Number(b.idbulto),
+        cantidad_unidades: Number(b.cantidad_unidades),
+        fecha_creacion: b.fecha_creacion,
+        proceso_origen: b.proceso_origen,
+        peso_producto: b.peso_producto != null ? Number(b.peso_producto) : null,
+        peso: b.peso != null ? Number(b.peso) : null,
+        alto: b.alto != null ? Number(b.alto) : null,
+        largo: b.largo != null ? Number(b.largo) : null,
+        ancho: b.ancho != null ? Number(b.ancho) : null,
+      })),
+    });
+  } catch (error: any) {
+    console.error("❌ GET ETIQUETAS ENVIO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al obtener etiquetas del envío" });
   }
 };

@@ -153,37 +153,26 @@ async function procesoAnteriorEstaTerminado(
   return rows.length > 0 && Number(rows[0].estado) === ESTADO_PROD.TERMINADO;
 }
 
-// ── Límite máximo de avance para un proceso basado en el anterior ────────────
-//   Si anterior TERMINADO → campo final del anterior
-//     · impresion → bolseo: kilos_impresos * por_kilo  (kg → piezas)
-//     · extrusion → impresion: k_para_impresion (kg)
-//     · bolseo → asa_flexible: piezas_bolseadas (pzas)
-//   Si anterior EN CURSO → total_avances acumulado del anterior
-//     · impresion → bolseo (en curso): acumulado_kg * por_kilo  (kg → piezas)
-//   Si es el primer proceso → null (sin límite)
 async function getLimiteAvanceAnterior(
   client: any,
   idproduccion: number,
   procesos: number[],
   tablaProceso: string,
-  porKilo: number | null,   // piezas por kg de configuracion_plastico
+  porKilo: number | null,
   modoOrden: "unidad" | "kilo" = "unidad"
 ): Promise<number | null> {
   const catActual = Object.entries(PROCESO_TABLA).find(([, t]) => t === tablaProceso)?.[0];
   if (!catActual) return null;
 
   const idx = procesos.indexOf(Number(catActual));
-  if (idx <= 0) return null; // primer proceso, sin límite
+  if (idx <= 0) return null;
 
   const catAnterior   = procesos[idx - 1];
   const tablaAnterior = PROCESO_TABLA[catAnterior];
   if (!tablaAnterior) return null;
 
-  // Determina si hay que convertir kg→pzas (impresion→bolseo)
-  // Solo convertir kg→pzas si el pedido es por unidades; si es por kilos, bolseo también trabaja en kg
   const necesitaConversion = tablaAnterior === "impresion" && tablaProceso === "bolseo" && modoOrden === "unidad";
 
-  // SELECT solo el campo relevante según la tabla anterior
   const campoFinal: Record<string, string> = {
     extrusion:    "k_para_impresion",
     impresion:    "kilos_impresos",
@@ -214,7 +203,6 @@ async function getLimiteAvanceAnterior(
     return valorBase;
   }
 
-  // Anterior en curso → usar su acumulado de avances
   const { rows: avRows } = await client.query(
     `SELECT COALESCE(SUM(cantidad), 0) AS total
      FROM avance_proceso
@@ -233,7 +221,6 @@ async function getLimiteAvanceAnterior(
 
 // ============================================================
 // GET /procesos/:idproduccion
-// Ahora incluye `limite_avance` en cada proceso
 // ============================================================
 export const getProcesosOrden = async (req: Request, res: Response) => {
   try {
@@ -322,8 +309,6 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
       };
     }));
 
-    // ── Calcular limite_avance para cada proceso (en memoria, no query extra) ─
-    // Cuando impresion → bolseo: convertir kg * por_kilo → piezas
     const procesosConLimite = procesosConRegistros.map((proceso, index) => {
       let limiteAvance: number | null = null;
 
@@ -331,7 +316,6 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
         const anterior = procesosConRegistros[index - 1];
         if (anterior?.registro) {
           const estNum = Number(anterior.registro.estado_produccion_cat_idestado_produccion_cat);
-          // Solo convertir kg→pzas en impresion→bolseo cuando el pedido es por UNIDADES
           const necesitaConversion = anterior.tabla === "impresion" && proceso.tabla === "bolseo"
             && modoOrdenPedido === "unidad";
 
@@ -352,7 +336,6 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
               limiteAvance = v != null ? Number(v) : null;
             }
           } else {
-            // Anterior en curso → su acumulado de avances
             const totalAnt = anterior.total_avances ?? 0;
             if (totalAnt > 0) {
               limiteAvance = (necesitaConversion && porKilo != null && porKilo > 0)
@@ -366,7 +349,6 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
       return { ...proceso, limite_avance: limiteAvance };
     });
 
-    // ── Añadir observaciones del proceso anterior ─────────────────────────────
     const procesosFinales = procesosConLimite.map((proceso, index) => {
       const obsAnterior = index > 0 ? (procesosConLimite[index - 1]?.observaciones || null) : null;
       return { ...proceso, observaciones_proceso_anterior: obsAnterior };
@@ -556,7 +538,6 @@ export const iniciarProceso = async (req: Request, res: Response) => {
 
 // ============================================================
 // POST /procesos/:idproduccion/avance
-// NUEVO: valida que acumulado + nuevo no exceda el límite del proceso anterior
 // ============================================================
 export const registrarAvance = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -598,10 +579,8 @@ export const registrarAvance = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "El proceso está resagado" });
     }
 
-    // ── Validación de límite del proceso anterior ─────────────────────────────
     const procesos = await getProcesosDeOrden(client, Number(idproduccion));
 
-    // Obtener por_kilo y modo_cantidad en un solo query
     const { rows: configOrdenRows } = await client.query(`
       SELECT cfg.por_kilo, sd.modo_cantidad
       FROM orden_produccion op
@@ -644,7 +623,6 @@ export const registrarAvance = async (req: Request, res: Response) => {
       }
     }
 
-    // Determinar unidad del avance a guardar
     const esProcesoPorKiloAvance =
       modoOrdenAvance === "kilo" &&
       (tabla_proceso === "bolseo" || tabla_proceso === "asa_flexible");
@@ -659,6 +637,14 @@ export const registrarAvance = async (req: Request, res: Response) => {
        RETURNING idavance, cantidad, unidad, observaciones, fecha_registro`,
       [idproduccion, tabla_proceso, Number(cantidad), unidad, observaciones?.trim() || null]
     );
+
+    // ── Marcar orden como parcialidad al registrar el primer avance ──────────
+    await client.query(`
+      UPDATE orden_produccion
+      SET es_parcialidad = true
+      WHERE idproduccion = $1
+        AND es_parcialidad = false
+    `, [idproduccion]);
 
     // Desbloquear siguiente proceso
     const procesoActualCat = Object.entries(PROCESO_TABLA).find(([, t]) => t === tabla_proceso)?.[0];
@@ -1014,7 +1000,6 @@ export const editarProceso = async (req: Request, res: Response) => {
       values
     );
 
-    // Propagación al siguiente proceso
     if (tabla === "extrusion") {
       const kilosSig  = datos.k_para_impresion !== undefined ? datos.k_para_impresion : null;
       const metrosSig = datos.metros_extruidos !== undefined ? datos.metros_extruidos : null;

@@ -36,13 +36,14 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
     const tamanoKb  = Math.round(req.file.size / 1024);
     const subidoPor = (req as any).user?.id || null;
     const usuarioId = req.body.usuario_id ? Number(req.body.usuario_id) : null;
+    const envioId   = req.body.envio_id   ? Number(req.body.envio_id)   : null; // ← NUEVO
 
     const result = await pool.query(
       `INSERT INTO archivos 
-        (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria, usuario_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria, usuario_id, envio_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
-      [req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb, subidoPor, resource_type, subcarpeta ?? null, usuarioId]
+      [req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb, subidoPor, resource_type, subcarpeta ?? null, usuarioId, envioId]
     );
 
     res.status(201).json(result.rows[0]);
@@ -52,18 +53,47 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
   }
 };
 
+// ==========================
+// GET FOTOS POR ENVIO
+// GET /archivos/envio/:idenvio
+// ==========================
+export const getFotosEnvio = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { idenvio } = req.params;
+
+    const result = await pool.query(
+      `SELECT id_archivo, nombre, tipo, mime_type, public_id, tamano_kb, created_at
+       FROM archivos
+       WHERE envio_id = $1 AND tipo = 'image'
+       ORDER BY created_at DESC`,
+      [idenvio]
+    );
+
+    const archivosConUrl = await Promise.all(
+      result.rows.map(async (archivo) => ({
+        ...archivo,
+        url: await getPresignedUrl(archivo.public_id),
+      }))
+    );
+
+    res.json(archivosConUrl);
+  } catch (error) {
+    console.error("❌ Error al obtener fotos del envío:", error);
+    res.status(500).json({ error: "Error al obtener fotos" });
+  }
+};
+
 export const listarArchivos = async (_req: Request, res: Response): Promise<void> => {
   try {
     const result = await pool.query(
       `SELECT id_archivo, nombre, tipo, mime_type, url, public_id,
-              tamano_kb, subido_por, usuario_id, resource_type, categoria, created_at
+              tamano_kb, subido_por, usuario_id, envio_id, resource_type, categoria, created_at
        FROM archivos ORDER BY created_at DESC`
     );
 
     const archivosConUrl = await Promise.all(
       result.rows.map(async (archivo) => {
         const partes = archivo.public_id?.split("/") ?? [];
-        // key: grupeb/carpeta/subcarpeta?/uuid-nombre
         const carpeta    = partes[1] ?? "disenos";
         const subcarpeta = partes.length === 4 ? partes[2] : null;
 
@@ -166,9 +196,8 @@ export const obtenerEstadisticas = async (_req: Request, res: Response): Promise
         COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%/backups/%'),      0) AS kb_backups
       FROM archivos
     `);
-
+      
     const row = result.rows[0];
-
     const totalKb    = Number(row.total_kb);
     const totalMb    = totalKb / 1024;
     const totalGb    = totalMb / 1024;
