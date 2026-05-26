@@ -552,10 +552,12 @@ export const deleteEnvio = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Solo se pueden cancelar envíos en estado 'preparando'" });
     }
 
+    await client.query("DELETE FROM nota_remision_envio WHERE envio_idenvio = $1", [id]);  // ← NUEVO: va primero
     await client.query("DELETE FROM nota_remision WHERE envio_idenvio = $1", [id]);
     await client.query("DELETE FROM bitacora_reparto WHERE envio_idenvio = $1", [id]);
     await client.query("DELETE FROM envio_bulto WHERE envio_idenvio = $1", [id]);
     await client.query("DELETE FROM envio WHERE idenvio = $1", [id]);
+
 
     await client.query("COMMIT");
     console.log("✅ Envío eliminado:", id);

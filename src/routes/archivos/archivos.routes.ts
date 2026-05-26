@@ -8,6 +8,7 @@ import {
   verArchivo,
   obtenerEstadisticas,
   getFotosEnvio,
+  getFotosNota,
 } from "../../controllers/archivo/archivo.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 
@@ -15,7 +16,8 @@ const router = Router();
 
 router.post("/upload",             authMiddleware, upload.single("archivo"), subirArchivo);
 router.get("/estadisticas",        authMiddleware, obtenerEstadisticas);
-router.get("/envio/:idenvio",      authMiddleware, getFotosEnvio);          // ← NUEVO
+router.get("/envio/:idenvio",      authMiddleware, getFotosEnvio);     
+router.get("/nota/:idnota",        authMiddleware, getFotosNota);          
 router.get("/",                    authMiddleware, listarArchivos);
 router.get("/:id_archivo/url",     authMiddleware, obtenerUrlFirmada);
 router.get("/:id_archivo/ver",     verArchivo);

@@ -4,25 +4,25 @@ import {
   getOrCreateNota,
   crearNotaMulti,
   getNotaMulti,
+  getNotasBitacora,
+  marcarRecolectadoNota,
+  marcarEntregadoLocalNota,
 } from "../../controllers/envios/notaRemisionMulti.controller";
 
 const router = Router();
 
-// ==========================================
-// NOTA MULTI-PEDIDO
-// ==========================================
-
-// Crear nota multi
-router.post("/multi", authMiddleware, crearNotaMulti);
-
-// Obtener nota multi
+// ── Multi ──
+router.post("/multi",        authMiddleware, crearNotaMulti);
 router.get("/multi/:idnota", authMiddleware, getNotaMulti);
 
-// ==========================================
-// NOTA SIMPLE (IMPORTANTE: VA AL FINAL)
-// ==========================================
+// ── Bitácora (ANTES de /:idenvio) ──
+router.get("/bitacora", authMiddleware, getNotasBitacora);
 
-// Obtener o crear nota simple por envío
+// ── Marcar entregados (ANTES de /:idenvio) ──
+router.patch("/:idnota/marcar-recogido",        authMiddleware, marcarRecolectadoNota);
+router.patch("/:idnota/marcar-entregado-local", authMiddleware, marcarEntregadoLocalNota);
+
+// ── Simple (VA AL FINAL) ──
 router.get("/:idenvio", authMiddleware, getOrCreateNota);
 
 export default router;
