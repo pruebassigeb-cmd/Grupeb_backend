@@ -15,11 +15,8 @@ export const getClientesConPedidosActivos = async (req: Request, res: Response) 
         COUNT(DISTINCT s.idsolicitud) AS total_pedidos
       FROM solicitud s
       JOIN clientes cli ON cli.idclientes = s.clientes_idclientes
-      JOIN solicitud_producto sp ON sp.solicitud_idsolicitud = s.idsolicitud
-      JOIN orden_produccion op ON op.idsolicitud_producto = sp.idsolicitud_producto
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
-        AND op.idestado_produccion_cat IN (1, 2)
       GROUP BY cli.idclientes, cli.empresa, cli.razon_social, cli.impresion
       ORDER BY cli.impresion ASC NULLS LAST
     `);
@@ -49,12 +46,9 @@ export const getPedidosCliente = async (req: Request, res: Response) => {
         s.no_pedido,
         s.fecha
       FROM solicitud s
-      JOIN solicitud_producto sp ON sp.solicitud_idsolicitud = s.idsolicitud
-      JOIN orden_produccion op ON op.idsolicitud_producto = sp.idsolicitud_producto
       WHERE s.clientes_idclientes = $1
         AND s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
-        AND op.idestado_produccion_cat IN (1, 2)
       ORDER BY s.no_pedido DESC
     `, [idclientes]);
 
@@ -66,12 +60,12 @@ export const getPedidosCliente = async (req: Request, res: Response) => {
       SELECT
         sp.solicitud_idsolicitud          AS idsolicitud,
         sp.idsolicitud_producto,
+        sp.descripcion,
         tpp.material_plastico_producto    AS nombre_producto,
         cfg.medida,
         sd.cantidad                       AS cantidad_total,
         sd.kilogramos                     AS kg_total,
         sd.modo_cantidad,
-        -- Solo bultos que YA tienen envío registrado
         COALESCE(SUM(
           CASE WHEN eb.bultos_idbulto IS NOT NULL THEN
             CASE WHEN sd.modo_cantidad = 'kilo'
@@ -82,9 +76,15 @@ export const getPedidosCliente = async (req: Request, res: Response) => {
         ), 0)                             AS cantidad_entregada,
         COUNT(DISTINCT eb.bultos_idbulto) AS bultos_entregados
       FROM solicitud_producto sp
-      JOIN solicitud_detalle sd
-        ON sd.solicitud_producto_id = sp.idsolicitud_producto
-        AND sd.aprobado = true
+      -- LATERAL: toma solo el registro más reciente de solicitud_detalle aprobado
+      JOIN LATERAL (
+        SELECT cantidad, kilogramos, modo_cantidad
+        FROM solicitud_detalle
+        WHERE solicitud_producto_id = sp.idsolicitud_producto
+          AND aprobado = true
+        ORDER BY idsolicitud_detalle DESC
+        LIMIT 1
+      ) sd ON true
       LEFT JOIN orden_produccion op
         ON op.idsolicitud_producto = sp.idsolicitud_producto
       LEFT JOIN bolseo bol
@@ -95,7 +95,6 @@ export const getPedidosCliente = async (req: Request, res: Response) => {
         b.bolseo_idbolseo = bol.idbolseo
         OR b.asa_flexible_idasa_flexible = af.idasa_flexible
       )
-      -- Solo bultos con envío
       LEFT JOIN envio_bulto eb ON eb.bultos_idbulto = b.idbulto
       LEFT JOIN configuracion_plastico cfg
         ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
@@ -103,7 +102,7 @@ export const getPedidosCliente = async (req: Request, res: Response) => {
         ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
       WHERE sp.solicitud_idsolicitud = ANY($1::int[])
       GROUP BY
-        sp.solicitud_idsolicitud, sp.idsolicitud_producto,
+        sp.solicitud_idsolicitud, sp.idsolicitud_producto, sp.descripcion,
         tpp.material_plastico_producto, cfg.medida,
         sd.cantidad, sd.kilogramos, sd.modo_cantidad
       ORDER BY sp.idsolicitud_producto ASC
@@ -115,9 +114,10 @@ export const getPedidosCliente = async (req: Request, res: Response) => {
       if (!productosPorPedido[id]) productosPorPedido[id] = [];
       productosPorPedido[id].push({
         idsolicitud_producto: Number(p.idsolicitud_producto),
-        nombre_producto:      p.nombre_producto || "",
-        medida:               p.medida || "",
-        modo_cantidad:        p.modo_cantidad || "unidad",
+        descripcion:          p.descripcion          || null,
+        nombre_producto:      p.nombre_producto       || "",
+        medida:               p.medida                || "",
+        modo_cantidad:        p.modo_cantidad          || "unidad",
         cantidad_total:       p.cantidad_total != null ? Number(p.cantidad_total) : null,
         kg_total:             p.kg_total       != null ? Number(p.kg_total)       : null,
         cantidad_entregada:   Number(p.cantidad_entregada),
@@ -182,8 +182,14 @@ export const getHistorialEntregas = async (req: Request, res: Response) => {
         ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
         ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
-      LEFT JOIN solicitud_detalle sd
-        ON sd.solicitud_producto_id = sp.idsolicitud_producto AND sd.aprobado = true
+      LEFT JOIN LATERAL (
+        SELECT modo_cantidad
+        FROM solicitud_detalle
+        WHERE solicitud_producto_id = sp.idsolicitud_producto
+          AND aprobado = true
+        ORDER BY idsolicitud_detalle DESC
+        LIMIT 1
+      ) sd ON true
       LEFT JOIN nota_remision nr
         ON nr.envio_idenvio = e.idenvio AND nr.es_multi = FALSE
       LEFT JOIN nota_remision_envio nre ON nre.envio_idenvio = e.idenvio

@@ -869,32 +869,49 @@ export const eliminarPedidoCompleto = async (req: Request, res: Response) => {
     `, params);
 
     await client.query(`DELETE FROM ventas WHERE solicitud_idsolicitud = $1`, params);
+    
 
     await client.query(`
-      DELETE FROM bitacora_reparto
-      WHERE envio_idenvio IN (
-        SELECT idenvio FROM envio
-        WHERE solicitud_idsolicitud = $1
-      )
-    `, params);
+  DELETE FROM bitacora_reparto
+  WHERE envio_idenvio IN (
+    SELECT idenvio FROM envio
+    WHERE solicitud_idsolicitud = $1
+  )
+`, params);
 
-    await client.query(`
-      DELETE FROM nota_remision
-      WHERE envio_idenvio IN (
-        SELECT idenvio FROM envio
-        WHERE solicitud_idsolicitud = $1
-      )
-    `, params);
+await client.query(`
+  DELETE FROM nota_remision_envio
+  WHERE envio_idenvio IN (
+    SELECT idenvio FROM envio
+    WHERE solicitud_idsolicitud = $1
+  )
+`, params);
 
-    await client.query(`
-      DELETE FROM envio_bulto
-      WHERE envio_idenvio IN (
-        SELECT idenvio FROM envio
-        WHERE solicitud_idsolicitud = $1
-      )
-    `, params);
+await client.query(`
+  DELETE FROM nota_remision
+  WHERE envio_idenvio IN (
+    SELECT idenvio FROM envio
+    WHERE solicitud_idsolicitud = $1
+  )
+`, params);
 
-    await client.query(`DELETE FROM envio WHERE solicitud_idsolicitud = $1`, params);
+await client.query(`
+  DELETE FROM envio_bulto
+  WHERE envio_idenvio IN (
+    SELECT idenvio FROM envio
+    WHERE solicitud_idsolicitud = $1
+  )
+`, params);
+
+await client.query(`
+  DELETE FROM archivos
+  WHERE envio_id IN (
+    SELECT idenvio FROM envio
+    WHERE solicitud_idsolicitud = $1
+  )
+`, params);
+
+await client.query(`DELETE FROM envio WHERE solicitud_idsolicitud = $1`, params);
 
     await client.query(`
       DELETE FROM solicitud_detalle
