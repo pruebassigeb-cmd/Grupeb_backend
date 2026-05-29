@@ -16,13 +16,43 @@ export const createCliente = async (req: Request, res: Response) => {
       envio_domicilio, envio_numero, envio_colonia, envio_codigo_postal,
       envio_poblacion, envio_estado, envio_referencia,
     } = req.body;
-    console.log("📦 ENVIO RECIBIDO:", { envio_domicilio, envio_numero, envio_colonia, envio_codigo_postal, envio_poblacion, envio_estado, envio_referencia });
+
+    // ── Verificar RFC duplicado ANTES de iniciar la transacción ──
+    if (rfc) {
+      const rfcExistente = await pool.query(
+        `SELECT c.idclientes, c.empresa
+         FROM datos_facturacion df
+         JOIN clientes c ON c.idclientes = df.clientes_idclientes
+         WHERE df.rfc = $1
+         LIMIT 1`,
+        [rfc]
+      );
+      if ((rfcExistente.rowCount ?? 0) > 0) {
+        const clienteExistente = rfcExistente.rows[0];
+        return res.status(400).json({
+          error: `El RFC "${rfc}" ya está registrado en el cliente "${clienteExistente.empresa || `#${clienteExistente.idclientes}`}"`,
+        });
+      }
+    }
+
+    // ── Verificar correo duplicado ANTES de iniciar la transacción ──
+    if (correo) {
+      const correoExistente = await pool.query(
+        `SELECT idclientes, empresa FROM clientes WHERE correo = $1 LIMIT 1`,
+        [correo]
+      );
+      if ((correoExistente.rowCount ?? 0) > 0) {
+        const clienteExistente = correoExistente.rows[0];
+        return res.status(400).json({
+          error: `El correo "${correo}" ya está registrado en el cliente "${clienteExistente.empresa || `#${clienteExistente.idclientes}`}"`,
+        });
+      }
+    }
 
     console.log("📝 Creando nuevo cliente:", { empresa, correo });
 
     await client.query("BEGIN");
 
-    // Generar identificador único
     const identificar = await generarIdentificador(client);
     console.log("🔑 Identificador generado:", identificar);
 
@@ -62,12 +92,12 @@ export const createCliente = async (req: Request, res: Response) => {
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING iddomicilio`,
         [
           idclientes,
-          domicilio || null,
-          numero || null,
-          colonia || null,
+          domicilio     || null,
+          numero        || null,
+          colonia       || null,
           codigo_postal || null,
-          poblacion || null,
-          estado || null,
+          poblacion     || null,
+          estado        || null,
         ]
       );
       iddomicilio = resultDomicilio.rows[0].iddomicilio;
@@ -82,10 +112,10 @@ export const createCliente = async (req: Request, res: Response) => {
          VALUES ($1,$2,$3,$4,$5) RETURNING iddatos_facturacion`,
         [
           idclientes,
-          rfc || null,
+          rfc                || null,
           correo_facturacion || null,
-          uso_cfdi || null,
-          moneda || null,
+          uso_cfdi           || null,
+          moneda             || null,
         ]
       );
       iddatos_facturacion = resultFacturacion.rows[0].iddatos_facturacion;
@@ -102,13 +132,13 @@ export const createCliente = async (req: Request, res: Response) => {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING iddireccion`,
         [
           idclientes,
-          envio_domicilio || null,
-          envio_numero || null,
-          envio_colonia || null,
+          envio_domicilio     || null,
+          envio_numero        || null,
+          envio_colonia       || null,
           envio_codigo_postal || null,
-          envio_poblacion || null,
-          envio_estado || null,
-          envio_referencia || null,
+          envio_poblacion     || null,
+          envio_estado        || null,
+          envio_referencia    || null,
         ]
       );
       iddireccion_envio = resultEnvio.rows[0].iddireccion;
@@ -134,6 +164,18 @@ export const createCliente = async (req: Request, res: Response) => {
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ CREATE CLIENTE ERROR:", error.message);
+
+    // Por si acaso llega un duplicado que se escapó de la validación previa
+    if (error.code === "23505") {
+      if (error.constraint?.includes("rfc")) {
+        return res.status(400).json({ error: "El RFC ingresado ya está registrado en otro cliente" });
+      }
+      if (error.constraint?.includes("correo")) {
+        return res.status(400).json({ error: "El correo ingresado ya está registrado en otro cliente" });
+      }
+      return res.status(400).json({ error: "Ya existe un registro con esos datos" });
+    }
+
     res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
@@ -334,11 +376,42 @@ export const updateCliente = async (req: Request, res: Response) => {
       envio_poblacion, envio_estado, envio_referencia,
     } = req.body;
 
+    // ── Verificar RFC duplicado (excluyendo el cliente actual) ──
+    if (rfc) {
+      const rfcExistente = await pool.query(
+        `SELECT c.idclientes, c.empresa
+         FROM datos_facturacion df
+         JOIN clientes c ON c.idclientes = df.clientes_idclientes
+         WHERE df.rfc = $1 AND df.clientes_idclientes != $2
+         LIMIT 1`,
+        [rfc, id]
+      );
+      if ((rfcExistente.rowCount ?? 0) > 0) {
+        const clienteExistente = rfcExistente.rows[0];
+        return res.status(400).json({
+          error: `El RFC "${rfc}" ya está registrado en el cliente "${clienteExistente.empresa || `#${clienteExistente.idclientes}`}"`,
+        });
+      }
+    }
+
+    // ── Verificar correo duplicado (excluyendo el cliente actual) ──
+    if (correo) {
+      const correoExistente = await pool.query(
+        `SELECT idclientes, empresa FROM clientes WHERE correo = $1 AND idclientes != $2 LIMIT 1`,
+        [correo, id]
+      );
+      if ((correoExistente.rowCount ?? 0) > 0) {
+        const clienteExistente = correoExistente.rows[0];
+        return res.status(400).json({
+          error: `El correo "${correo}" ya está registrado en el cliente "${clienteExistente.empresa || `#${clienteExistente.idclientes}`}"`,
+        });
+      }
+    }
+
     console.log("📝 Actualizando cliente:", id);
 
     await client.query("BEGIN");
 
-    // Verificar que el cliente exista
     const clienteActual = await client.query(
       "SELECT idclientes FROM clientes WHERE idclientes = $1 LIMIT 1", [id]
     );
@@ -347,7 +420,6 @@ export const updateCliente = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Cliente no encontrado" });
     }
 
-    // Verificar registros relacionados existentes
     const domicilioExistente = await client.query(
       "SELECT iddomicilio FROM domicilio WHERE clientes_idclientes = $1 LIMIT 1", [id]
     );
@@ -366,31 +438,29 @@ export const updateCliente = async (req: Request, res: Response) => {
            SET domicilio=$1, numero=$2, colonia=$3, codigo_postal=$4, poblacion=$5, estado=$6
            WHERE iddomicilio=$7`,
           [
-            domicilio || null,
-            numero || null,
-            colonia || null,
+            domicilio     || null,
+            numero        || null,
+            colonia       || null,
             codigo_postal || null,
-            poblacion || null,
-            estado || null,
+            poblacion     || null,
+            estado        || null,
             domicilioExistente.rows[0].iddomicilio,
           ]
         );
-        console.log("✅ Domicilio actualizado:", domicilioExistente.rows[0].iddomicilio);
       } else {
-        const res2 = await client.query(
+        await client.query(
           `INSERT INTO domicilio (clientes_idclientes, domicilio, numero, colonia, codigo_postal, poblacion, estado)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING iddomicilio`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
           [
             id,
-            domicilio || null,
-            numero || null,
-            colonia || null,
+            domicilio     || null,
+            numero        || null,
+            colonia       || null,
             codigo_postal || null,
-            poblacion || null,
-            estado || null,
+            poblacion     || null,
+            estado        || null,
           ]
         );
-        console.log("✅ Domicilio creado:", res2.rows[0].iddomicilio);
       }
     }
 
@@ -402,27 +472,25 @@ export const updateCliente = async (req: Request, res: Response) => {
            SET rfc=$1, correo_facturacion=$2, uso_cfdi=$3, moneda=$4
            WHERE iddatos_facturacion=$5`,
           [
-            rfc || null,
+            rfc                || null,
             correo_facturacion || null,
-            uso_cfdi || null,
-            moneda || null,
+            uso_cfdi           || null,
+            moneda             || null,
             facturacionExistente.rows[0].iddatos_facturacion,
           ]
         );
-        console.log("✅ Facturación actualizada:", facturacionExistente.rows[0].iddatos_facturacion);
       } else {
-        const res2 = await client.query(
+        await client.query(
           `INSERT INTO datos_facturacion (clientes_idclientes, rfc, correo_facturacion, uso_cfdi, moneda)
-           VALUES ($1,$2,$3,$4,$5) RETURNING iddatos_facturacion`,
+           VALUES ($1,$2,$3,$4,$5)`,
           [
             id,
-            rfc || null,
+            rfc                || null,
             correo_facturacion || null,
-            uso_cfdi || null,
-            moneda || null,
+            uso_cfdi           || null,
+            moneda             || null,
           ]
         );
-        console.log("✅ Facturación creada:", res2.rows[0].iddatos_facturacion);
       }
     }
 
@@ -436,33 +504,31 @@ export const updateCliente = async (req: Request, res: Response) => {
            SET domicilio=$1, numero=$2, colonia=$3, codigo_postal=$4, poblacion=$5, estado=$6, referencia=$7
            WHERE iddireccion=$8`,
           [
-            envio_domicilio || null,
-            envio_numero || null,
-            envio_colonia || null,
+            envio_domicilio     || null,
+            envio_numero        || null,
+            envio_colonia       || null,
             envio_codigo_postal || null,
-            envio_poblacion || null,
-            envio_estado || null,
-            envio_referencia || null,
+            envio_poblacion     || null,
+            envio_estado        || null,
+            envio_referencia    || null,
             envioExistente.rows[0].iddireccion,
           ]
         );
-        console.log("✅ Dirección de envío actualizada:", envioExistente.rows[0].iddireccion);
       } else {
-        const res2 = await client.query(
+        await client.query(
           `INSERT INTO direccion_envio (clientes_idclientes, domicilio, numero, colonia, codigo_postal, poblacion, estado, referencia)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING iddireccion`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
           [
             id,
-            envio_domicilio || null,
-            envio_numero || null,
-            envio_colonia || null,
+            envio_domicilio     || null,
+            envio_numero        || null,
+            envio_colonia       || null,
             envio_codigo_postal || null,
-            envio_poblacion || null,
-            envio_estado || null,
-            envio_referencia || null,
+            envio_poblacion     || null,
+            envio_estado        || null,
+            envio_referencia    || null,
           ]
         );
-        console.log("✅ Dirección de envío creada:", res2.rows[0].iddireccion);
       }
     }
 
@@ -484,18 +550,18 @@ export const updateCliente = async (req: Request, res: Response) => {
        WHERE idclientes = $13
        RETURNING idclientes, empresa, correo, telefono, fecha`,
       [
-        empresa || null,
-        correo || null,
-        telefono || null,
-        atencion || null,
+        empresa      || null,
+        correo       || null,
+        telefono     || null,
+        atencion     || null,
         razon_social || null,
-        rfc_rs || null,
-        cp_rs || null,
-        impresion || null,
-        celular || null,
+        rfc_rs       || null,
+        cp_rs        || null,
+        impresion    || null,
+        celular      || null,
         regimen_fiscal_idregimen_fiscal || null,
-        metodo_pago_idmetodo_pago || null,
-        forma_pago_idforma_pago || null,
+        metodo_pago_idmetodo_pago       || null,
+        forma_pago_idforma_pago         || null,
         id,
       ]
     );
@@ -517,6 +583,17 @@ export const updateCliente = async (req: Request, res: Response) => {
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ UPDATE CLIENTE ERROR:", error.message);
+
+    if (error.code === "23505") {
+      if (error.constraint?.includes("rfc")) {
+        return res.status(400).json({ error: "El RFC ingresado ya está registrado en otro cliente" });
+      }
+      if (error.constraint?.includes("correo")) {
+        return res.status(400).json({ error: "El correo ingresado ya está registrado en otro cliente" });
+      }
+      return res.status(400).json({ error: "Ya existe un registro con esos datos" });
+    }
+
     res.status(500).json({ error: "Error al procesar la solicitud" });
   } finally {
     client.release();
@@ -542,7 +619,6 @@ export const deleteCliente = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Cliente no encontrado" });
     }
 
-    // Borrar tablas relacionadas antes del cliente (respetar FK)
     await client.query("DELETE FROM direccion_envio   WHERE clientes_idclientes = $1", [id]);
     await client.query("DELETE FROM domicilio         WHERE clientes_idclientes = $1", [id]);
     await client.query("DELETE FROM datos_facturacion WHERE clientes_idclientes = $1", [id]);
@@ -626,5 +702,5 @@ const generarIdentificador = async (client: any): Promise<string> => {
     if (!isNaN(lastNum) && lastNum >= 600) nextNum = lastNum + 1;
   }
 
-  return String(nextNum);  // "600", "601", "602", ...
+  return String(nextNum);
 };

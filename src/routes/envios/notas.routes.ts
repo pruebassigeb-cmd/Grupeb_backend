@@ -7,6 +7,7 @@ import {
   getNotasBitacora,
   marcarRecolectadoNota,
   marcarEntregadoLocalNota,
+  marcarSalidaLocalNota,
 } from "../../controllers/envios/notaRemisionMulti.controller";
 
 const router = Router();
@@ -21,6 +22,7 @@ router.get("/bitacora", authMiddleware, getNotasBitacora);
 // ── Marcar entregados (ANTES de /:idenvio) ──
 router.patch("/:idnota/marcar-recogido",        authMiddleware, marcarRecolectadoNota);
 router.patch("/:idnota/marcar-entregado-local", authMiddleware, marcarEntregadoLocalNota);
+router.patch("/:idnota/marcar-salida-local", authMiddleware, marcarSalidaLocalNota);
 
 // ── Simple (VA AL FINAL) ──
 router.get("/:idenvio", authMiddleware, getOrCreateNota);

@@ -96,8 +96,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         sp.pigmentos,
         sp.pantones,
         sp.observacion,
-        sp.descripcion,
         sp.perforacion,
+        sp.descripcion,
         sp.bk,
         sp.foil,
         asz.tipo                        AS asa_suaje,
@@ -342,6 +342,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         sp.pantones,
         sp.observacion,
         sp.perforacion,
+        sp.descripcion,
 
         asz.tipo AS asa_suaje,
 
@@ -445,6 +446,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         fuelle_lat_de: r.fuelle_lat_de != null ? String(r.fuelle_lat_de) : "",
         refuerzo,
         por_kilo: r.por_kilo ? String(r.por_kilo) : null,
+        descripcion: r.descripcion ?? null,
         medidas: {
           altura,
           ancho,
@@ -547,6 +549,7 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
 
         tpp.material_plastico_producto AS nombre_producto,
         cfg.medida,
+        sp.descripcion,
         mp.tipo_material               AS material,
         sd.cantidad,
         sd.kilogramos,
@@ -659,6 +662,7 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
       estado: pedido.estado || "",
       referencia_envio: pedido.referencia_envio || null,
       nombre_producto: pedido.nombre_producto || "",
+      descripcion: pedido.descripcion || null,
       medida: pedido.medida || "",
       material: pedido.material || "",
       cantidad_total: pedido.cantidad_real != null

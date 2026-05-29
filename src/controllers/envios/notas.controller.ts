@@ -91,6 +91,7 @@ const { rows } = await pool.query(`
   SELECT
     tpp.material_plastico_producto AS nombre_producto,
     cfg.medida,
+    sp.descripcion,
     COUNT(b.idbulto)               AS total_bultos,
     SUM(CASE WHEN b.cantidad_unidades IS NOT NULL THEN b.cantidad_unidades ELSE 0 END) AS total_unidades,
     SUM(CASE WHEN b.peso_producto    IS NOT NULL THEN b.peso_producto    ELSE 0 END)   AS total_kg,
@@ -118,7 +119,7 @@ const { rows } = await pool.query(`
     ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
 
   WHERE eb.envio_idenvio = $1
-  GROUP BY tpp.material_plastico_producto, cfg.medida
+  GROUP BY tpp.material_plastico_producto, cfg.medida, sp.descripcion
   ORDER BY tpp.material_plastico_producto
 `, [idenvio]);
 
@@ -142,6 +143,7 @@ const { rows } = await pool.query(`
       productos: productos.map((p: any) => ({
         nombre_producto: p.nombre_producto,
         medida:          p.medida,
+        descripcion:     p.descripcion || null,
         total_bultos:    Number(p.total_bultos),
         total_unidades:  p.modo_unidad != null ? Number(p.total_unidades) : null,
         total_kg:        p.modo_kg     != null ? Number(p.total_kg)       : null,

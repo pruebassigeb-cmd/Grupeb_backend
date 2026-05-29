@@ -2,54 +2,54 @@ import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
 const ESTADO_PROD = {
-  PENDIENTE:       1,
-  EN_PROCESO:      2,
-  TERMINADO:       3,
-  RESAGADO:        4,
-  NO_APLICA:       5,
-  EN_EXTRUSION:    6,
-  EN_IMPRESION:    7,
-  EN_BOLSEO:       8,
-  EN_TROQUELADO:   9,
+  PENDIENTE: 1,
+  EN_PROCESO: 2,
+  TERMINADO: 3,
+  RESAGADO: 4,
+  NO_APLICA: 5,
+  EN_EXTRUSION: 6,
+  EN_IMPRESION: 7,
+  EN_BOLSEO: 8,
+  EN_TROQUELADO: 9,
   EN_ASA_FLEXIBLE: 10,
 } as const;
 
 const PROCESO = {
-  EXTRUSION:    1,
-  IMPRESION:    2,
+  EXTRUSION: 1,
+  IMPRESION: 2,
   ASA_FLEXIBLE: 3,
-  TROQUELADO:   4,
-  BOLSEO:       5,
+  TROQUELADO: 4,
+  BOLSEO: 5,
 } as const;
 
 const ORDEN_PROCESOS = [1, 2, 5, 3, 4];
 
 const PROCESO_TABLA: Record<number, string> = {
-  [PROCESO.EXTRUSION]:    "extrusion",
-  [PROCESO.IMPRESION]:    "impresion",
-  [PROCESO.BOLSEO]:       "bolseo",
+  [PROCESO.EXTRUSION]: "extrusion",
+  [PROCESO.IMPRESION]: "impresion",
+  [PROCESO.BOLSEO]: "bolseo",
   [PROCESO.ASA_FLEXIBLE]: "asa_flexible",
 };
 
 const PROCESO_ESTADO: Record<number, number> = {
-  [PROCESO.EXTRUSION]:    ESTADO_PROD.EN_EXTRUSION,
-  [PROCESO.IMPRESION]:    ESTADO_PROD.EN_IMPRESION,
-  [PROCESO.BOLSEO]:       ESTADO_PROD.EN_BOLSEO,
+  [PROCESO.EXTRUSION]: ESTADO_PROD.EN_EXTRUSION,
+  [PROCESO.IMPRESION]: ESTADO_PROD.EN_IMPRESION,
+  [PROCESO.BOLSEO]: ESTADO_PROD.EN_BOLSEO,
   [PROCESO.ASA_FLEXIBLE]: ESTADO_PROD.EN_ASA_FLEXIBLE,
 };
 
 const CAMPOS_PROCESO: Record<string, string[]> = {
-  extrusion:    ["kilos_extruir", "metros_extruir", "merma", "k_para_impresion", "metros_extruidos"],
-  impresion:    ["kilos_imprimir", "metros_imprimir", "merma", "kilos_impresos", "metros_impresos"],
-  bolseo:       ["kilos_bolsear", "kilos_bolseados", "kilos_merma", "piezas_bolseadas", "piezas_merma"],
-  asa_flexible: ["pzas_finales", "merma", "piezas_recibidas"],
+  extrusion: ["kilos_extruir", "metros_extruir", "merma", "k_para_impresion", "metros_extruidos"],
+  impresion: ["kilos_imprimir", "metros_imprimir", "merma", "kilos_impresos", "metros_impresos"],
+  bolseo: ["kilos_bolsear", "kilos_bolseados", "kilos_merma", "piezas_bolseadas", "piezas_merma"],
+  asa_flexible: ["pzas_finales", "merma", "piezas_recibidas", "kilos_recibidos", "kilos_merma", "kilos_finales"],
 };
 
 const AVANCE_CONFIG: Record<string, { campo: string; unidad: "kg" | "pzas" }> = {
-  extrusion:    { campo: "kilos_extruidos_parcial",  unidad: "kg"   },
-  impresion:    { campo: "kilos_impresos_parcial",   unidad: "kg"   },
-  bolseo:       { campo: "piezas_bolseadas_parcial", unidad: "pzas" },
-  asa_flexible: { campo: "pzas_finales_parcial",     unidad: "pzas" },
+  extrusion: { campo: "kilos_extruidos_parcial", unidad: "kg" },
+  impresion: { campo: "kilos_impresos_parcial", unidad: "kg" },
+  bolseo: { campo: "piezas_bolseadas_parcial", unidad: "pzas" },
+  asa_flexible: { campo: "pzas_finales_parcial", unidad: "pzas" },
 };
 
 const MAQUINAS_IMPRESION = ["kidder", "sicosa"] as const;
@@ -95,13 +95,13 @@ async function getProcesoActualOrden(
   if (rows.length === 0) return { procesoActualCat: null, estadoOrden: 1 };
   return {
     procesoActualCat: rows[0].proceso_actual,
-    estadoOrden:      rows[0].idestado_produccion_cat,
+    estadoOrden: rows[0].idestado_produccion_cat,
   };
 }
 
 export async function inicializarPrimerProceso(client: any, idproduccion: number): Promise<void> {
   const procesos = await getProcesosDeOrden(client, idproduccion);
-  const primero  = procesos.find(p => PROCESO_TABLA[p] !== undefined) ?? null;
+  const primero = procesos.find(p => PROCESO_TABLA[p] !== undefined) ?? null;
   if (primero !== null) {
     await client.query(
       `UPDATE orden_produccion SET proceso_actual = $1 WHERE idproduccion = $2`,
@@ -116,7 +116,7 @@ async function procesoAnteriorTieneAvance(
   const idx = procesos.indexOf(procesoActualCat);
   if (idx <= 0) return true;
 
-  const catAnterior   = procesos[idx - 1];
+  const catAnterior = procesos[idx - 1];
   const tablaAnterior = PROCESO_TABLA[catAnterior];
   if (!tablaAnterior) return true;
 
@@ -141,7 +141,7 @@ async function procesoAnteriorEstaTerminado(
   const idx = procesos.indexOf(procesoActualCat);
   if (idx <= 0) return true;
 
-  const catAnterior   = procesos[idx - 1];
+  const catAnterior = procesos[idx - 1];
   const tablaAnterior = PROCESO_TABLA[catAnterior];
   if (!tablaAnterior) return true;
 
@@ -167,17 +167,19 @@ async function getLimiteAvanceAnterior(
   const idx = procesos.indexOf(Number(catActual));
   if (idx <= 0) return null;
 
-  const catAnterior   = procesos[idx - 1];
+  const catAnterior = procesos[idx - 1];
   const tablaAnterior = PROCESO_TABLA[catAnterior];
   if (!tablaAnterior) return null;
 
   const necesitaConversion = tablaAnterior === "impresion" && tablaProceso === "bolseo" && modoOrden === "unidad";
 
   const campoFinal: Record<string, string> = {
-    extrusion:    "k_para_impresion",
-    impresion:    "kilos_impresos",
-    bolseo:       "piezas_bolseadas",
-    asa_flexible: "pzas_finales",
+    extrusion: "k_para_impresion",
+    impresion: "kilos_impresos",
+    bolseo: tablaProceso === "asa_flexible" && modoOrden === "kilo"
+      ? "kilos_bolseados"
+      : "piezas_bolseadas",
+    asa_flexible: modoOrden === "kilo" ? "kilos_finales" : "pzas_finales",
   };
   const campo = campoFinal[tablaAnterior];
   if (!campo) return null;
@@ -249,9 +251,9 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
     if (ordenRows.length === 0)
       return res.status(404).json({ error: "Orden no encontrada" });
 
-    const orden   = ordenRows[0];
-    const idtipo  = orden.idtipo_producto;
-    const porKilo       = orden.por_kilo       != null ? Number(orden.por_kilo) : null;
+    const orden = ordenRows[0];
+    const idtipo = orden.idtipo_producto;
+    const porKilo = orden.por_kilo != null ? Number(orden.por_kilo) : null;
     const modoOrdenPedido = (orden.modo_cantidad ?? 'unidad') as 'unidad' | 'kilo';
 
     const { rows: procesosRawRows } = await pool.query(`
@@ -284,10 +286,10 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
       let estado = "pendiente";
       if (registro) {
         const est = Number(registro.estado_produccion_cat_idestado_produccion_cat);
-        if      (est === ESTADO_PROD.TERMINADO)              estado = "terminado";
-        else if (est === ESTADO_PROD.RESAGADO)               estado = "resagado";
+        if (est === ESTADO_PROD.TERMINADO) estado = "terminado";
+        else if (est === ESTADO_PROD.RESAGADO) estado = "resagado";
         else if (est === ESTADO_PROD.EN_PROCESO || est >= 6) estado = "en_proceso";
-        else                                                  estado = "pendiente";
+        else estado = "pendiente";
       }
 
       const { rows: avancesRows } = await pool.query(
@@ -332,7 +334,9 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
                   : base;
               }
             } else if (anterior.tabla === "bolseo") {
-              const v = anterior.registro.piezas_bolseadas;
+              const v = modoOrdenPedido === "kilo"
+                ? anterior.registro.kilos_bolseados
+                : anterior.registro.piezas_bolseadas;
               limiteAvance = v != null ? Number(v) : null;
             }
           } else {
@@ -361,15 +365,15 @@ export const getProcesosOrden = async (req: Request, res: Response) => {
     }
 
     return res.json({
-      idproduccion:      Number(idproduccion),
-      no_produccion:     orden.no_produccion,
-      no_pedido:         orden.no_pedido,
-      proceso_actual:    procesoActual,
-      estado_id:         orden.idestado_produccion_cat,
-      estado_nombre:     orden.estado_nombre,
+      idproduccion: Number(idproduccion),
+      no_produccion: orden.no_produccion,
+      no_pedido: orden.no_pedido,
+      proceso_actual: procesoActual,
+      estado_id: orden.idestado_produccion_cat,
+      estado_nombre: orden.estado_nombre,
       repeticion_kidder: orden.repeticion_kidder ?? null,
       repeticion_sicosa: orden.repeticion_sicosa ?? null,
-      procesos:          procesosFinales,
+      procesos: procesosFinales,
     });
 
   } catch (error: any) {
@@ -464,7 +468,7 @@ export const iniciarProceso = async (req: Request, res: Response) => {
       const { rows: mermaRows } = await client.query(
         `SELECT kilos_merma, metros_merma FROM orden_produccion WHERE idproduccion = $1`, [idproduccion]
       );
-      const kilos_extruir  = mermaRows[0]?.kilos_merma  ?? null;
+      const kilos_extruir = mermaRows[0]?.kilos_merma ?? null;
       const metros_extruir = mermaRows[0]?.metros_merma ?? null;
 
       if (existeRows.length === 0) {
@@ -525,7 +529,7 @@ export const iniciarProceso = async (req: Request, res: Response) => {
     return res.json({
       message: `Proceso ${tabla} iniciado`, idproduccion: Number(idproduccion),
       proceso_actual: procesoActualCat, tabla, estado_id: estadoOrden,
-      maquina:    procesoActualCat === PROCESO.IMPRESION ? maquina    : undefined,
+      maquina: procesoActualCat === PROCESO.IMPRESION ? maquina : undefined,
       repeticion: procesoActualCat === PROCESO.IMPRESION ? repeticion : undefined,
     });
 
@@ -589,7 +593,7 @@ export const registrarAvance = async (req: Request, res: Response) => {
       LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id = sp.idsolicitud_producto AND sd.aprobado = true
       WHERE op.idproduccion = $1 LIMIT 1
     `, [idproduccion]);
-    const porKiloAvance   = configOrdenRows[0]?.por_kilo    != null ? Number(configOrdenRows[0].por_kilo) : null;
+    const porKiloAvance = configOrdenRows[0]?.por_kilo != null ? Number(configOrdenRows[0].por_kilo) : null;
     const modoOrdenAvance = (configOrdenRows[0]?.modo_cantidad ?? "unidad") as "unidad" | "kilo";
 
     const limiteAnterior = await getLimiteAvanceAnterior(client, Number(idproduccion), procesos, tabla_proceso, porKiloAvance, modoOrdenAvance);
@@ -597,29 +601,20 @@ export const registrarAvance = async (req: Request, res: Response) => {
     if (limiteAnterior !== null) {
       const { rows: acumRows } = await client.query(
         `SELECT COALESCE(SUM(cantidad), 0) AS total
-         FROM avance_proceso
-         WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2`,
+     FROM avance_proceso
+     WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2`,
         [idproduccion, tabla_proceso]
       );
+
       const acumuladoActual = Number(acumRows[0]?.total ?? 0);
-      const nuevaCantidad   = Number(cantidad);
-      const proyectado      = acumuladoActual + nuevaCantidad;
+      const nuevaCantidad = Number(cantidad);
+      const proyectado = acumuladoActual + nuevaCantidad;
 
       if (proyectado > limiteAnterior) {
-        await client.query("ROLLBACK");
-        const esPKilo  = modoOrdenAvance === "kilo" && (tabla_proceso === "bolseo" || tabla_proceso === "asa_flexible");
-        const unidadErr = esPKilo ? "kg" : (AVANCE_CONFIG[tabla_proceso]?.unidad ?? "unidades");
-        const restante = Math.max(limiteAnterior - acumuladoActual, 0);
-
-        return res.status(400).json({
-          error: `El avance excede lo producido por el proceso anterior. ` +
-                 `Límite: ${limiteAnterior.toLocaleString("es-MX")} ${unidadErr}. ` +
-                 `Ya llevas ${acumuladoActual.toLocaleString("es-MX")} ${unidadErr}, ` +
-                 `puedes registrar hasta ${restante.toLocaleString("es-MX")} ${unidadErr} más.`,
-          limite:    limiteAnterior,
-          acumulado: acumuladoActual,
-          restante,
-        });
+        console.warn(
+          `[AVISO] Sobreproducción detectada en ${tabla_proceso}. ` +
+          `Límite: ${limiteAnterior}, proyectado: ${proyectado}`
+        );
       }
     }
 
@@ -779,7 +774,7 @@ export const finalizarProceso = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "El proceso anterior debe estar finalizado para poder finalizar este proceso" });
     }
 
-    const campos     = CAMPOS_PROCESO[tabla] ?? [];
+    const campos = CAMPOS_PROCESO[tabla] ?? [];
     const setClauses = ["fecha_fin = NOW()", "estado_produccion_cat_idestado_produccion_cat = $1"];
     const values: any[] = [ESTADO_PROD.TERMINADO];
     let paramIdx = 2;
@@ -802,16 +797,16 @@ export const finalizarProceso = async (req: Request, res: Response) => {
     const siguienteProceso = getSiguienteProceso(procesos, procesoActualCat);
 
     if (siguienteProceso !== null) {
-      const tablaSiguiente  = PROCESO_TABLA[siguienteProceso];
+      const tablaSiguiente = PROCESO_TABLA[siguienteProceso];
       let metrosSiguiente: number | null = null;
-      let kilosSiguiente:  number | null = null;
+      let kilosSiguiente: number | null = null;
 
       if (procesoActualCat === PROCESO.EXTRUSION) {
         metrosSiguiente = datos.metros_extruidos ? Number(datos.metros_extruidos) : null;
-        kilosSiguiente  = datos.k_para_impresion ? Number(datos.k_para_impresion) : null;
+        kilosSiguiente = datos.k_para_impresion ? Number(datos.k_para_impresion) : null;
       } else if (procesoActualCat === PROCESO.IMPRESION) {
         metrosSiguiente = datos.metros_impresos ? Number(datos.metros_impresos) : null;
-        kilosSiguiente  = datos.kilos_impresos  ? Number(datos.kilos_impresos)  : null;
+        kilosSiguiente = datos.kilos_impresos ? Number(datos.kilos_impresos) : null;
       }
 
       const { rows: sigExisteRows } = await client.query(
@@ -847,17 +842,27 @@ export const finalizarProceso = async (req: Request, res: Response) => {
         }
       } else if (tablaSiguiente === "asa_flexible") {
         const piezasRecibidas = datos.piezas_bolseadas ? Number(datos.piezas_bolseadas) : null;
+        const kilosRecibidos = datos.kilos_bolseados ? Number(datos.kilos_bolseados) : null;
+
         if (!sigYaExiste) {
           await client.query(`
-            INSERT INTO asa_flexible (estado_produccion_cat_idestado_produccion_cat, orden_produccion_idproduccion,
-              fecha_creacion, piezas_recibidas, observaciones)
-            VALUES ($1, $2, NOW(), $3, NULL)
-          `, [ESTADO_PROD.PENDIENTE, idproduccion, piezasRecibidas]);
+            INSERT INTO asa_flexible (
+              estado_produccion_cat_idestado_produccion_cat,
+              orden_produccion_idproduccion,
+              fecha_creacion,
+              piezas_recibidas,
+              kilos_recibidos,
+              observaciones
+            )
+            VALUES ($1, $2, NOW(), $3, $4, NULL)
+          `, [ESTADO_PROD.PENDIENTE, idproduccion, piezasRecibidas, kilosRecibidos]);
         } else {
           await client.query(`
-            UPDATE asa_flexible SET piezas_recibidas = COALESCE($1, piezas_recibidas)
-            WHERE orden_produccion_idproduccion = $2
-          `, [piezasRecibidas, idproduccion]);
+            UPDATE asa_flexible
+            SET piezas_recibidas = COALESCE($1, piezas_recibidas),
+                kilos_recibidos  = COALESCE($2, kilos_recibidos)
+            WHERE orden_produccion_idproduccion = $3
+          `, [piezasRecibidas, kilosRecibidos, idproduccion]);
         }
       } else {
         if (!sigYaExiste) {
@@ -1001,11 +1006,11 @@ export const editarProceso = async (req: Request, res: Response) => {
     );
 
     if (tabla === "extrusion") {
-      const kilosSig  = datos.k_para_impresion !== undefined ? datos.k_para_impresion : null;
+      const kilosSig = datos.k_para_impresion !== undefined ? datos.k_para_impresion : null;
       const metrosSig = datos.metros_extruidos !== undefined ? datos.metros_extruidos : null;
       if (kilosSig !== null || metrosSig !== null) {
         const ic: string[] = []; const iv: any[] = []; let ii = 1;
-        if (kilosSig  !== null) { ic.push(`kilos_imprimir = $${ii++}`);  iv.push(kilosSig);  }
+        if (kilosSig !== null) { ic.push(`kilos_imprimir = $${ii++}`); iv.push(kilosSig); }
         if (metrosSig !== null) { ic.push(`metros_imprimir = $${ii++}`); iv.push(metrosSig); }
         iv.push(idproduccion);
         await client.query(`UPDATE impresion SET ${ic.join(", ")} WHERE orden_produccion_idproduccion = $${ii}`, iv);
@@ -1018,10 +1023,25 @@ export const editarProceso = async (req: Request, res: Response) => {
         );
       }
     } else if (tabla === "bolseo") {
+      const updates: string[] = [];
+      const params: any[] = [];
+      let idx = 1;
+
       if (datos.piezas_bolseadas != null && datos.piezas_bolseadas !== "") {
+        updates.push(`piezas_recibidas = $${idx++}`);
+        params.push(datos.piezas_bolseadas);
+      }
+
+      if (datos.kilos_bolseados != null && datos.kilos_bolseados !== "") {
+        updates.push(`kilos_recibidos = $${idx++}`);
+        params.push(datos.kilos_bolseados);
+      }
+
+      if (updates.length > 0) {
+        params.push(idproduccion);
         await client.query(
-          `UPDATE asa_flexible SET piezas_recibidas = $1 WHERE orden_produccion_idproduccion = $2`,
-          [datos.piezas_bolseadas, idproduccion]
+          `UPDATE asa_flexible SET ${updates.join(", ")} WHERE orden_produccion_idproduccion = $${idx}`,
+          params
         );
       }
     }

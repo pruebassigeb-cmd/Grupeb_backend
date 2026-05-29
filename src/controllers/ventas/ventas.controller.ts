@@ -45,12 +45,34 @@ async function ventaTieneCredito(client: any, ventaId: number): Promise<boolean>
 
 async function generarNoProduccion(client: any): Promise<string> {
   const anio = new Date().getFullYear().toString().slice(-2);
-  const { rows } = await client.query(
-    `SELECT COUNT(*) AS total FROM orden_produccion WHERE no_produccion::text LIKE $1`,
-    [`OP${anio}%`]
+  
+  let intento = 0;
+  while (intento < 10) {
+    const { rows } = await client.query(
+      `SELECT COUNT(*) AS total FROM orden_produccion WHERE no_produccion::text LIKE $1`,
+      [`OP${anio}%`]
+    );
+    const siguiente = Number(rows[0].total) + 1 + intento;
+    const candidato = `OP${anio}${String(siguiente).padStart(3, "0")}`;
+
+    // Verificar que no exista
+    const { rows: existe } = await client.query(
+      `SELECT 1 FROM orden_produccion WHERE no_produccion = $1`,
+      [candidato]
+    );
+
+    if (existe.length === 0) return candidato;
+    intento++;
+  }
+
+  // Fallback: usar MAX + 1
+  const { rows: maxRows } = await client.query(
+    `SELECT MAX(CAST(SUBSTRING(no_produccion FROM 5) AS INTEGER)) AS max_num
+     FROM orden_produccion 
+     WHERE no_produccion ~ '^OP${anio}[0-9]+$'`
   );
-  const siguiente = Number(rows[0].total) + 1;
-  return `OP${anio}${String(siguiente).padStart(3, "0")}`;
+  const maxNum = Number(maxRows[0].max_num ?? 0);
+  return `OP${anio}${String(maxNum + 1).padStart(3, "0")}`;
 }
 
 async function obtenerMerma(client: any, kilos: number, tintasId: number): Promise<number> {

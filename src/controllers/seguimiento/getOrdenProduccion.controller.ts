@@ -86,6 +86,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         sp.pantones,
         sp.observacion,
         sp.perforacion,
+        sp.descripcion,
 
         -- Asa/Suaje
         asz.tipo AS asa_suaje,
@@ -257,6 +258,7 @@ LEFT JOIN archivos am
         id_medidatro:     r.id_medidatro     ?? null,
         medida_troquel:   r.medida_troquel   ?? null,
         observacion:      r.observacion      || null,
+        descripcion:      r.descripcion      || null,
         perforacion:      r.perforacion      ?? false,
         cantidad:    r.cantidad   ? Number(r.cantidad)   : null,
         kilogramos:  r.kilogramos ? Number(r.kilogramos) : null,

@@ -43,6 +43,12 @@ export const getBitacora = async (req: Request, res: Response) => {
       LEFT JOIN usuarios u     ON u.idusuario         = br.usuarios_idusuario
       LEFT JOIN unidades un    ON un.idunidad         = br.unidades_idunidad
       WHERE e.tipo = 'local'
+        AND NOT EXISTS (
+          SELECT 1 FROM nota_remision_envio nre
+          JOIN nota_remision nr ON nr.idnota = nre.nota_remision_idnota
+          WHERE nre.envio_idenvio = e.idenvio
+            AND nr.es_multi = TRUE
+        )
       ORDER BY br.fecha DESC, br.idbitacora DESC
     `);
 
@@ -278,6 +284,12 @@ export const getRecolecciones = async (req: Request, res: Response) => {
       LEFT JOIN envio_bulto eb ON eb.envio_idenvio    = e.idenvio
       LEFT JOIN bitacora_reparto br ON br.envio_idenvio = e.idenvio
       WHERE e.tipo = 'recoleccion'
+        AND NOT EXISTS (
+          SELECT 1 FROM nota_remision_envio nre
+          JOIN nota_remision nr ON nr.idnota = nre.nota_remision_idnota
+          WHERE nre.envio_idenvio = e.idenvio
+            AND nr.es_multi = TRUE
+        )
       GROUP BY
         e.idenvio, e.estado, e.es_parcialidad,
         e.fecha_envio, e.fecha_entrega_estimada, e.observaciones,
@@ -335,26 +347,23 @@ export const marcarRecolectado = async (req: RequestConArchivo, res: Response) =
     if (!nombre_quien_recogio?.trim())
       return res.status(400).json({ error: "El nombre de quien recogió es requerido" });
 
-    // Subir foto a S3 si viene
     let foto_url: string | null = null;
     if (req.file) {
       const resultado = await uploadToS3(req.file, CARPETAS.fotos_envios);
       foto_url = resultado.public_id;
     }
 
-    // Buscar registro de bitacora_reparto
     const { rows: brRows } = await pool.query(
       `SELECT idbitacora FROM bitacora_reparto WHERE envio_idenvio = $1 LIMIT 1`,
       [idenvio]
     );
-console.log("BITACORA ROWS:", brRows);  // ← agrega esto
+    console.log("BITACORA ROWS:", brRows);
 
     if (!brRows.length)
       return res.status(404).json({ error: "Registro de bitácora no encontrado para este envío" });
 
     const idbitacora = brRows[0].idbitacora;
 
-    // Actualizar con los nombres de columna correctos
     await pool.query(
       `UPDATE bitacora_reparto
        SET recoleccion_nombre_quien_recogio = $1,
@@ -377,7 +386,6 @@ console.log("BITACORA ROWS:", brRows);  // ← agrega esto
       ]
     );
 
-    // Marcar envío como entregado
     await pool.query(
       `UPDATE envio SET estado = 'entregado' WHERE idenvio = $1`,
       [idenvio]

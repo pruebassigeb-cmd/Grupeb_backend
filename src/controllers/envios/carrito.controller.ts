@@ -10,12 +10,14 @@ export const getCarrito = async (req: Request, res: Response) => {
         s.no_pedido, cli.empresa, cli.impresion,
         b.cantidad_unidades, b.peso_producto, b.peso, b.alto, b.largo, b.ancho,
         CASE WHEN b.asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible' ELSE 'bolseo' END AS proceso_origen,
-        tpp.material_plastico_producto AS nombre_producto, cfg.medida,
+          tpp.material_plastico_producto AS nombre_producto,
+          sp.descripcion,
+          cfg.medida,        
         u.nombre AS agregado_por_nombre, p.nombre AS paqueteria_nombre
-      FROM carrito_envio ce
+      FROM carrito_envio ce   
       JOIN bultos b ON b.idbulto = ce.bultos_idbulto
       JOIN solicitud s ON s.idsolicitud = ce.idsolicitud
-      JOIN clientes cli ON cli.idclientes = s.clientes_idclientes
+    JOIN clientes cli ON cli.idclientes = s.clientes_idclientes
       LEFT JOIN bolseo bol ON bol.idbolseo = b.bolseo_idbolseo
       LEFT JOIN asa_flexible af ON af.idasa_flexible = b.asa_flexible_idasa_flexible
       LEFT JOIN orden_produccion op ON op.idproduccion = COALESCE(bol.orden_produccion_idproduccion, af.orden_produccion_idproduccion)
@@ -42,6 +44,7 @@ export const getCarrito = async (req: Request, res: Response) => {
         idcarrito: r.idcarrito,
         idbulto: r.bultos_idbulto,
         nombre_producto: r.nombre_producto || "",
+        descripcion: r.descripcion || null,
         medida: r.medida || "",
         cantidad_unidades: r.cantidad_unidades != null ? Number(r.cantidad_unidades) : null,
         peso_producto: r.peso_producto != null ? Number(r.peso_producto) : null,

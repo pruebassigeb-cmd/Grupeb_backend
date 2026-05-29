@@ -820,7 +820,7 @@ export const actualizarObservacion = async (req: Request, res: Response) => {
 // ============================================================
 export const aprobarHerramental = async (req: Request, res: Response) => {
   try {
-    const { idH }      = req.params;
+    const { idH }      = req.params;21
     const { aprobado } = req.body;
 
     if (typeof aprobado !== "boolean")

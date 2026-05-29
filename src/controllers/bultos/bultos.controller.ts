@@ -571,6 +571,7 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
         de.referencia                                 AS referencia_envio,
         tpp.material_plastico_producto AS nombre_producto,
         cfg.medida,
+        sp.descripcion,
         mp.tipo_material AS material,
         sd.cantidad, sd.kilogramos, sd.modo_cantidad,
         COALESCE(af.pzas_finales, bol.piezas_bolseadas) AS cantidad_real
@@ -678,6 +679,7 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
       estado:            pedido.estado             || "",
       referencia_envio:  pedido.referencia_envio   || null,
       nombre_producto:   pedido.nombre_producto    || "",
+      descripcion:      pedido.descripcion       || null,
       medida:            pedido.medida             || "",
       material:          pedido.material           || "",
       cantidad_total:    pedido.cantidad_real != null
