@@ -74,7 +74,7 @@ export const validateCreateUsuario = (req: Request, res: Response, next: NextFun
     return res.status(400).json({ error: "Datos de entrada inválidos" });
   }
 
-  nombre = validator.escape(nombre.trim());
+  nombre = nombre.trim();
   if (nombre.length < 2 || nombre.length > 50) {
     return res.status(400).json({ error: "El nombre debe tener entre 2 y 50 caracteres" });
   }
@@ -82,7 +82,7 @@ export const validateCreateUsuario = (req: Request, res: Response, next: NextFun
     return res.status(400).json({ error: "El nombre solo puede contener letras" });
   }
 
-  apellido = validator.escape(apellido.trim());
+  apellido = apellido.trim();
   if (apellido.length < 2 || apellido.length > 50) {
     return res.status(400).json({ error: "El apellido debe tener entre 2 y 50 caracteres" });
   }
@@ -180,7 +180,7 @@ export const validateUsuario = (req: Request, res: Response, next: NextFunction)
     return res.status(400).json({ error: "Datos de entrada inválidos" });
   }
 
-  nombre = validator.escape(nombre.trim());
+  nombre = nombre.trim();
   if (nombre.length < 2 || nombre.length > 50) {
     return res.status(400).json({ error: "El nombre debe tener entre 2 y 50 caracteres" });
   }
@@ -188,7 +188,7 @@ export const validateUsuario = (req: Request, res: Response, next: NextFunction)
     return res.status(400).json({ error: "El nombre solo puede contener letras" });
   }
 
-  apellido = validator.escape(apellido.trim());
+  apellido = apellido.trim();
   if (apellido.length < 2 || apellido.length > 50) {
     return res.status(400).json({ error: "El apellido debe tener entre 2 y 50 caracteres" });
   }
@@ -296,6 +296,7 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
       return res.status(400).json({ error: "Datos de entrada inválidos" });
     }
     if (empresa.length > 128) {
+        empresa = empresa.trim();
       return res.status(400).json({ error: "La empresa no puede exceder 128 caracteres" });
     }
   }
@@ -330,6 +331,7 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── Atención (opcional) ──
   if (atencion) {
+      atencion = atencion.trim();
     if (atencion.length > 128) {
       return res.status(400).json({ error: "El campo atención no puede exceder 128 caracteres" });
     }
@@ -337,6 +339,7 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── Razón social (opcional) ──
   if (razon_social) {
+      razon_social = razon_social.trim();
     if (razon_social.length > 128) {
       return res.status(400).json({ error: "La razón social no puede exceder 128 caracteres" });
     }
@@ -344,7 +347,7 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── RFC de Razón Social (opcional) ──
   if (rfc_rs) {
-    rfc_rs = validator.escape(rfc_rs.trim().toUpperCase());
+rfc_rs = rfc_rs.trim().toUpperCase();
     if (rfc_rs.length > 16) {
       return res.status(400).json({ error: "El RFC de razón social no puede exceder 16 caracteres" });
     }
@@ -352,7 +355,7 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── CP de Razón Social (opcional) ──
   if (cp_rs) {
-    cp_rs = validator.escape(cp_rs.trim());
+      cp_rs = cp_rs.trim();
     if (!/^\d{5}$/.test(cp_rs)) {
       return res.status(400).json({ error: "El CP de razón social debe tener 5 dígitos" });
     }
@@ -360,7 +363,7 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── Impresión (opcional) ──
   if (impresion) {
-    impresion = validator.escape(impresion.trim());
+      impresion = impresion.trim();
     if (impresion.length > 128) {
       return res.status(400).json({ error: "El campo impresión no puede exceder 128 caracteres" });
     }
@@ -384,7 +387,7 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── RFC (opcional) ──
   if (rfc) {
-    rfc = validator.escape(rfc.trim().toUpperCase());
+rfc = rfc.trim().toUpperCase(); 
     if (!/^[A-Z&Ñ]{3,4}[0-9]{6}[A-Z0-9]{3}$/.test(rfc)) {
       return res.status(400).json({ error: "El formato del RFC no es válido" });
     }
@@ -401,7 +404,7 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── Uso CFDI (opcional) ──
   if (uso_cfdi) {
-    uso_cfdi = validator.escape(uso_cfdi.trim());
+  uso_cfdi = uso_cfdi.trim();
     if (uso_cfdi.length > 128) {
       return res.status(400).json({ error: "El uso de CFDI no puede exceder 128 caracteres" });
     }
@@ -409,7 +412,7 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── Moneda (opcional) ──
   if (moneda) {
-    moneda = validator.escape(moneda.trim().toUpperCase());
+  moneda = moneda.trim().toUpperCase();
     if (moneda.length > 128) {
       return res.status(400).json({ error: "La moneda no puede exceder 128 caracteres" });
     }
@@ -417,42 +420,42 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── Domicilio (opcional) ──
   if (domicilio) {
-    domicilio = validator.escape(domicilio.trim());
+  domicilio = domicilio.trim();
     if (domicilio.length > 128) {
       return res.status(400).json({ error: "El domicilio no puede exceder 128 caracteres" });
     }
   }
 
   if (numero) {
-    numero = validator.escape(numero.trim());
+  numero = numero.trim();
     if (numero.length > 128) {
       return res.status(400).json({ error: "El número no puede exceder 128 caracteres" });
     }
   }
 
   if (colonia) {
-    colonia = validator.escape(colonia.trim());
+  colonia = colonia.trim();
     if (colonia.length > 128) {
       return res.status(400).json({ error: "La colonia no puede exceder 128 caracteres" });
     }
   }
 
   if (codigo_postal) {
-    codigo_postal = validator.escape(codigo_postal.trim());
-    if (!/^\d{5}$/.test(codigo_postal)) {
+ codigo_postal = codigo_postal.trim();
+     if (!/^\d{5}$/.test(codigo_postal)) {
       return res.status(400).json({ error: "El código postal debe tener 5 dígitos" });
     }
   }
 
   if (poblacion) {
-    poblacion = validator.escape(poblacion.trim());
+poblacion = poblacion.trim();
     if (poblacion.length > 128) {
       return res.status(400).json({ error: "La población no puede exceder 128 caracteres" });
     }
   }
 
   if (estado) {
-    estado = validator.escape(estado.trim());
+estado = estado.trim();
     if (estado.length > 128) {
       return res.status(400).json({ error: "El estado no puede exceder 128 caracteres" });
     }
