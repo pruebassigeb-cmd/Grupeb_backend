@@ -295,7 +295,6 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
     if (typeof empresa !== "string") {
       return res.status(400).json({ error: "Datos de entrada inválidos" });
     }
-    empresa = validator.escape(empresa.trim());
     if (empresa.length > 128) {
       return res.status(400).json({ error: "La empresa no puede exceder 128 caracteres" });
     }
@@ -331,7 +330,6 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── Atención (opcional) ──
   if (atencion) {
-    atencion = validator.escape(atencion.trim());
     if (atencion.length > 128) {
       return res.status(400).json({ error: "El campo atención no puede exceder 128 caracteres" });
     }
@@ -339,7 +337,6 @@ export const validateCreateCliente = (req: Request, res: Response, next: NextFun
 
   // ── Razón social (opcional) ──
   if (razon_social) {
-    razon_social = validator.escape(razon_social.trim());
     if (razon_social.length > 128) {
       return res.status(400).json({ error: "La razón social no puede exceder 128 caracteres" });
     }
