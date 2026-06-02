@@ -85,8 +85,10 @@ export const getPedidosCliente = async (req: Request, res: Response) => {
       LEFT JOIN asa_flexible af ON af.orden_produccion_idproduccion = op.idproduccion
       LEFT JOIN bultos b ON (b.bolseo_idbolseo = bol.idbolseo OR b.asa_flexible_idasa_flexible = af.idasa_flexible)
       LEFT JOIN envio_bulto eb ON eb.bultos_idbulto = b.idbulto
-      LEFT JOIN configuracion_plastico cfg ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
-      LEFT JOIN tipo_producto_plastico tpp ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
+      LEFT JOIN configuracion_plastico cfg
+        ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
+      LEFT JOIN tipo_producto_plastico tpp
+        ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
       WHERE sp.solicitud_idsolicitud = ANY($1::int[])
       GROUP BY sp.solicitud_idsolicitud, sp.idsolicitud_producto, sp.descripcion,
                tpp.material_plastico_producto, cfg.medida, sd.cantidad, sd.kilogramos, sd.modo_cantidad
@@ -149,6 +151,8 @@ export const getHistorialEntregas = async (req: Request, res: Response) => {
         nrm.idnota        AS nota_multi_id,
         nrm.no_nota       AS nota_multi_no,
         nrm.observaciones AS nota_multi_obs,
+        br.observacion        AS bitacora_observacion,
+        br.observacion_extra  AS bitacora_observacion_extra,
         COUNT(DISTINCT b.idbulto) AS total_bultos,
         SUM(
           CASE
@@ -176,19 +180,21 @@ export const getHistorialEntregas = async (req: Request, res: Response) => {
       LEFT JOIN nota_remision_envio nre ON nre.envio_idenvio = e.idenvio
       LEFT JOIN nota_remision nrm
         ON nrm.idnota = nre.nota_remision_idnota AND nrm.es_multi = TRUE
+      LEFT JOIN bitacora_reparto br ON br.envio_idenvio = e.idenvio
       WHERE e.solicitud_idsolicitud = ANY($1::int[])
       GROUP BY
         e.idenvio, e.tipo, e.estado, e.es_parcialidad,
         e.fecha_envio, e.numero_guia, e.observaciones,
         s.idsolicitud, s.no_pedido,
         nr.idnota, nr.no_nota, nr.observaciones,
-        nrm.idnota, nrm.no_nota, nrm.observaciones
+        nrm.idnota, nrm.no_nota, nrm.observaciones,
+        br.observacion, br.observacion_extra
       ORDER BY s.no_pedido ASC, e.fecha_envio ASC
     `, [idsolicitudes]);
 
     // ── Query secundaria: desglose por producto por envío ──────────────────
     const allEnvioIds = enviosRows.map((r: any) => Number(r.idenvio));
-    let productosDetalleMap = new Map<number, any[]>();
+    const productosDetalleMap = new Map<number, any[]>();
 
     if (allEnvioIds.length) {
       const { rows: detRows } = await pool.query(`
@@ -252,27 +258,29 @@ export const getHistorialEntregas = async (req: Request, res: Response) => {
       const es_multi = !!r.nota_multi_id;
 
       porPedido[id].push({
-        idenvio:             Number(r.idenvio),
-        tipo:                r.tipo,
-        estado:              r.estado,
-        es_parcialidad:      Boolean(r.es_parcialidad),
-        fecha_envio:         r.fecha_envio,
-        numero_guia:         r.numero_guia  || null,
-        observaciones:       r.observaciones || null,
-        total_bultos:        Number(r.total_bultos),
-        cantidad_entregada:  Number(r.cantidad_entregada || 0),
-        modo_cantidad:       r.modo_cantidad || "unidad",
+        idenvio:            Number(r.idenvio),
+        tipo:               r.tipo,
+        estado:             r.estado,
+        es_parcialidad:     Boolean(r.es_parcialidad),
+        fecha_envio:        r.fecha_envio,
+        numero_guia:        r.numero_guia  || null,
+        observaciones:      r.observaciones || null,
+        observacion:        r.bitacora_observacion       || null,  // ← código E/RA/RD/PD
+        observacion_extra:  r.bitacora_observacion_extra || null,  // ← texto libre
+        total_bultos:       Number(r.total_bultos),
+        cantidad_entregada: Number(r.cantidad_entregada || 0),
+        modo_cantidad:      r.modo_cantidad || "unidad",
         nota_no,
-        nota_id:             nota_id ? Number(nota_id) : null,
-        idnota:              nota_id ? Number(nota_id) : null,
+        nota_id:            nota_id ? Number(nota_id) : null,
+        idnota:             nota_id ? Number(nota_id) : null,
         es_multi,
-        nota_observaciones:  r.nota_multi_obs || r.nota_simple_obs || null,
-        productos_detalle:   productosDetalleMap.get(Number(r.idenvio)) || [],
+        nota_observaciones: r.nota_multi_obs || r.nota_simple_obs || null,
+        productos_detalle:  productosDetalleMap.get(Number(r.idenvio)) || [],
       });
     }
 
     const resultado = idsolicitudes.map(id => {
-      const entregas = porPedido[id] || [];
+      const entregas       = porPedido[id] || [];
       const total_entregado = entregas.reduce((s, e) => s + Number(e.cantidad_entregada || 0), 0);
       const total_bultos    = entregas.reduce((s, e) => s + Number(e.total_bultos    || 0), 0);
       return {

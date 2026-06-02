@@ -37,9 +37,13 @@ export const SUBCARPETAS_PDF = [
 export type CarpetaS3 = typeof CARPETAS[keyof typeof CARPETAS];
 export type SubcarpetaPDF = typeof SUBCARPETAS_PDF[number];
 
+// ── Acepta CUALQUIER tipo de archivo sin restricción ─────────────────────────
 export const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB — sube de 10 a 50 para PDFs grandes
+  fileFilter: (_req: any, _file: any, cb: any) => {
+    cb(null, true); // acepta todo
+  },
 });
 
 export const uploadToS3 = async (
@@ -57,7 +61,6 @@ export const uploadToS3 = async (
     ? ".pdf"
     : file.originalname.match(/\.[^/.]+$/)?.[0] || "";
 
-  // Si hay subcarpeta la incluye en el key
   const rutaCarpeta = subcarpeta
     ? `grupeb/${carpeta}/${subcarpeta}`
     : `grupeb/${carpeta}`;

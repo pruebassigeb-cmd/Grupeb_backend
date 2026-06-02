@@ -44,11 +44,20 @@ export const getProveedores = async (req: Request, res: Response) => {
         p.regimen_fiscal_idregimen_fiscal,
         rf.codigo           AS regimen_fiscal_codigo,
         rf.tipo_regimen     AS regimen_fiscal_nombre,
-        COUNT(pp.idproveedor_producto)::int AS total_productos
+        COUNT(pp.idproveedor_producto)::int AS total_productos,
+        pf.condicion_compra,
+        pf.dias_credito
       FROM proveedor p
       LEFT JOIN regimen_fiscal rf ON rf.idregimen_fiscal = p.regimen_fiscal_idregimen_fiscal
       LEFT JOIN proveedor_producto pp
         ON pp.proveedor_idproveedor = p.idproveedor AND pp.activo = true
+      LEFT JOIN LATERAL (
+        SELECT condicion_compra, dias_credito
+        FROM proveedor_facturacion
+        WHERE proveedor_idproveedor = p.idproveedor AND activo = true
+        ORDER BY created_at
+        LIMIT 1
+      ) pf ON true
     `;
 
     const params: any[] = [];
@@ -70,7 +79,7 @@ export const getProveedores = async (req: Request, res: Response) => {
     }
 
     if (where.length) query += ` WHERE ${where.join(" AND ")}`;
-    query += ` GROUP BY p.idproveedor, rf.codigo, rf.tipo_regimen ORDER BY p.nombre`;
+    query += ` GROUP BY p.idproveedor, rf.codigo, rf.tipo_regimen, pf.condicion_compra, pf.dias_credito ORDER BY p.nombre`;
 
     const { rows } = await pool.query(query, params);
     return res.json(rows);
@@ -662,14 +671,14 @@ export const getFacturacionProveedor = async (req: Request, res: Response) => {
 export const crearFacturacionProveedor = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { banco, cuenta, clabe, convenio, nombre_cuenta, condicion_compra } = req.body;
+    const { banco, cuenta, clabe, convenio, nombre_cuenta, condicion_compra, dias_credito } = req.body;
 
     const { rows } = await pool.query(
       `INSERT INTO proveedor_facturacion
-         (proveedor_idproveedor, banco, cuenta, clabe, convenio, nombre_cuenta, condicion_compra)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       RETURNING *`,
-      [id, banco || null, cuenta || null, clabe || null, convenio || null, nombre_cuenta || null, condicion_compra || null]
+  (proveedor_idproveedor, banco, cuenta, clabe, convenio, nombre_cuenta, condicion_compra, dias_credito)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+RETURNING *`,
+      [id, banco || null, cuenta || null, clabe || null, convenio || null, nombre_cuenta || null, condicion_compra || null, dias_credito || null]
     );
     return res.status(201).json({ message: "Facturación creada", facturacion: rows[0] });
   } catch (error: any) {
@@ -681,17 +690,17 @@ export const crearFacturacionProveedor = async (req: Request, res: Response) => 
 export const actualizarFacturacionProveedor = async (req: Request, res: Response) => {
   try {
     const { idFact } = req.params;
-    const { banco, cuenta, clabe, convenio, nombre_cuenta, condicion_compra, activo } = req.body;
+    const { banco, cuenta, clabe, convenio, nombre_cuenta, condicion_compra, activo, dias_credito } = req.body;
 
     const { rowCount, rows } = await pool.query(
       `UPDATE proveedor_facturacion SET
-         banco = $1, cuenta = $2, clabe = $3, convenio = $4,
-         nombre_cuenta = $5, condicion_compra = $6, activo = $7
-       WHERE idproveedor_facturacion = $8
+  banco=$1, cuenta=$2, clabe=$3, convenio=$4,
+  nombre_cuenta=$5, condicion_compra=$6, activo=$7, dias_credito=$8
+WHERE idproveedor_facturacion=$9
        RETURNING *`,
       [banco || null, cuenta || null, clabe || null, convenio || null,
       nombre_cuenta || null, condicion_compra || null,
-      activo !== undefined ? activo : true, idFact]
+      activo !== undefined ? activo : true, dias_credito || null, idFact]
     );
     if (rowCount === 0) return res.status(404).json({ error: "Registro no encontrado" });
     return res.json({ message: "Facturación actualizada", facturacion: rows[0] });
@@ -724,15 +733,16 @@ export const guardarProveedorCompleto = async (req: Request, res: Response) => {
 
     // 1. Actualizar datos generales
     const { rows: provRows } = await client.query(
-      `UPDATE proveedor SET
-         nombre = $1, contacto = $2, telefono = $3, correo = $4,
-         notas = $5, rfc_proveedor = $6, regimen_fiscal_idregimen_fiscal = $7
-       WHERE idproveedor = $8 RETURNING *`,
-      [general.nombre?.trim(), general.contacto || null, general.telefono || null,
-       general.correo || null, general.notas || null, general.rfc_proveedor || null,
-       general.regimen_fiscal_idregimen_fiscal || null, id]
-    );
-
+  `UPDATE proveedor SET
+     nombre=$1, contacto=$2, telefono=$3, correo=$4,
+     notas=$5, rfc_proveedor=$6, regimen_fiscal_idregimen_fiscal=$7
+   WHERE idproveedor=$8 RETURNING *`,
+  [
+    general.nombre?.trim(), general.contacto || null, general.telefono || null,
+    general.correo || null, general.notas || null, general.rfc_proveedor || null,
+    general.regimen_fiscal_idregimen_fiscal || null, id
+  ]
+);
     // 2. Upsert domicilio
     const { rows: domExiste } = await client.query(
       `SELECT idproveedor_domicilio FROM proveedor_domicilio WHERE proveedor_idproveedor = $1`, [id]
@@ -741,15 +751,15 @@ export const guardarProveedorCompleto = async (req: Request, res: Response) => {
       await client.query(
         `UPDATE proveedor_domicilio SET codigo_postal=$1, colonia=$2, domicilio=$3, municipio=$4, estado=$5
          WHERE proveedor_idproveedor=$6`,
-        [domicilio.codigo_postal||null, domicilio.colonia||null, domicilio.domicilio||null,
-         domicilio.municipio||null, domicilio.estado||null, id]
+        [domicilio.codigo_postal || null, domicilio.colonia || null, domicilio.domicilio || null,
+        domicilio.municipio || null, domicilio.estado || null, id]
       );
     } else {
       await client.query(
         `INSERT INTO proveedor_domicilio (proveedor_idproveedor,codigo_postal,colonia,domicilio,municipio,estado)
          VALUES ($1,$2,$3,$4,$5,$6)`,
-        [id, domicilio.codigo_postal||null, domicilio.colonia||null, domicilio.domicilio||null,
-         domicilio.municipio||null, domicilio.estado||null]
+        [id, domicilio.codigo_postal || null, domicilio.colonia || null, domicilio.domicilio || null,
+          domicilio.municipio || null, domicilio.estado || null]
       );
     }
 
@@ -757,17 +767,17 @@ export const guardarProveedorCompleto = async (req: Request, res: Response) => {
     for (const f of (facturacion ?? [])) {
       if (f.idproveedor_facturacion) {
         await client.query(
-          `UPDATE proveedor_facturacion SET banco=$1,cuenta=$2,clabe=$3,convenio=$4,nombre_cuenta=$5,condicion_compra=$6
-           WHERE idproveedor_facturacion=$7`,
-          [f.banco||null, f.cuenta||null, f.clabe||null, f.convenio||null,
-           f.nombre_cuenta||null, f.condicion_compra||null, f.idproveedor_facturacion]
+          `UPDATE proveedor_facturacion SET banco=$1,cuenta=$2,clabe=$3,convenio=$4,nombre_cuenta=$5,condicion_compra=$6,dias_credito=$7
+           WHERE idproveedor_facturacion=$8`,
+          [f.banco || null, f.cuenta || null, f.clabe || null, f.convenio || null,
+          f.nombre_cuenta || null, f.condicion_compra || null, f.dias_credito || null, f.idproveedor_facturacion]
         );
       } else {
         await client.query(
-          `INSERT INTO proveedor_facturacion (proveedor_idproveedor,banco,cuenta,clabe,convenio,nombre_cuenta,condicion_compra)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-          [id, f.banco||null, f.cuenta||null, f.clabe||null, f.convenio||null,
-           f.nombre_cuenta||null, f.condicion_compra||null]
+          `INSERT INTO proveedor_facturacion (proveedor_idproveedor,banco,cuenta,clabe,convenio,nombre_cuenta,condicion_compra,dias_credito)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [id, f.banco || null, f.cuenta || null, f.clabe || null, f.convenio || null,
+            f.nombre_cuenta || null, f.condicion_compra || null, f.dias_credito || null]
         );
       }
     }

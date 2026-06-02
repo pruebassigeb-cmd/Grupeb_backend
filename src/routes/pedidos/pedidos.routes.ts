@@ -7,7 +7,8 @@ import {
   getPedidos,
   eliminarPedido,
   actualizarPedido,       // ← nuevo
-  eliminarPedidoCompleto
+  eliminarPedidoCompleto,
+  getHistorialPedidosPorCliente
 } from "../../controllers/pedidos/pedidos.controller";
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 
@@ -15,17 +16,17 @@ const router = Router();
 
 router.use(
   helmet({
-    contentSecurityPolicy:     false,
+    contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
   })
 );
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max:      200,
-  message:  { error: "Demasiadas solicitudes. Intenta más tarde." },
+  max: 200,
+  message: { error: "Demasiadas solicitudes. Intenta más tarde." },
   standardHeaders: true,
-  legacyHeaders:   false,
+  legacyHeaders: false,
 });
 
 router.use(limiter);
@@ -34,6 +35,12 @@ const PERMISO = "Crear/Editar/Eliminar Pedidos";
 
 // ── GET — cualquier autenticado ───────────────────────────
 router.get("/", authMiddleware, getPedidos);
+
+router.get(
+  "/historial/:clienteId",
+  authMiddleware,
+  getHistorialPedidosPorCliente
+);
 
 // ── Escritura — requiere permiso ──────────────────────────
 router.put(
@@ -56,4 +63,6 @@ router.delete(
   checkPermiso("Eliminar Pedido"),
   eliminarPedidoCompleto
 );
+
+
 export default router;

@@ -22,45 +22,44 @@ const validarSubcarpeta = (subcarpeta: string): string | undefined => {
 };
 
 export const subirArchivo = async (req: RequestConArchivo, res: Response): Promise<void> => {
-const notaId = req.body.nota_id ? Number(req.body.nota_id) : null;
-console.log("📦 nota_id recibido:", req.body.nota_id, "→", notaId);
-
   try {
     if (!req.file) {
       res.status(400).json({ error: "No se recibió ningún archivo" });
       return;
     }
- 
+
     const carpeta    = validarCarpeta(req.body.carpeta || "disenos");
     const subcarpeta = req.body.subcarpeta ? validarSubcarpeta(req.body.subcarpeta) : undefined;
- 
+    const categoria  = req.body.categoria ?? null;  // ← LÍNEA NUEVA
+
     const { url, public_id, resource_type } = await uploadToS3(req.file, carpeta, subcarpeta);
     const tipo      = getTipo(req.file.mimetype);
     const tamanoKb  = Math.round(req.file.size / 1024);
     const subidoPor = (req as any).user?.id || null;
     const usuarioId = req.body.usuario_id ? Number(req.body.usuario_id) : null;
     const envioId   = req.body.envio_id   ? Number(req.body.envio_id)   : null;
-    const notaId    = req.body.nota_id    ? Number(req.body.nota_id)    : null; // ← NUEVO
- 
+    const notaId    = req.body.nota_id    ? Number(req.body.nota_id)    : null;
+
     const result = await pool.query(
       `INSERT INTO archivos 
         (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria, usuario_id, envio_id, nota_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING *`,
-      [req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb, subidoPor, resource_type, subcarpeta ?? null, usuarioId, envioId, notaId]
+      [req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb,
+       subidoPor, resource_type,
+       categoria,   // ← antes era subcarpeta ?? null
+       usuarioId, envioId, notaId]
     );
- 
+
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error("❌ Error al subir archivo:", error);
     res.status(500).json({ error: "Error al subir el archivo" });
   }
 };
- 
 
 // ==========================
 // GET FOTOS POR ENVIO
-// GET /archivos/envio/:idenvio
 // ==========================
 export const getFotosEnvio = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -88,11 +87,10 @@ export const getFotosEnvio = async (req: Request, res: Response): Promise<void> 
   }
 };
 
-
 export const getFotosNota = async (req: Request, res: Response): Promise<void> => {
   try {
     const { idnota } = req.params;
- 
+
     const result = await pool.query(
       `SELECT id_archivo, nombre, tipo, mime_type, public_id, tamano_kb, created_at
        FROM archivos
@@ -100,22 +98,20 @@ export const getFotosNota = async (req: Request, res: Response): Promise<void> =
        ORDER BY created_at DESC`,
       [idnota]
     );
- 
+
     const archivosConUrl = await Promise.all(
       result.rows.map(async (archivo) => ({
         ...archivo,
         url: await getPresignedUrl(archivo.public_id),
       }))
     );
- 
+
     res.json(archivosConUrl);
   } catch (error) {
     console.error("❌ Error al obtener fotos de la nota:", error);
     res.status(500).json({ error: "Error al obtener fotos" });
   }
 };
- 
-
 
 export const listarArchivos = async (_req: Request, res: Response): Promise<void> => {
   try {
@@ -230,7 +226,7 @@ export const obtenerEstadisticas = async (_req: Request, res: Response): Promise
         COALESCE(SUM(tamano_kb) FILTER (WHERE public_id LIKE '%/backups/%'),      0) AS kb_backups
       FROM archivos
     `);
-      
+
     const row = result.rows[0];
     const totalKb    = Number(row.total_kb);
     const totalMb    = totalKb / 1024;

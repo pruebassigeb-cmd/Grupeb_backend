@@ -547,9 +547,9 @@ export const deleteEnvio = async (req: Request, res: Response) => {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Envío no encontrado" });
     }
-    if (envioActual.rows[0].estado !== "preparando") {
+    if (!["preparando", "pendiente"].includes(envioActual.rows[0].estado)) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Solo se pueden cancelar envíos en estado 'preparando'" });
+      return res.status(400).json({ error: "Solo se pueden cancelar envíos en estado 'preparando' o 'pendiente'" });
     }
 
     await client.query("DELETE FROM nota_remision_envio WHERE envio_idenvio = $1", [id]);  // ← NUEVO: va primero

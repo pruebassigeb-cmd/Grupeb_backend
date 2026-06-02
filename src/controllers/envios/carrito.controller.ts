@@ -104,29 +104,36 @@ export const agregarAlCarrito = async (req: Request, res: Response) => {
   }
 };
 
+// ========== MODIFICADO: ahora acepta tipo_envio = null ==========
 export const asignarTipoEnvioPedido = async (req: Request, res: Response) => {
   try {
     const { idsolicitud, tipo_envio, paqueteria_idpaqueteria } = req.body;
 
-    if (!idsolicitud || !tipo_envio)
-      return res.status(400).json({ error: "idsolicitud y tipo_envio son requeridos" });
+    // Solo validamos que idsolicitud esté presente
+    if (!idsolicitud)
+      return res.status(400).json({ error: "idsolicitud es requerido" });
 
-    if (
-      tipo_envio !== null &&
-      !["local", "paqueteria", "recoleccion"].includes(tipo_envio)
-    ) return res.status(400).json({ error: "tipo_envio inválido" });
+    // Validación: si tipo_envio no es null, debe ser uno de los valores permitidos
+    if (tipo_envio !== null && !["local", "paqueteria", "recoleccion"].includes(tipo_envio)) {
+      return res.status(400).json({ error: "tipo_envio inválido" });
+    }
 
-    if (tipo_envio === "paqueteria" && !paqueteria_idpaqueteria)
+    // Si tipo_envio es "paqueteria", debe tener paqueteria_idpaqueteria
+    if (tipo_envio === "paqueteria" && !paqueteria_idpaqueteria) {
       return res.status(400).json({ error: "Para paquetería se requiere paqueteria_idpaqueteria" });
+    }
+
+    // Si tipo_envio es null, se limpia también la paquetería
+    const finalPaqueteriaId = tipo_envio === "paqueteria" ? (paqueteria_idpaqueteria ?? null) : null;
 
     await pool.query(
       `UPDATE carrito_envio
-       SET tipo_envio              = $1,
+       SET tipo_envio = $1,
            paqueteria_idpaqueteria = $2
        WHERE idsolicitud = $3`,
       [
-        tipo_envio,
-        tipo_envio === "paqueteria" ? (paqueteria_idpaqueteria ?? null) : null,
+        tipo_envio,           // puede ser null
+        finalPaqueteriaId,
         idsolicitud,
       ]
     );
@@ -137,6 +144,7 @@ export const asignarTipoEnvioPedido = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Error al asignar tipo de envío" });
   }
 };
+// ================================================================
 
 export const asignarPaqueteriaCarrito = async (req: Request, res: Response) => {
   try {
@@ -259,7 +267,6 @@ export const procesarCarrito = async (req: Request, res: Response) => {
           );
         }
 
-        // ── INSERT BITÁCORA — una sola vez ──
         await client.query(
           `INSERT INTO bitacora_reparto (envio_idenvio) VALUES ($1)`,
           [idenvio]

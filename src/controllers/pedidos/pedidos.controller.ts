@@ -161,32 +161,32 @@ export const getPedidos = async (req: Request, res: Response) => {
 
       if (!agrupados[noPedido]) {
         agrupados[noPedido] = {
-          no_pedido:        noPedido,
-          no_cotizacion:    row.no_cotizacion ?? null,
-          es_directo:       row.no_cotizacion === null,
-          fecha:            row.fecha,
-          prioridad:        row.prioridad ?? false,
-          estado_id:        row.estado_administrativo_cat_idestado_administrativo_cat,
-          estado:           normalizarNombreEstado(row.estado_nombre || ""),
+          no_pedido: noPedido,
+          no_cotizacion: row.no_cotizacion ?? null,
+          es_directo: row.no_cotizacion === null,
+          fecha: row.fecha,
+          prioridad: row.prioridad ?? false,
+          estado_id: row.estado_administrativo_cat_idestado_administrativo_cat,
+          estado: normalizarNombreEstado(row.estado_nombre || ""),
           diseno_estado_id: row.diseno_estado_id ?? 1,
-          cliente_id:       row.clientes_idclientes,
-          identificar:      row.cliente_identificar  || null,
-          cliente:          row.cliente_nombre       || "",
-          telefono:         row.cliente_telefono     || "",
-          correo:           row.cliente_correo       || "",
-          impresion:        row.cliente_impresion    || null,
-          empresa:          row.cliente_empresa      || "",
-          celular:          row.cliente_celular      || null,
-          razon_social:     row.cliente_razon_social || null,
-          rfc:              row.cliente_rfc          || null,
-          domicilio:        row.cliente_domicilio    || null,
-          numero:           row.cliente_numero       || null,
-          colonia:          row.cliente_colonia      || null,
-          codigo_postal:    row.cliente_codigo_postal || null,
-          poblacion:        row.cliente_poblacion    || null,
-          estado_cliente:   row.cliente_estado       || null,
-          productos:        [],
-          total:            0,
+          cliente_id: row.clientes_idclientes,
+          identificar: row.cliente_identificar || null,
+          cliente: row.cliente_nombre || "",
+          telefono: row.cliente_telefono || "",
+          correo: row.cliente_correo || "",
+          impresion: row.cliente_impresion || null,
+          empresa: row.cliente_empresa || "",
+          celular: row.cliente_celular || null,
+          razon_social: row.cliente_razon_social || null,
+          rfc: row.cliente_rfc || null,
+          domicilio: row.cliente_domicilio || null,
+          numero: row.cliente_numero || null,
+          colonia: row.cliente_colonia || null,
+          codigo_postal: row.cliente_codigo_postal || null,
+          poblacion: row.cliente_poblacion || null,
+          estado_cliente: row.cliente_estado || null,
+          productos: [],
+          total: 0,
         };
       }
 
@@ -197,19 +197,19 @@ export const getPedidos = async (req: Request, res: Response) => {
 
         if (!producto) {
           const tipoNombre = row.tipo_producto_nombre || "";
-          const medida     = row.cfg_medida           || "";
-          const material   = (row.material_nombre     || "").toLowerCase();
+          const medida = row.cfg_medida || "";
+          const material = (row.material_nombre || "").toLowerCase();
           const nombreCompleto =
             [tipoNombre, medida, material].filter(Boolean).join(" ") ||
             `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
 
           const medidas = {
-            altura:         row.cfg_altura        ? String(row.cfg_altura)        : "",
-            ancho:          row.cfg_ancho         ? String(row.cfg_ancho)         : "",
-            fuelleFondo:    row.cfg_fuelle_fondo  ? String(row.cfg_fuelle_fondo)  : "",
+            altura: row.cfg_altura ? String(row.cfg_altura) : "",
+            ancho: row.cfg_ancho ? String(row.cfg_ancho) : "",
+            fuelleFondo: row.cfg_fuelle_fondo ? String(row.cfg_fuelle_fondo) : "",
             fuelleLateral1: row.cfg_fuelle_lat_iz ? String(row.cfg_fuelle_lat_iz) : "",
             fuelleLateral2: row.cfg_fuelle_lat_de ? String(row.cfg_fuelle_lat_de) : "",
-            refuerzo:       row.cfg_refuerzo      ? String(row.cfg_refuerzo)      : "",
+            refuerzo: row.cfg_refuerzo ? String(row.cfg_refuerzo) : "",
           };
 
           const materialUpper = (row.material_nombre || "").toUpperCase();
@@ -229,57 +229,57 @@ export const getPedidos = async (req: Request, res: Response) => {
           })();
 
           producto = {
-            idsolicitud:             row.idsolicitud,
-            idsolicitud_producto:    row.idsolicitud_producto,
-            idcotizacion_producto:   row.idsolicitud_producto,
-            producto_id:             row.configuracion_plastico_idconfiguracion_plastico,
-            nombre:                  nombreCompleto,
-            material:                row.material_nombre || "",
-            calibre:                 calibreResuelto,
-            calibre_bopp:            row.calibre_bopp ? String(row.calibre_bopp) : null,
-            medidasFormateadas:      row.cfg_medida    || "",
+            idsolicitud: row.idsolicitud,
+            idsolicitud_producto: row.idsolicitud_producto,
+            idcotizacion_producto: row.idsolicitud_producto,
+            producto_id: row.configuracion_plastico_idconfiguracion_plastico,
+            nombre: nombreCompleto,
+            material: row.material_nombre || "",
+            calibre: calibreResuelto,
+            calibre_bopp: row.calibre_bopp ? String(row.calibre_bopp) : null,
+            medidasFormateadas: row.cfg_medida || "",
             medidas,
-            tintas:                  row.tintas_cantidad ?? row.tintas_idtintas,
-            tintas_idtintas:         row.tintas_idtintas,
-            caras:                   row.caras_cantidad  ?? row.caras_idcaras,
-            bk:                      row.bk,
-            foil:                    row.foil,
-            idsuaje:                 row.idsuaje         ?? null,
-            asa_suaje:               row.suaje_tipo      ?? null,
-            alto_rel:                row.alto_rel,
-            laminado:                row.laminado,
-            uv_br:                   row.uv_br,
-            pigmentos:               row.pigmentos || null,
-            pantones:                row.pantones
+            tintas: row.tintas_cantidad ?? row.tintas_idtintas,
+            tintas_idtintas: row.tintas_idtintas,
+            caras: row.caras_cantidad ?? row.caras_idcaras,
+            bk: row.bk,
+            foil: row.foil,
+            idsuaje: row.idsuaje ?? null,
+            asa_suaje: row.suaje_tipo ?? null,
+            alto_rel: row.alto_rel,
+            laminado: row.laminado,
+            uv_br: row.uv_br,
+            pigmentos: row.pigmentos || null,
+            pantones: row.pantones
               ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
               : null,
-            observacion:             row.observacion,
-            descripcion:             row.descripcion  ?? null,
-            perforacion:             row.perforacion  ?? false,
-            por_kilo:                row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
-            id_color:                row.id_color         ?? null,
-            color_asa_nombre:        row.color_asa_nombre ?? null,
-            id_medidatro:            row.id_medidatro     ?? null,
-            medida_troquel:          row.medida_troquel   ?? null,
+            observacion: row.observacion,
+            descripcion: row.descripcion ?? null,
+            perforacion: row.perforacion ?? false,
+            por_kilo: row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
+            id_color: row.id_color ?? null,
+            color_asa_nombre: row.color_asa_nombre ?? null,
+            id_medidatro: row.id_medidatro ?? null,
+            medida_troquel: row.medida_troquel ?? null,
             herramental_descripcion: row.herramental_descripcion ?? null,
-            herramental_precio:      row.herramental_precio != null ? Number(row.herramental_precio) : null,
-            herramental_aprobado:    row.herramental_aprobado ?? null,
-            herramental_id:          row.id_herramental ?? null,
-            detalles:                [],
-            subtotal:                0,
+            herramental_precio: row.herramental_precio != null ? Number(row.herramental_precio) : null,
+            herramental_aprobado: row.herramental_aprobado ?? null,
+            herramental_id: row.id_herramental ?? null,
+            detalles: [],
+            subtotal: 0,
           };
           agrupados[noPedido].productos.push(producto);
         }
 
         if (row.idsolicitud_detalle) {
           producto.detalles.push({
-            iddetalle:       row.idsolicitud_detalle,
-            cantidad:        Number(row.cantidad),
-            precio_total:    Number(row.precio_total),
+            iddetalle: row.idsolicitud_detalle,
+            cantidad: Number(row.cantidad),
+            precio_total: Number(row.precio_total),
             precio_unitario: row.precio_unitario != null ? Number(row.precio_unitario) : null,
-            aprobado:        row.aprobado,
-            kilogramos:      row.kilogramos != null ? Number(row.kilogramos) : null,
-            modo_cantidad:   row.modo_cantidad || "unidad",
+            aprobado: row.aprobado,
+            kilogramos: row.kilogramos != null ? Number(row.kilogramos) : null,
+            modo_cantidad: row.modo_cantidad || "unidad",
           });
           producto.subtotal += Number(row.precio_total);
         }
@@ -327,6 +327,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       const {
         idsolicitud_producto,
         eliminado,
+        nuevo_configuracion_id,   // ← nuevo campo opcional
         tintas,
         caras,
         pantones,
@@ -386,7 +387,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       }
 
       const tintasId = await resolverIdTintas(client, tintas);
-      const carasId  = await resolverIdCaras(client, caras);
+      const carasId = await resolverIdCaras(client, caras);
 
       const pantonesLimpios = (() => {
         if (!pantones) return null;
@@ -394,34 +395,67 @@ export const actualizarPedido = async (req: Request, res: Response) => {
         const truncados = arr.slice(0, tintas);
         return truncados.length > 0 ? truncados.join(", ") : null;
       })();
+      if (nuevo_configuracion_id) {
+        await client.query(
+          `UPDATE solicitud_producto SET
+             configuracion_plastico_idconfiguracion_plastico = $1,
+             tintas_idtintas = $2,
+             caras_idcaras   = $3,
+             pantones        = $4,
+             pigmentos       = $5,
+             observacion     = $6,
+             descripcion     = $7,
+             perforacion     = $8,
+             idsuaje         = $9,
+             id_color        = $10,
+             id_medidatro    = $11
+           WHERE idsolicitud_producto = $12`,
+          [
+            nuevo_configuracion_id,
+            tintasId,
+            carasId,
+            pantonesLimpios,
+            pigmentos || null,
+            observacion || null,
+            descripcion || null,
+            perforacion === true,
+            prod.idsuaje ?? null,
+            prod.id_color ?? null,
+            prod.id_medidatro ?? null,
+            idsolicitud_producto,
+          ]
+        );
+      } else {
+        // UPDATE normal sin cambio de configuración
+        await client.query(
+          `UPDATE solicitud_producto SET
+             tintas_idtintas = $1,
+             caras_idcaras   = $2,
+             pantones        = $3,
+             pigmentos       = $4,
+             observacion     = $5,
+             descripcion     = $6,
+             perforacion     = $7,
+             idsuaje         = $8,
+             id_color        = $9,
+             id_medidatro    = $10
+           WHERE idsolicitud_producto = $11`,
+          [
+            tintasId,
+            carasId,
+            pantonesLimpios,
+            pigmentos || null,
+            observacion || null,
+            descripcion || null,
+            perforacion === true,
+            prod.idsuaje ?? null,
+            prod.id_color ?? null,
+            prod.id_medidatro ?? null,
+            idsolicitud_producto,
+          ]
+        );
+      }
 
-      await client.query(
-        `UPDATE solicitud_producto SET
-           tintas_idtintas = $1,
-           caras_idcaras   = $2,
-           pantones        = $3,
-           pigmentos       = $4,
-           observacion     = $5,
-           descripcion     = $6,
-           perforacion     = $7,
-           idsuaje         = $8,
-           id_color        = $9,
-           id_medidatro    = $10
-         WHERE idsolicitud_producto = $11`,
-        [
-          tintasId,
-          carasId,
-          pantonesLimpios,
-          pigmentos   || null,
-          observacion || null,
-          descripcion || null,
-          perforacion === true,
-          prod.idsuaje      ?? null,
-          prod.id_color     ?? null,
-          prod.id_medidatro ?? null,
-          idsolicitud_producto,
-        ]
-      );
 
       // ── Herramental (upsert / delete) ───────────────────────────────────────
       const { rows: herrRows } = await client.query(
@@ -485,6 +519,103 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       }
     }
 
+    const { productos_nuevos = [] } = req.body;
+
+    for (const prod of (productos_nuevos as any[])) {
+      const {
+        configuracion_plastico_id,
+        tintas,
+        caras,
+        pantones,
+        pigmentos,
+        observacion,
+        descripcion,
+        perforacion,
+        herramental_descripcion,
+        herramental_precio,
+        idsuaje,
+        id_color,
+        id_medidatro,
+        detalles,
+      } = prod;
+
+      // Resolver IDs de tintas y caras desde sus cantidades
+      const tintasId = await resolverIdTintas(client, tintas);
+      const carasId = await resolverIdCaras(client, caras);
+
+      // Limpiar pantones igual que en los productos existentes
+      const pantonesLimpios = (() => {
+        if (!pantones) return null;
+        const arr = pantones.split(",").map((s: string) => s.trim()).filter(Boolean);
+        return arr.slice(0, tintas).join(", ") || null;
+      })();
+
+      // Insertar el nuevo solicitud_producto
+      const { rows: spRows } = await client.query(
+        `INSERT INTO solicitud_producto (
+       solicitud_idsolicitud,
+       configuracion_plastico_idconfiguracion_plastico,
+       tintas_idtintas,
+       caras_idcaras,
+       pantones,
+       pigmentos,
+       observacion,
+       descripcion,
+       perforacion,
+       idsuaje,
+       id_color,
+       id_medidatro
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     RETURNING idsolicitud_producto`,
+        [
+          solicitudId,
+          configuracion_plastico_id,
+          tintasId,
+          carasId,
+          pantonesLimpios,
+          pigmentos || null,
+          observacion || null,
+          descripcion || null,
+          perforacion === true,
+          idsuaje ?? null,
+          id_color ?? null,
+          id_medidatro ?? null,
+        ]
+      );
+      const nuevoSpId: number = spRows[0].idsolicitud_producto;
+
+      // Herramental — si viene con datos lo insertamos como aprobado
+      if (herramental_descripcion || herramental_precio != null) {
+        await client.query(
+          `INSERT INTO herramental
+         (idsolicitud_producto, herramental_descripcion, herramental_precio, aprobado)
+       VALUES ($1, $2, $3, true)`,
+          [nuevoSpId, herramental_descripcion, herramental_precio]
+        );
+      }
+
+      // Detalles del nuevo producto
+      for (const det of (detalles as any[])) {
+        const { cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad } = det;
+        await client.query(
+          `INSERT INTO solicitud_detalle
+         (solicitud_producto_id, cantidad, precio_total,
+          precio_unitario, kilogramos, modo_cantidad, aprobado)
+       VALUES ($1,$2,$3,$4,$5,$6,false)`,
+          [
+            nuevoSpId,
+            cantidad,
+            precio_total,
+            precio_unitario ?? null,
+            kilogramos ?? null,
+            modo_cantidad,
+          ]
+        );
+      }
+
+      console.log(`✅ Producto nuevo insertado: sp_id=${nuevoSpId} cfg=${configuracion_plastico_id}`);
+    }
+
     // ── Recalcular totales en ventas ──────────────────────────────────────────
     const { rows: ventaRows } = await client.query(
       `SELECT v.idventas, v.abono, s.sin_iva
@@ -495,8 +626,8 @@ export const actualizarPedido = async (req: Request, res: Response) => {
     );
     if (ventaRows.length > 0) {
       const ventaId = ventaRows[0].idventas;
-      const abono   = Number(ventaRows[0].abono  ?? 0);
-      const sinIva  = ventaRows[0].sin_iva === true;
+      const abono = Number(ventaRows[0].abono ?? 0);
+      const sinIva = ventaRows[0].sin_iva === true;
 
       const { rows: sumRows } = await client.query(
         `SELECT
@@ -511,13 +642,13 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       );
 
       const subtotalNuevo = Number(sumRows[0].subtotal_prods) + Number(sumRows[0].subtotal_herr);
-      const ivaNuevo      = sinIva ? 0 : Math.round(subtotalNuevo * 0.16 * 100) / 100;
-      const totalNuevo    = Math.round((subtotalNuevo + ivaNuevo) * 100) / 100;
+      const ivaNuevo = sinIva ? 0 : Math.round(subtotalNuevo * 0.16 * 100) / 100;
+      const totalNuevo = Math.round((subtotalNuevo + ivaNuevo) * 100) / 100;
 
       // anticipo documental = 50% del nuevo total
       const anticipoNuevo = Math.round(totalNuevo * 0.50 * 100) / 100;
       // saldo = lo que falta pagar (nunca negativo)
-      const saldoNuevo    = Math.max(Math.round((totalNuevo - abono) * 100) / 100, 0);
+      const saldoNuevo = Math.max(Math.round((totalNuevo - abono) * 100) / 100, 0);
 
       // Recalcular estado según nuevo total y abono actual
       const ANTICIPO_VALIDACION_MIN = 0.40;
@@ -528,13 +659,13 @@ export const actualizarPedido = async (req: Request, res: Response) => {
          WHERE ventas_idventas = $1 AND es_credito_anticipo = true LIMIT 1`,
         [ventaId]
       );
-      const tieneCredito   = creditoRows.length > 0;
+      const tieneCredito = creditoRows.length > 0;
       const anticipoCubierto = abono >= umbral || tieneCredito;
 
       let nuevoEstado: number;
-      if (saldoNuevo <= 0)         nuevoEstado = 6; // PAGADO
-      else if (anticipoCubierto)   nuevoEstado = 2; // ANTICIPO_PAGADO / EN_PROCESO
-      else                         nuevoEstado = 1; // PENDIENTE
+      if (saldoNuevo <= 0) nuevoEstado = 6; // PAGADO
+      else if (anticipoCubierto) nuevoEstado = 2; // ANTICIPO_PAGADO / EN_PROCESO
+      else nuevoEstado = 1; // PENDIENTE
 
       await client.query(
         `UPDATE ventas SET
@@ -585,7 +716,7 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     if (pedRows.length === 0)
       return res.status(404).json({ error: "Pedido no encontrado" });
 
-    const solicitudId: number         = pedRows[0].idsolicitud;
+    const solicitudId: number = pedRows[0].idsolicitud;
     const noCotizacion: number | null = pedRows[0].no_cotizacion;
 
     const { rows: pagosRows } = await client.query(
@@ -595,8 +726,8 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     );
     if (Number(pagosRows[0].total) > 0) {
       return res.status(409).json({
-        error:   "No se puede eliminar este pedido porque tiene pagos registrados.",
-        motivo:  "pagos",
+        error: "No se puede eliminar este pedido porque tiene pagos registrados.",
+        motivo: "pagos",
         detalle: `El pedido #${id} tiene ${pagosRows[0].total} pago(s) registrado(s). ` +
           "Elimina los pagos desde el módulo de Anticipo y Liquidación antes de cancelar el pedido.",
       });
@@ -610,8 +741,8 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     );
     if (Number(disenoRows[0].total) > 0) {
       return res.status(409).json({
-        error:   "No se puede eliminar este pedido porque tiene productos aprobados en diseño.",
-        motivo:  "diseno",
+        error: "No se puede eliminar este pedido porque tiene productos aprobados en diseño.",
+        motivo: "diseno",
         detalle: `El pedido #${id} tiene ${disenoRows[0].total} producto(s) aprobado(s) en diseño. ` +
           "Restablece los productos en el módulo de Diseño antes de cancelar el pedido.",
       });
@@ -684,9 +815,9 @@ export const eliminarPedido = async (req: Request, res: Response) => {
     await client.query("COMMIT");
 
     return res.json({
-      message:          "Pedido cancelado y eliminado exitosamente",
-      no_pedido:        id,
-      no_cotizacion:    noCotizacion,
+      message: "Pedido cancelado y eliminado exitosamente",
+      no_pedido: id,
+      no_cotizacion: noCotizacion,
       tenia_cotizacion: noCotizacion !== null,
     });
 
@@ -869,7 +1000,7 @@ export const eliminarPedidoCompleto = async (req: Request, res: Response) => {
     `, params);
 
     await client.query(`DELETE FROM ventas WHERE solicitud_idsolicitud = $1`, params);
-    
+
 
     await client.query(`
   DELETE FROM bitacora_reparto
@@ -879,7 +1010,7 @@ export const eliminarPedidoCompleto = async (req: Request, res: Response) => {
   )
 `, params);
 
-await client.query(`
+    await client.query(`
   DELETE FROM nota_remision_envio
   WHERE envio_idenvio IN (
     SELECT idenvio FROM envio
@@ -887,7 +1018,7 @@ await client.query(`
   )
 `, params);
 
-await client.query(`
+    await client.query(`
   DELETE FROM nota_remision
   WHERE envio_idenvio IN (
     SELECT idenvio FROM envio
@@ -895,7 +1026,7 @@ await client.query(`
   )
 `, params);
 
-await client.query(`
+    await client.query(`
   DELETE FROM envio_bulto
   WHERE envio_idenvio IN (
     SELECT idenvio FROM envio
@@ -903,7 +1034,7 @@ await client.query(`
   )
 `, params);
 
-await client.query(`
+    await client.query(`
   DELETE FROM archivos
   WHERE envio_id IN (
     SELECT idenvio FROM envio
@@ -911,7 +1042,7 @@ await client.query(`
   )
 `, params);
 
-await client.query(`DELETE FROM envio WHERE solicitud_idsolicitud = $1`, params);
+    await client.query(`DELETE FROM envio WHERE solicitud_idsolicitud = $1`, params);
 
     await client.query(`
       DELETE FROM solicitud_detalle
@@ -950,5 +1081,233 @@ await client.query(`DELETE FROM envio WHERE solicitud_idsolicitud = $1`, params)
 
   } finally {
     client.release();
+  }
+};
+
+// En pedidos.controller.ts — agregar al final
+
+export const getHistorialPedidosPorCliente = async (req: Request, res: Response) => {
+  try {
+    const { clienteId } = req.params;
+
+    const { rows } = await pool.query(`
+      SELECT
+          s.idsolicitud,
+          s.clientes_idclientes,
+          s.no_cotizacion,
+          s.no_pedido,
+          s.fecha,
+          s.prioridad,
+
+          cli.atencion      AS cliente_nombre,
+          cli.empresa       AS cliente_empresa,
+          cli.telefono      AS cliente_telefono,
+          cli.correo        AS cliente_correo,
+          cli.impresion     AS cliente_impresion,
+          cli.celular       AS cliente_celular,
+          cli.razon_social  AS cliente_razon_social,
+          cli.identificar   AS cliente_identificar,
+
+          df.rfc            AS cliente_rfc,
+          dom.domicilio     AS cliente_domicilio,
+          dom.numero        AS cliente_numero,
+          dom.colonia       AS cliente_colonia,
+          dom.codigo_postal AS cliente_codigo_postal,
+          dom.poblacion     AS cliente_poblacion,
+          dom.estado        AS cliente_estado,
+
+          sp.idsolicitud_producto,
+          sp.configuracion_plastico_idconfiguracion_plastico,
+          sp.tintas_idtintas,
+          sp.caras_idcaras,
+          sp.bk, sp.foil, sp.idsuaje, sp.alto_rel,
+          sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones,
+          sp.observacion, sp.descripcion, sp.perforacion,
+          sp.id_color, sp.id_medidatro,
+
+          asz.tipo          AS suaje_tipo,
+          ca.color          AS color_asa_nombre,
+          mt.medida         AS medida_troquel,
+
+          cfg.medida        AS cfg_medida,
+          cfg.altura        AS cfg_altura,
+          cfg.ancho         AS cfg_ancho,
+          cfg.fuelle_fondo  AS cfg_fuelle_fondo,
+          cfg.fuelle_latIz  AS cfg_fuelle_lat_iz,
+          cfg.fuelle_latDe  AS cfg_fuelle_lat_de,
+          cfg.refuerzo      AS cfg_refuerzo,
+          cfg.por_kilo      AS cfg_por_kilo,
+
+          tpp.material_plastico_producto AS tipo_producto_nombre,
+          mp.tipo_material               AS material_nombre,
+          cal.calibre                    AS calibre_numero,
+          cal.calibre_bopp               AS calibre_bopp,
+
+          t.cantidad        AS tintas_cantidad,
+          car.cantidad      AS caras_cantidad,
+
+          sd.idsolicitud_detalle,
+          sd.cantidad,
+          sd.precio_total,
+          sd.precio_unitario,
+          sd.kilogramos,
+          sd.modo_cantidad,
+
+          h.herramental_descripcion,
+          h.herramental_precio,
+          h.aprobado AS herramental_aprobado
+
+      FROM solicitud s
+      LEFT JOIN clientes cli       ON cli.idclientes = s.clientes_idclientes
+      LEFT JOIN datos_facturacion df ON df.clientes_idclientes = cli.idclientes
+      LEFT JOIN domicilio dom       ON dom.clientes_idclientes = cli.idclientes
+      LEFT JOIN solicitud_producto sp ON sp.solicitud_idsolicitud = s.idsolicitud
+      LEFT JOIN asa_suaje asz       ON asz.idsuaje = sp.idsuaje
+      LEFT JOIN color_asa ca        ON ca.id_color = sp.id_color
+      LEFT JOIN medidas_troquel mt  ON mt.id_medidatro = sp.id_medidatro
+      LEFT JOIN configuracion_plastico cfg
+          ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
+      LEFT JOIN tipo_producto_plastico tpp
+          ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
+      LEFT JOIN material_plastico mp
+          ON mp.idmaterial_plastico = cfg.material_plastico_plastico_idmaterial_plastico
+      LEFT JOIN calibre cal         ON cal.idcalibre = cfg.calibre_idcalibre
+      LEFT JOIN tintas t            ON t.idtintas = sp.tintas_idtintas
+      LEFT JOIN caras car           ON car.idcaras = sp.caras_idcaras
+      LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id = sp.idsolicitud_producto
+      LEFT JOIN herramental h       ON h.idsolicitud_producto = sp.idsolicitud_producto
+
+      WHERE s.estado = 'pedido'
+        AND s.no_pedido IS NOT NULL
+        AND s.clientes_idclientes = $1
+
+      ORDER BY s.fecha DESC, sp.idsolicitud_producto, sd.idsolicitud_detalle
+    `, [clienteId]);
+
+    // Mismo agrupamiento que getPedidos
+    const agrupados: Record<string, any> = {};
+
+    for (const row of rows) {
+      const noPedido: string = row.no_pedido;
+      if (!agrupados[noPedido]) {
+        agrupados[noPedido] = {
+          no_pedido:     noPedido,
+          no_cotizacion: row.no_cotizacion ?? null,
+          es_directo:    row.no_cotizacion === null,
+          fecha:         row.fecha,
+          prioridad:     row.prioridad ?? false,
+          cliente_id:    row.clientes_idclientes,
+          identificar:   row.cliente_identificar || null,
+          cliente:       row.cliente_nombre || "",
+          telefono:      row.cliente_telefono || "",
+          correo:        row.cliente_correo || "",
+          impresion:     row.cliente_impresion || null,
+          empresa:       row.cliente_empresa || "",
+          celular:       row.cliente_celular || null,
+          razon_social:  row.cliente_razon_social || null,
+          rfc:           row.cliente_rfc || null,
+          domicilio:     row.cliente_domicilio || null,
+          numero:        row.cliente_numero || null,
+          colonia:       row.cliente_colonia || null,
+          codigo_postal: row.cliente_codigo_postal || null,
+          poblacion:     row.cliente_poblacion || null,
+          estado_cliente: row.cliente_estado || null,
+          productos: [],
+          total: 0,
+        };
+      }
+
+      if (row.idsolicitud_producto) {
+        let producto = agrupados[noPedido].productos.find(
+          (p: any) => p.idsolicitud_producto === row.idsolicitud_producto
+        );
+        if (!producto) {
+          const tipoNombre = row.tipo_producto_nombre || "";
+          const medida     = row.cfg_medida || "";
+          const material   = (row.material_nombre || "").toLowerCase();
+          const nombre     = [tipoNombre, medida, material].filter(Boolean).join(" ")
+                            || `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
+
+          const materialUpper = (row.material_nombre || "").toUpperCase();
+          const esBopp = materialUpper.includes("BOPP") ||
+                         materialUpper.includes("CELOFAN") ||
+                         materialUpper.includes("CELOFÁN");
+          const calibre = esBopp
+            ? (row.calibre_bopp ? String(row.calibre_bopp) : "")
+            : (row.calibre_numero && Number(row.calibre_numero) !== 0
+                ? String(row.calibre_numero) : "");
+
+          producto = {
+            idsolicitud_producto: row.idsolicitud_producto,
+            producto_id:   row.configuracion_plastico_idconfiguracion_plastico,
+            nombre,
+            material:      row.material_nombre || "",
+            calibre,
+            calibre_bopp:  row.calibre_bopp ? String(row.calibre_bopp) : null,
+            medidasFormateadas: row.cfg_medida || "",
+            medidas: {
+              altura:        row.cfg_altura        ? String(row.cfg_altura)        : "",
+              ancho:         row.cfg_ancho         ? String(row.cfg_ancho)         : "",
+              fuelleFondo:   row.cfg_fuelle_fondo  ? String(row.cfg_fuelle_fondo)  : "",
+              fuelleLateral1: row.cfg_fuelle_lat_iz ? String(row.cfg_fuelle_lat_iz) : "",
+              fuelleLateral2: row.cfg_fuelle_lat_de ? String(row.cfg_fuelle_lat_de) : "",
+              refuerzo:      row.cfg_refuerzo      ? String(row.cfg_refuerzo)      : "",
+            },
+            tintas:        row.tintas_cantidad ?? row.tintas_idtintas,
+            tintas_idtintas: row.tintas_idtintas,
+            caras:         row.caras_cantidad  ?? row.caras_idcaras,
+            caras_idcaras: row.caras_idcaras,
+            por_kilo:      row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
+            bk:            row.bk,
+            foil:          row.foil,
+            idsuaje:       row.idsuaje ?? null,
+            asa_suaje:     row.suaje_tipo ?? null,
+            laminado:      row.laminado,
+            uv_br:         row.uv_br,
+            pigmentos:     row.pigmentos || null,
+            pantones:      row.pantones
+              ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
+              : null,
+            observacion:   row.observacion,
+            descripcion:   row.descripcion ?? null,
+            perforacion:   row.perforacion ?? false,
+            id_color:      row.id_color ?? null,
+            color_asa_nombre: row.color_asa_nombre ?? null,
+            id_medidatro:  row.id_medidatro ?? null,
+            medida_troquel: row.medida_troquel ?? null,
+            herramental_descripcion: row.herramental_descripcion ?? null,
+            herramental_precio:      row.herramental_precio != null ? Number(row.herramental_precio) : null,
+            herramental_aprobado:    row.herramental_aprobado ?? null,
+            detalles: [],
+            subtotal: 0,
+          };
+          agrupados[noPedido].productos.push(producto);
+        }
+
+        if (row.idsolicitud_detalle) {
+          producto.detalles.push({
+            iddetalle:      row.idsolicitud_detalle,
+            cantidad:       Number(row.cantidad),
+            precio_total:   Number(row.precio_total),
+            precio_unitario: row.precio_unitario != null ? Number(row.precio_unitario) : null,
+            kilogramos:     row.kilogramos != null ? Number(row.kilogramos) : null,
+            modo_cantidad:  row.modo_cantidad || "unidad",
+          });
+          producto.subtotal += Number(row.precio_total);
+        }
+      }
+    }
+
+    for (const noPedido in agrupados) {
+      agrupados[noPedido].total = agrupados[noPedido].productos.reduce(
+        (sum: number, p: any) => sum + p.subtotal + (p.herramental_precio ?? 0), 0
+      );
+    }
+
+    return res.json(Object.values(agrupados));
+
+  } catch (error: any) {
+    console.error("❌ GET HISTORIAL PEDIDOS ERROR:", error.message);
+    return res.status(500).json({ error: "Error al obtener historial de pedidos" });
   }
 };

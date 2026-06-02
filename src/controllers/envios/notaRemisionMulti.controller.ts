@@ -41,7 +41,7 @@ export const crearNotaMulti = async (req: Request, res: Response) => {
       `INSERT INTO nota_remision (no_nota, envio_idenvio, es_multi, tipo_entrega, chofer_idusuario, unidad_idunidad, observaciones)
        VALUES ($1, NULL, TRUE, $2, $3, $4, $5)
        RETURNING idnota, no_nota, created_at`,
-      [no_nota, tipo_entrega, chofer_idusuario || null, unidad_idunidad || null, observaciones?.trim() || null]
+      [no_nota, tipo_entrega, chofer_idusuario || null, unidad_idunidad || null, observaciones || null]
     );
 
     const idnota = notaRows[0].idnota;
@@ -98,12 +98,23 @@ export const getNotasBitacora = async (req: Request, res: Response) => {
         nr.tipo_entrega,
         nr.estado,
         nr.observaciones,
+        (SELECT STRING_AGG(DISTINCT NULLIF(TRIM(e2.observaciones), ''), ' / ' ORDER BY NULLIF(TRIM(e2.observaciones), ''))
+         FROM nota_remision_envio nre2
+         JOIN envio e2 ON e2.idenvio = nre2.envio_idenvio
+         WHERE nre2.nota_remision_idnota = nr.idnota
+           AND NULLIF(TRIM(e2.observaciones), '') IS NOT NULL) AS observaciones_envio,
+        (SELECT MIN(e2.fecha_entrega_estimada)
+         FROM nota_remision_envio nre2
+         JOIN envio e2 ON e2.idenvio = nre2.envio_idenvio
+         WHERE nre2.nota_remision_idnota = nr.idnota
+           AND e2.fecha_entrega_estimada IS NOT NULL) AS fecha_entrega_estimada,
         nr.recoleccion_nombre_quien_recogio,
         nr.recoleccion_empresa,
         nr.recoleccion_unidad_marca,
         nr.recoleccion_unidad_modelo,
         nr.recoleccion_unidad_placas,
         nr.recoleccion_fecha,
+        nr.recoleccion_observacion_extra,
         nr.local_hora_salida,
         nr.local_hora_llegada,
         nr.local_observacion,
@@ -148,31 +159,38 @@ export const getNotasBitacora = async (req: Request, res: Response) => {
     `);
 
     res.json(rows.map((r: any) => ({
-      idnota: Number(r.idnota),
-      no_nota: r.no_nota,
+      idnota:    Number(r.idnota),
+      no_nota:   r.no_nota,
       created_at: r.created_at,
-      es_multi: Boolean(r.es_multi),
+      es_multi:  Boolean(r.es_multi),
       tipo_entrega: r.tipo_entrega,
-      estado: r.estado || "pendiente",
-      observaciones: r.observaciones || null,
+      estado:    r.estado || "pendiente",
+      observaciones: r.observaciones_envio || r.observaciones || null,
+      fecha_entrega_estimada: r.fecha_entrega_estimada || null,
       no_pedido: r.no_pedido || "",
-      cliente: r.cliente || "",
+      cliente:   r.cliente  || "",
       total_pedidos: Number(r.total_pedidos),
-      total_bultos: Number(r.total_bultos),
+      total_bultos:  Number(r.total_bultos),
       recoleccion_datos: r.recoleccion_nombre_quien_recogio ? {
         nombre_quien_recogio: r.recoleccion_nombre_quien_recogio,
-        empresa: r.recoleccion_empresa || null,
-        unidad_marca: r.recoleccion_unidad_marca || null,
+        empresa:       r.recoleccion_empresa       || null,
+        unidad_marca:  r.recoleccion_unidad_marca  || null,
         unidad_modelo: r.recoleccion_unidad_modelo || null,
         unidad_placas: r.recoleccion_unidad_placas || null,
-        fecha: r.recoleccion_fecha || null,
+        fecha:         r.recoleccion_fecha         || null,
+        observacion_extra: r.recoleccion_observacion_extra || null,  // ← NUEVO
       } : null,
-      local_datos: (r.local_hora_salida != null || r.local_hora_llegada != null || r.local_firma != null || r.local_observacion != null) ? {
-        hora_salida: r.local_hora_salida ? r.local_hora_salida.toISOString() : null,
-        hora_llegada: r.local_hora_llegada ? r.local_hora_llegada.toISOString() : null,
-        observacion: r.local_observacion || null,
+      local_datos: (
+        r.local_hora_salida  != null ||
+        r.local_hora_llegada != null ||
+        r.local_firma        != null ||
+        r.local_observacion  != null
+      ) ? {
+        hora_salida:       r.local_hora_salida  ? r.local_hora_salida.toISOString()  : null,
+        hora_llegada:      r.local_hora_llegada ? r.local_hora_llegada.toISOString() : null,
+        observacion:       r.local_observacion       || null,
         observacion_extra: r.local_observacion_extra || null,
-        firma: r.local_firma || null,
+        firma:             r.local_firma             || null,
       } : null,
       chofer: r.chofer_id ? {
         idusuario: Number(r.chofer_id),
@@ -190,7 +208,7 @@ export const getNotasBitacora = async (req: Request, res: Response) => {
 };
 
 // ==========================
-// MARCAR SALIDA LOCAL (NUEVO)
+// MARCAR SALIDA LOCAL
 // PATCH /notas-remision/:idnota/marcar-salida-local
 // ==========================
 export const marcarSalidaLocalNota = async (req: Request, res: Response) => {
@@ -283,28 +301,37 @@ export const marcarEntregadoLocalNota = async (req: Request, res: Response) => {
 export const marcarRecolectadoNota = async (req: Request, res: Response) => {
   try {
     const { idnota } = req.params;
-    const { nombre_quien_recogio, empresa, unidad_marca, unidad_modelo, unidad_placas } = req.body;
+    const {
+      nombre_quien_recogio,
+      empresa,
+      unidad_marca,
+      unidad_modelo,
+      unidad_placas,
+      observacion_extra,   // ← NUEVO
+    } = req.body;
 
     if (!nombre_quien_recogio?.trim())
       return res.status(400).json({ error: "El nombre de quien recogió es requerido" });
 
     const result = await pool.query(
       `UPDATE nota_remision
-       SET recoleccion_nombre_quien_recogio = $1,
-           recoleccion_empresa              = $2,
-           recoleccion_unidad_marca         = $3,
-           recoleccion_unidad_modelo        = $4,
-           recoleccion_unidad_placas        = $5,
-           recoleccion_fecha                = NOW(),
-           estado                           = 'entregado'
-       WHERE idnota = $6
+       SET recoleccion_nombre_quien_recogio  = $1,
+           recoleccion_empresa               = $2,
+           recoleccion_unidad_marca          = $3,
+           recoleccion_unidad_modelo         = $4,
+           recoleccion_unidad_placas         = $5,
+           recoleccion_observacion_extra     = $6,
+           recoleccion_fecha                 = NOW(),
+           estado                            = 'entregado'
+       WHERE idnota = $7
        RETURNING idnota`,
       [
         nombre_quien_recogio.trim(),
-        empresa?.trim()       || null,
-        unidad_marca?.trim()  || null,
-        unidad_modelo?.trim() || null,
-        unidad_placas?.trim() || null,
+        empresa?.trim()           || null,
+        unidad_marca?.trim()      || null,
+        unidad_modelo?.trim()     || null,
+        unidad_placas?.trim()     || null,
+        observacion_extra?.trim() || null,  // ← NUEVO
         idnota,
       ]
     );
@@ -346,7 +373,7 @@ async function _getDatosNotaMulti(idnota: number) {
   const nota = notaRows[0];
 
   const { rows: enviosRows } = await pool.query(
-    `SELECT e.idenvio, e.fecha_envio, s.no_pedido, s.idsolicitud,
+    `SELECT e.idenvio, e.fecha_envio, e.observaciones, s.no_pedido, s.idsolicitud,
             cli.empresa, cli.impresion, cli.razon_social,
             df.rfc,
             COALESCE(de.domicilio, d.domicilio)         AS calle_envio,
@@ -369,6 +396,12 @@ async function _getDatosNotaMulti(idnota: number) {
 
   const envioIds = enviosRows.map((e: any) => e.idenvio);
 
+  const observacionesEnvios = enviosRows
+    .map((e: any) => e.observaciones?.trim())
+    .filter(Boolean)
+    .filter((v: string, i: number, arr: string[]) => arr.indexOf(v) === i)
+    .join(" / ");
+
   const { rows: productosRows } = await pool.query(
     `SELECT
        tpp.material_plastico_producto AS nombre_producto,
@@ -389,8 +422,10 @@ async function _getDatosNotaMulti(idnota: number) {
      LEFT JOIN orden_produccion op
        ON op.idproduccion = COALESCE(bol.orden_produccion_idproduccion, af.orden_produccion_idproduccion)
      LEFT JOIN solicitud_producto sp ON sp.idsolicitud_producto = op.idsolicitud_producto
-     LEFT JOIN configuracion_plastico cfg ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
-     LEFT JOIN tipo_producto_plastico tpp ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
+     LEFT JOIN configuracion_plastico cfg
+       ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
+     LEFT JOIN tipo_producto_plastico tpp
+       ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
      WHERE eb.envio_idenvio = ANY($1::int[])
      GROUP BY tpp.material_plastico_producto, cfg.medida, sp.descripcion, s.no_pedido
      ORDER BY s.no_pedido, tpp.material_plastico_producto`,
@@ -400,42 +435,53 @@ async function _getDatosNotaMulti(idnota: number) {
   const primerEnvio = enviosRows[0];
 
   return {
-    idnota: Number(nota.idnota),
-    no_nota: nota.no_nota,
+    idnota:    Number(nota.idnota),
+    no_nota:   nota.no_nota,
     created_at: nota.created_at,
-    es_multi: true,
+    es_multi:  true,
     tipo_entrega: nota.tipo_entrega,
-    observaciones: nota.observaciones || null,
-    chofer: nota.chofer_nombre ? { nombre: `${nota.chofer_nombre} ${nota.chofer_apellido}` } : null,
-    unidad: nota.unidad_marca ? { nombre: `${nota.unidad_marca} ${nota.unidad_modelo} — ${nota.unidad_placa}` } : null,
+    observaciones: observacionesEnvios || nota.observaciones || null,
+    chofer: nota.chofer_nombre
+      ? { nombre: `${nota.chofer_nombre} ${nota.chofer_apellido}` }
+      : null,
+    unidad: nota.unidad_marca
+      ? { nombre: `${nota.unidad_marca} ${nota.unidad_modelo} — ${nota.unidad_placa}` }
+      : null,
     envio: {
-      idenvio: null,
-      tipo: nota.tipo_entrega,
+      idenvio:    null,
+      tipo:       nota.tipo_entrega,
       fecha_envio: primerEnvio?.fecha_envio ?? new Date().toISOString(),
-      no_pedido: enviosRows.map((e: any) => e.no_pedido).join(", "),
-      observaciones: null,
+      no_pedido:  enviosRows.map((e: any) => e.no_pedido).join(", "),
+      observaciones: observacionesEnvios || nota.observaciones || null,
     },
     cliente: {
-      nombre: primerEnvio ? (primerEnvio.impresion || primerEnvio.empresa || primerEnvio.razon_social || "") : "",
-      rfc: primerEnvio?.rfc || "",
-      direccion: primerEnvio ? [
-        primerEnvio.calle_envio, primerEnvio.numero_envio,
-        primerEnvio.colonia_envio, primerEnvio.poblacion_envio, primerEnvio.estado_envio,
-      ].filter(Boolean).join(", ") : "",
+      nombre: primerEnvio
+        ? (primerEnvio.impresion || primerEnvio.empresa || primerEnvio.razon_social || "")
+        : "",
+      rfc:      primerEnvio?.rfc || "",
+      direccion: primerEnvio
+        ? [
+            primerEnvio.calle_envio,
+            primerEnvio.numero_envio,
+            primerEnvio.colonia_envio,
+            primerEnvio.poblacion_envio,
+            primerEnvio.estado_envio,
+          ].filter(Boolean).join(", ")
+        : "",
     },
     pedidos: enviosRows.map((e: any) => ({
       idsolicitud: e.idsolicitud,
-      no_pedido: e.no_pedido,
-      idenvio: e.idenvio,
+      no_pedido:   e.no_pedido,
+      idenvio:     e.idenvio,
     })),
     productos: productosRows.map((p: any) => ({
       nombre_producto: p.nombre_producto,
-      medida: p.medida,
-      descripcion: p.descripcion || null,
-      no_pedido: p.no_pedido,
-      total_bultos: Number(p.total_bultos),
-      total_unidades: p.modo_unidad != null ? Number(p.total_unidades) : null,
-      total_kg: p.modo_kg != null ? Number(p.total_kg) : null,
+      medida:          p.medida,
+      descripcion:     p.descripcion || null,
+      no_pedido:       p.no_pedido,
+      total_bultos:    Number(p.total_bultos),
+      total_unidades:  p.modo_unidad != null ? Number(p.total_unidades) : null,
+      total_kg:        p.modo_kg     != null ? Number(p.total_kg)       : null,
     })),
   };
 }
@@ -453,9 +499,9 @@ export const getOrCreateNota = async (req: Request, res: Response) => {
       [idenvio]
     );
 
-    let no_nota: string;
-    let idnota: number;
-    let created_at: Date;
+    let no_nota:       string;
+    let idnota:        number;
+    let created_at:    Date;
     let observaciones: string | null = null;
 
     if (existente.rows.length > 0) {
@@ -464,7 +510,7 @@ export const getOrCreateNota = async (req: Request, res: Response) => {
       created_at    = existente.rows[0].created_at;
       observaciones = existente.rows[0].observaciones || null;
     } else {
-      const anio = new Date().getFullYear();
+      const anio    = new Date().getFullYear();
       const prefijo = `N${anio}`;
 
       const ultimo = await pool.query(
@@ -495,18 +541,18 @@ export const getOrCreateNota = async (req: Request, res: Response) => {
         s.no_pedido,
         cli.empresa, cli.impresion, cli.razon_social,
         df.rfc,
-        COALESCE(de.domicilio, d.domicilio)         AS calle_envio,
-        COALESCE(de.numero,    d.numero)             AS numero_envio,
-        COALESCE(de.colonia,   d.colonia)            AS colonia_envio,
-        COALESCE(de.codigo_postal, d.codigo_postal)  AS cp_envio,
-        COALESCE(de.poblacion, d.poblacion)          AS poblacion_envio,
-        COALESCE(de.estado,    d.estado)             AS estado_envio
+        COALESCE(de.domicilio,     d.domicilio)     AS calle_envio,
+        COALESCE(de.numero,        d.numero)        AS numero_envio,
+        COALESCE(de.colonia,       d.colonia)       AS colonia_envio,
+        COALESCE(de.codigo_postal, d.codigo_postal) AS cp_envio,
+        COALESCE(de.poblacion,     d.poblacion)     AS poblacion_envio,
+        COALESCE(de.estado,        d.estado)        AS estado_envio
       FROM envio e
-      JOIN solicitud s               ON s.idsolicitud              = e.solicitud_idsolicitud
-      JOIN clientes cli              ON cli.idclientes             = s.clientes_idclientes
-      LEFT JOIN domicilio d          ON d.clientes_idclientes      = cli.idclientes
-      LEFT JOIN datos_facturacion df ON df.clientes_idclientes     = cli.idclientes
-      LEFT JOIN direccion_envio de   ON de.clientes_idclientes     = cli.idclientes
+      JOIN solicitud s               ON s.idsolicitud          = e.solicitud_idsolicitud
+      JOIN clientes cli              ON cli.idclientes         = s.clientes_idclientes
+      LEFT JOIN domicilio d          ON d.clientes_idclientes  = cli.idclientes
+      LEFT JOIN datos_facturacion df ON df.clientes_idclientes = cli.idclientes
+      LEFT JOIN direccion_envio de   ON de.clientes_idclientes = cli.idclientes
       WHERE e.idenvio = $1 LIMIT 1
     `, [idenvio]);
 
@@ -520,19 +566,22 @@ export const getOrCreateNota = async (req: Request, res: Response) => {
         cfg.medida,
         sp.descripcion,
         COUNT(b.idbulto)               AS total_bultos,
-        SUM(COALESCE(b.cantidad_unidades, 0)) AS total_unidades,
-        SUM(COALESCE(b.peso_producto,    0))  AS total_kg,
+        SUM(CASE WHEN b.cantidad_unidades IS NOT NULL THEN b.cantidad_unidades ELSE 0 END) AS total_unidades,
+        SUM(CASE WHEN b.peso_producto    IS NOT NULL THEN b.peso_producto    ELSE 0 END)   AS total_kg,
         MIN(b.cantidad_unidades) AS modo_unidad,
         MIN(b.peso_producto)     AS modo_kg
       FROM envio_bulto eb
       JOIN bultos b ON b.idbulto = eb.bultos_idbulto
-      LEFT JOIN bolseo bol ON bol.idbolseo = b.bolseo_idbolseo
-      LEFT JOIN asa_flexible af ON af.idasa_flexible = b.asa_flexible_idasa_flexible
+      LEFT JOIN bolseo bol       ON bol.idbolseo            = b.bolseo_idbolseo
+      LEFT JOIN asa_flexible af  ON af.idasa_flexible       = b.asa_flexible_idasa_flexible
       LEFT JOIN orden_produccion op
         ON op.idproduccion = COALESCE(bol.orden_produccion_idproduccion, af.orden_produccion_idproduccion)
-      LEFT JOIN solicitud_producto sp ON sp.idsolicitud_producto = op.idsolicitud_producto
-      LEFT JOIN configuracion_plastico cfg ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
-      LEFT JOIN tipo_producto_plastico tpp ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
+      LEFT JOIN solicitud_producto sp
+        ON sp.idsolicitud_producto = op.idsolicitud_producto
+      LEFT JOIN configuracion_plastico cfg
+        ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
+      LEFT JOIN tipo_producto_plastico tpp
+        ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
       WHERE eb.envio_idenvio = $1
       GROUP BY tpp.material_plastico_producto, cfg.medida, sp.descripcion
       ORDER BY tpp.material_plastico_producto
@@ -542,19 +591,21 @@ export const getOrCreateNota = async (req: Request, res: Response) => {
       idnota,
       no_nota,
       created_at,
-      observaciones,
+      observaciones: envio.observaciones || observaciones || null,
       envio: {
-        idenvio:       Number(envio.idenvio),
-        tipo:          envio.tipo,
-        fecha_envio:   envio.fecha_envio,
-        no_pedido:     envio.no_pedido,
+        idenvio:      Number(envio.idenvio),
+        tipo:         envio.tipo,
+        fecha_envio:  envio.fecha_envio,
+        no_pedido:    envio.no_pedido,
         observaciones: envio.observaciones,
       },
       cliente: {
         nombre:    envio.impresion || envio.empresa || envio.razon_social || "",
         rfc:       envio.rfc || "",
-        direccion: [envio.calle_envio, envio.numero_envio, envio.colonia_envio, envio.poblacion_envio, envio.estado_envio]
-          .filter(Boolean).join(", "),
+        direccion: [
+          envio.calle_envio, envio.numero_envio, envio.colonia_envio,
+          envio.poblacion_envio, envio.estado_envio,
+        ].filter(Boolean).join(", "),
       },
       productos: productos.map((p: any) => ({
         nombre_producto: p.nombre_producto,
