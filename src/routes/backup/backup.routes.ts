@@ -7,6 +7,7 @@ import {
   getHistorialBackups,
   verificarCodigo,
   diagnostico,
+  backupAutomatico,
 } from "../../controllers/backup/backup.controller";
 
 const router = Router();
@@ -22,5 +23,6 @@ router.get("/historial",         authMiddleware, getHistorialBackups);
 // ⚠️  IMPORTANTE: elimina o comenta esta ruta antes de subir a producción
 // o agrégale authMiddleware si quieres dejarlo permanente
 router.get("/diagnostico", diagnostico);
+router.post("/automatico", backupAutomatico);
 
 export default router;

@@ -73,8 +73,8 @@ export const createUsuario = async (req: Request, res: Response) => {
 
     if (!nombre?.trim() || !apellido?.trim() || !correo?.trim() || !codigo)
       return res.status(400).json({ error: "Todos los campos requeridos deben estar completos" });
-    if (!/^\d{5}$/.test(codigo))
-      return res.status(400).json({ error: "Datos de entrada inválidos" });
+    if (!/^\d{4,5}$/.test(codigo))
+      return res.status(400).json({ error: "El código debe tener entre 4 y 5 dígitos" });
     if (!validator.isEmail(correo.trim()))
       return res.status(400).json({ error: "El formato del correo no es válido" });
     if (!Number.isInteger(Number(roles_idroles)) || Number(roles_idroles) < 1)
@@ -94,16 +94,6 @@ export const createUsuario = async (req: Request, res: Response) => {
     if ((existeCorreo.rowCount ?? 0) > 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "El correo ya está registrado" });
-    }
-
-    const todosLosCodigos = await client.query(
-      "SELECT codigo FROM usuarios LIMIT $1", [MAX_USERS_TO_CHECK]
-    );
-    for (const row of todosLosCodigos.rows) {
-      if (await bcrypt.compare(codigo, row.codigo)) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({ error: "El código ya está en uso" });
-      }
     }
 
     const hash = await bcrypt.hash(codigo, BCRYPT_ROUNDS);
@@ -354,19 +344,9 @@ export const updateUsuario = async (req: Request, res: Response) => {
     const updateValues: any[] = [nombre, apellido, correo, telefono || null, roles_idroles];
 
     if (codigo && codigo.trim() !== "") {
-      if (!/^\d{5}$/.test(codigo)) {
+      if (!/^\d{4,5}$/.test(codigo)) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ error: "Datos de entrada inválidos" });
-      }
-      const todosLosCodigos = await client.query(
-        "SELECT idusuario, codigo FROM usuarios WHERE idusuario != $1 LIMIT $2",
-        [id, MAX_USERS_TO_CHECK]
-      );
-      for (const row of todosLosCodigos.rows) {
-        if (await bcrypt.compare(codigo, row.codigo)) {
-          await client.query("ROLLBACK");
-          return res.status(400).json({ error: "El código ya está en uso" });
-        }
+        return res.status(400).json({ error: "El código debe tener entre 4 y 5 dígitos" });
       }
       const nuevoHash = await bcrypt.hash(codigo, BCRYPT_ROUNDS);
       paramIndex++;

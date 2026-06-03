@@ -347,3 +347,48 @@ export const diagnostico = async (_req: Request, res: Response): Promise<void> =
   const todoOk = Object.values(resultado).every((v: any) => v.ok);
   res.status(todoOk ? 200 : 207).json({ listo_para_backup: todoOk, checks: resultado });
 };
+
+/** POST /api/backups/automatico — llamado por cron-job.org */
+export const backupAutomatico = async (req: Request, res: Response): Promise<void> => {
+  const secret = req.headers["x-cron-secret"];
+  if (secret !== process.env.CRON_SECRET) {
+    res.status(401).json({ error: "No autorizado" });
+    return;
+  }
+  try {
+    const filename = await ejecutarBackup(null);
+    res.json({ ok: true, filename });
+  } catch (error) {
+    console.error("❌ Error en backup automático:", error);
+    res.status(500).json({ error: "Error en backup automático" });
+  }
+};
+
+/** Verificar si hay un backup pendiente al arrancar el servidor */
+export const verificarBackupPendiente = async (): Promise<void> => {
+  try {
+    const result = await pool.query(
+      "SELECT activo, frecuencia, ultimo_backup FROM backup_schedule WHERE id = 1"
+    );
+    const config = result.rows[0];
+    if (!config?.activo) return;
+
+    const ahora = new Date();
+    const ultimo = config.ultimo_backup ? new Date(config.ultimo_backup) : null;
+    const diasDesdeUltimo = ultimo
+      ? (ahora.getTime() - ultimo.getTime()) / (1000 * 60 * 60 * 24)
+      : Infinity;
+
+    const diasEsperados: Record<string, number> = {
+      diario: 1, cada_2_dias: 2, cada_3_dias: 3,
+      semanal: 7, cada_2_semanas: 14, mensual: 30,
+    };
+
+    if (diasDesdeUltimo >= diasEsperados[config.frecuencia]) {
+      console.log("⚠️ Backup pendiente detectado al arrancar, ejecutando...");
+      await ejecutarBackup(null);
+    }
+  } catch (error) {
+    console.error("❌ Error al verificar backup pendiente:", error);
+  }
+};
