@@ -46,6 +46,9 @@ import backupRoutes from "./routes/backup/backup.routes";
 import historialRoutes from "./routes/envios/historial.routes";
 import proveedoresRoutes from "./routes/proveedores/proveedores.routes";
 
+import catalogosPapelRoutes  from "./routes/catalogos_papel/catalogos_papel.routes";
+import productoPapelRoutes   from "./routes/producto_papel/producto_papel.routes";
+
 
 const app = express();
 
@@ -122,6 +125,12 @@ app.use("/api/codigos-postales", codigoPostalRouter);
 app.use("/api/backup", backupRoutes);
 app.use("/api/historial", historialRoutes);
 app.use("/api/proveedores", proveedoresRoutes);
+
+app.use("/api/catalogos-papel",  catalogosPapelRoutes);
+app.use("/api/productos-papel",  productoPapelRoutes);
+
+
+
 // ==========================
 // HEALTH CHECK
 // ==========================

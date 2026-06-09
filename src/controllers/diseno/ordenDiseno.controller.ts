@@ -318,7 +318,7 @@ export const crearOrdenDiseno = async (req: AuthRequest, res: Response) => {
         );
       }
     }
-
+ 
     await crearMensajeSistema(
       client,
       ordenId,
@@ -682,11 +682,11 @@ export const subirRevision = async (req: AuthRequest, res: Response) => {
     const revisionId = revRows[0].idrevision;
 
     for (const archivo of archivos) {
-      await client.query(
-        `UPDATE archivos SET revision_diseno_id = $1 WHERE id_archivo = $2`,
-        [revisionId, archivo.id_archivo]
-      );
-    }
+  await client.query(
+    `UPDATE archivos SET revision_diseno_id = $1, categoria = $2 WHERE id_archivo = $3`,
+    [revisionId, archivo.categoria ?? "otro", archivo.id_archivo]
+  );
+}
 
     if (tipo === "render") {
       await client.query(

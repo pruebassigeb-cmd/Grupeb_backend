@@ -84,7 +84,7 @@ function getSiguienteProceso(procesos: number[], procesoActual: number): number 
   }
   return null;
 }
-
+   
 async function getProcesoActualOrden(
   client: any, idproduccion: number
 ): Promise<{ procesoActualCat: number | null; estadoOrden: number }> {

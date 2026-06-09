@@ -20,6 +20,7 @@ export const CARPETAS = {
   backups:      "backups",
   usuarios:     "usuarios",
   usuarios_ine: "usuarios-ine",
+  suaje:        "suaje",          // ← NUEVO
 } as const;
 
 export const SUBCARPETAS_PDF = [
@@ -34,13 +35,26 @@ export const SUBCARPETAS_PDF = [
   "formas-envio",
 ] as const;
 
-export type CarpetaS3 = typeof CARPETAS[keyof typeof CARPETAS];
-export type SubcarpetaPDF = typeof SUBCARPETAS_PDF[number];
+export const SUBCARPETAS_SUAJE = [
+  "catalogo",
+  "imagen",
+  "rendimiento",
+] as const;
+
+// Todas las subcarpetas válidas (PDF + Suaje)
+export const TODAS_SUBCARPETAS = [
+  ...SUBCARPETAS_PDF,
+  ...SUBCARPETAS_SUAJE,
+] as const;
+
+export type CarpetaS3      = typeof CARPETAS[keyof typeof CARPETAS];
+export type SubcarpetaPDF  = typeof SUBCARPETAS_PDF[number];
+export type SubcarpetaSuaje = typeof SUBCARPETAS_SUAJE[number];
 
 // ── Acepta CUALQUIER tipo de archivo sin restricción ─────────────────────────
 export const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB — sube de 10 a 50 para PDFs grandes
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
   fileFilter: (_req: any, _file: any, cb: any) => {
     cb(null, true); // acepta todo
   },
