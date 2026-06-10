@@ -4,7 +4,7 @@ import { pool } from "../../config/db";
 // ═══════════════════════════════════════════════════════════════════════════
 // MAPA DE CATÁLOGOS VÁLIDOS
 // ═══════════════════════════════════════════════════════════════════════════
-const CATALOGOS: Record<string, { tabla: string; pk: string; tieneMedida: boolean; tieneNumMaquina: boolean }> = {
+const CATALOGOS: Record<string, { tabla: string; pk: string; tieneMedida: boolean; tieneNumMaquina: boolean; campoNombre?: string }> = {
   tipo_producto:      { tabla: "cat_tipo_producto_papel", pk: "idcat_tipo_producto_papel", tieneMedida: false, tieneNumMaquina: false },
   tipo_papel:         { tabla: "cat_tipo_papel",          pk: "idcat_tipo_papel",          tieneMedida: false, tieneNumMaquina: false },
   calibre:            { tabla: "cat_calibre",             pk: "idcat_calibre",             tieneMedida: false, tieneNumMaquina: false },
@@ -27,6 +27,8 @@ const CATALOGOS: Record<string, { tabla: string; pk: string; tieneMedida: boolea
   armado:             { tabla: "cat_armado",              pk: "idcat_armado",              tieneMedida: false, tieneNumMaquina: true  },
   asas_maquina:       { tabla: "cat_asas_maquina",        pk: "idcat_asas_maquina",        tieneMedida: false, tieneNumMaquina: true  },
   desbarbe:           { tabla: "cat_desbarbe",            pk: "idcat_desbarbe",            tieneMedida: false, tieneNumMaquina: true  },
+  // ← matrix usa tabla/pk propios y campoNombre distinto
+  matrix:             { tabla: "matrix",                  pk: "idmatrix",                  tieneMedida: false, tieneNumMaquina: false, campoNombre: "medida_matrix" },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -37,11 +39,19 @@ export const getCatalogosPapel = async (_req: Request, res: Response) => {
     const resultado: Record<string, any[]> = {};
 
     await Promise.all(
-      Object.entries(CATALOGOS).map(async ([key, { tabla, pk }]) => {
-        const { rows } = await pool.query(
-          `SELECT * FROM ${tabla} WHERE activo = true ORDER BY ${pk} ASC`
-        );
-        resultado[key] = rows;
+      Object.entries(CATALOGOS).map(async ([key, { tabla, pk, campoNombre }]) => {
+        // matrix usa medida_matrix como nombre, el resto usa nombre
+        if (campoNombre) {
+          const { rows } = await pool.query(
+            `SELECT ${pk}, ${campoNombre} AS nombre, activo FROM ${tabla} WHERE activo = true ORDER BY ${campoNombre} ASC`
+          );
+          resultado[key] = rows;
+        } else {
+          const { rows } = await pool.query(
+            `SELECT * FROM ${tabla} WHERE activo = true ORDER BY ${pk} ASC`
+          );
+          resultado[key] = rows;
+        }
       })
     );
 
@@ -62,11 +72,18 @@ export const getCatalogosInactivos = async (_req: Request, res: Response) => {
     const resultado: Record<string, any[]> = {};
 
     await Promise.all(
-      Object.entries(CATALOGOS).map(async ([key, { tabla, pk }]) => {
-        const { rows } = await pool.query(
-          `SELECT * FROM ${tabla} WHERE activo = false ORDER BY ${pk} ASC`
-        );
-        resultado[key] = rows;
+      Object.entries(CATALOGOS).map(async ([key, { tabla, pk, campoNombre }]) => {
+        if (campoNombre) {
+          const { rows } = await pool.query(
+            `SELECT ${pk}, ${campoNombre} AS nombre, activo FROM ${tabla} WHERE activo = false ORDER BY ${campoNombre} ASC`
+          );
+          resultado[key] = rows;
+        } else {
+          const { rows } = await pool.query(
+            `SELECT * FROM ${tabla} WHERE activo = false ORDER BY ${pk} ASC`
+          );
+          resultado[key] = rows;
+        }
       })
     );
 
@@ -94,7 +111,11 @@ export const agregarItemCatalogo = async (req: Request, res: Response) => {
     let query: string;
     let values: any[];
 
-    if (cat.tieneNumMaquina) {
+    // matrix guarda en medida_matrix en lugar de nombre
+    if (cat.campoNombre) {
+      query = `INSERT INTO ${cat.tabla} (${cat.campoNombre}) VALUES ($1) RETURNING ${cat.pk}, ${cat.campoNombre} AS nombre, activo`;
+      values = [nombre.trim()];
+    } else if (cat.tieneNumMaquina) {
       query = `INSERT INTO ${cat.tabla} (nombre, numero_maquina) VALUES ($1, $2) RETURNING *`;
       values = [nombre.trim(), numero_maquina?.trim() ?? null];
     } else if (cat.tieneMedida) {
@@ -131,7 +152,10 @@ export const editarItemCatalogo = async (req: Request, res: Response) => {
     let query: string;
     let values: any[];
 
-    if (cat.tieneNumMaquina) {
+    if (cat.campoNombre) {
+      query = `UPDATE ${cat.tabla} SET ${cat.campoNombre} = $1 WHERE ${cat.pk} = $2 RETURNING ${cat.pk}, ${cat.campoNombre} AS nombre, activo`;
+      values = [nombre.trim(), id];
+    } else if (cat.tieneNumMaquina) {
       query = `UPDATE ${cat.tabla} SET nombre = $1, numero_maquina = $2 WHERE ${cat.pk} = $3 RETURNING *`;
       values = [nombre.trim(), numero_maquina?.trim() ?? null, id];
     } else if (cat.tieneMedida) {

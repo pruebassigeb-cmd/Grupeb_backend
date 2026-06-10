@@ -791,3 +791,81 @@ export const guardarProveedorCompleto = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
+// POST /proveedores/:id/foil
+export const crearFoil = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { id } = req.params; // idproveedor
+    const { colorfoil, codigofoil, presentaciones } = req.body;
+    // presentaciones: string[]  ej: ["Rollo 500m", "Hoja A4"]
+
+    if (!colorfoil?.trim())
+      return res.status(400).json({ error: "colorfoil es requerido" });
+
+    // 1. Verificar proveedor
+    const { rows: prov } = await client.query(
+      `SELECT nombre FROM proveedor WHERE idproveedor = $1 AND activo = true`, [id]
+    );
+    if (!prov.length)
+      return res.status(404).json({ error: "Proveedor no encontrado" });
+
+    // 2. Obtener idtipo_insumo de Foil dinámicamente
+    const { rows: tipo } = await client.query(
+      `SELECT idtipo_insumo FROM tipo_insumo WHERE LOWER(nombre) = 'foil' AND activo = true LIMIT 1`
+    );
+    if (!tipo.length)
+      return res.status(400).json({ error: "Tipo de insumo 'Foil' no está registrado en catálogo" });
+
+    // 3. Generar clave automática
+    const clavefoil = [
+      prov[0].nombre.substring(0, 2).toUpperCase(),
+      colorfoil.trim().substring(0, 3).toUpperCase(),
+      codigofoil?.trim() ?? "",
+    ].join("");
+
+    // 4. Insert en proveedor_producto (registro base del insumo)
+    const { rows: pp } = await client.query(
+      `INSERT INTO proveedor_producto
+         (proveedor_idproveedor, tipo_insumo_id, nombre, codigo, activo)
+       VALUES ($1, $2, $3, $4, true)
+       RETURNING idproveedor_producto`,
+      [id, tipo[0].idtipo_insumo, colorfoil.trim(), codigofoil?.trim() || null]
+    );
+
+    // 5. Insert en foil (detalle específico)
+    const { rows: foilRows } = await client.query(
+      `INSERT INTO foil (idproveedor_producto, colorfoil, codigofoil, clavefoil)
+       VALUES ($1, $2, $3, $4)
+       RETURNING idfoil`,
+      [pp[0].idproveedor_producto, colorfoil.trim(), codigofoil?.trim() || null, clavefoil]
+    );
+
+    // 6. Insert presentaciones
+    for (const p of (presentaciones ?? [])) {
+      if (!p?.trim()) continue;
+      await client.query(
+        `INSERT INTO foil_presentacion (idfoil, presentacion) VALUES ($1, $2)`,
+        [foilRows[0].idfoil, p.trim()]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    console.log(`✅ Foil creado: ${foilRows[0].idfoil} — ${clavefoil}`);
+    return res.status(201).json({
+      message: "Foil registrado",
+      idfoil: foilRows[0].idfoil,
+      clavefoil,
+    });
+
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    console.error("❌ CREAR FOIL ERROR:", error.message);
+    return res.status(500).json({ error: "Error al registrar foil", detalle: error.message });
+  } finally {
+    client.release();
+  }
+};

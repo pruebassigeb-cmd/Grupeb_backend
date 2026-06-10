@@ -5,22 +5,22 @@ import { s3Client, S3_BUCKET } from "./s3";
 import { v4 as uuidv4 } from "uuid";
 
 export interface MulterFile {
-  fieldname:    string;
+  fieldname: string;
   originalname: string;
-  encoding:     string;
-  mimetype:     string;
-  size:         number;
-  buffer:       Buffer;
+  encoding: string;
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
 }
 
 export const CARPETAS = {
-  disenos:      "disenos",
-  pdfs:         "pdfs",
+  disenos: "disenos",
+  pdfs: "pdfs",
   fotos_envios: "fotos-envios",
-  backups:      "backups",
-  usuarios:     "usuarios",
+  backups: "backups",
+  usuarios: "usuarios",
   usuarios_ine: "usuarios-ine",
-  suaje:        "suaje",          // ← NUEVO
+  suaje: "suaje",          // ← NUEVO
 } as const;
 
 export const SUBCARPETAS_PDF = [
@@ -47,8 +47,8 @@ export const TODAS_SUBCARPETAS = [
   ...SUBCARPETAS_SUAJE,
 ] as const;
 
-export type CarpetaS3      = typeof CARPETAS[keyof typeof CARPETAS];
-export type SubcarpetaPDF  = typeof SUBCARPETAS_PDF[number];
+export type CarpetaS3 = typeof CARPETAS[keyof typeof CARPETAS];
+export type SubcarpetaPDF = typeof SUBCARPETAS_PDF[number];
 export type SubcarpetaSuaje = typeof SUBCARPETAS_SUAJE[number];
 
 // ── Acepta CUALQUIER tipo de archivo sin restricción ─────────────────────────
@@ -83,16 +83,16 @@ export const uploadToS3 = async (
 
   await s3Client.send(
     new PutObjectCommand({
-      Bucket:      S3_BUCKET,
-      Key:         key,
-      Body:        file.buffer,
+      Bucket: S3_BUCKET,
+      Key: key,
+      Body: file.buffer,
       ContentType: file.mimetype,
     })
   );
 
   return {
-    url:           key,
-    public_id:     key,
+    url: key,
+    public_id: key,
     resource_type: isPdf ? "raw" : "image",
   };
 };

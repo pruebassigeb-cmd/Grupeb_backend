@@ -22,7 +22,9 @@ import {
   getProductosSat,
   getRegimenesFiscales,
   guardarProveedorCompleto,
+  crearFoil,
 } from "../../controllers/proveedores/proveedores.controller";
+import { actualizarFoil, eliminarFoil, getFoilById, getFoilByProveedor } from "../../controllers/foil/foil.controller";
 
 const router = Router();
 
@@ -44,12 +46,21 @@ router.post("/", crearProveedor);
 router.put("/:id", actualizarProveedor);
 router.delete("/:id", eliminarProveedor);
 
+
+// ── Foil ──────────────────────────────────────────────────────────────────
+router.get("/:id/foil",          getFoilByProveedor);
+router.get("/:id/foil/:idFoil",  getFoilById);
+router.post("/:id/foil",         crearFoil);
+router.put("/:id/foil/:idFoil",  actualizarFoil);
+router.delete("/:id/foil/:idFoil", eliminarFoil);
+
 // ── Productos por proveedor ───────────────────────────────────────────────────
 router.get("/:id/productos", getProductosProveedor);
 router.post("/:id/productos", crearProductoProveedor);
 router.put("/:id/productos/:idProducto", actualizarProductoProveedor);
 router.delete("/:id/productos/:idProducto", eliminarProductoProveedor);
 router.put("/:id/completo", guardarProveedorCompleto);
+router.post("/:id/foil", crearFoil);
 
 
 // ── Domicilio ─────────────────────────────────────────────────────────────────
@@ -66,4 +77,4 @@ router.get("/:id", getProveedorById);
 router.put("/:id", actualizarProveedor);
 router.delete("/:id", eliminarProveedor);
 
-export default router;
+export default router; 
