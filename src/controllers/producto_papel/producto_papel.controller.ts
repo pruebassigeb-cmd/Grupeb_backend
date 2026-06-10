@@ -108,17 +108,94 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
         pp.descripcion_papel,
         pp.activo,
         pp.created_at,
-        tp.nombre              AS tipo_producto,
-        u.nombre  || ' ' || u.apellido AS creado_por
+        tp.nombre                        AS tipo_producto,
+        u.nombre || ' ' || u.apellido    AS creado_por,
+
+        -- Primer material del primer grupo (tipo papel, calibre, pliego)
+        mat_preview.primer_tipo_papel,
+        mat_preview.primer_calibre,
+        mat_preview.primer_pliego,
+
+        -- Archivos para vista previa en la tabla (url con presign se genera abajo)
+        arch_prev.archivos_raw
+
       FROM producto_papel pp
       LEFT JOIN cat_tipo_producto_papel tp ON tp.idcat_tipo_producto_papel = pp.idcat_tipo_producto_papel
       LEFT JOIN usuarios u ON u.idusuario = pp.creado_por
+
+      -- Primer material del primer grupo
+      LEFT JOIN LATERAL (
+        SELECT
+          ctp.nombre   AS primer_tipo_papel,
+          cal.nombre   AS primer_calibre,
+          dm.pliego    AS primer_pliego
+        FROM grupo_papel gp
+        JOIN detalle_material_papel dm ON dm.idgrupo_papel = gp.idgrupo_papel
+        LEFT JOIN cat_tipo_papel  ctp ON ctp.idcat_tipo_papel = dm.idcat_tipo_papel
+        LEFT JOIN cat_calibre     cal ON cal.idcat_calibre    = dm.idcat_calibre
+        WHERE gp.idproducto_papel = pp.idproducto_papel
+        ORDER BY gp.orden ASC, dm.orden ASC
+        LIMIT 1
+      ) mat_preview ON true
+
+      -- Archivos para preview (max 3, priorizando imagen primero)
+      LEFT JOIN LATERAL (
+        SELECT json_agg(
+          json_build_object(
+            'id_archivo', a.id_archivo,
+            'public_id',  a.public_id,
+            'categoria',  a.categoria,
+            'nombre',     a.nombre,
+            'tipo',       a.tipo
+          )
+          ORDER BY
+            CASE a.categoria
+              WHEN 'imagen-suaje-papel'      THEN 1
+              WHEN 'catalogo-suaje-papel'    THEN 2
+              WHEN 'rendimiento-suaje-papel' THEN 3
+              ELSE 4
+            END,
+            a.id_archivo ASC
+        ) AS archivos_raw
+        FROM (
+          SELECT * FROM archivos
+          WHERE idproducto_papel = pp.idproducto_papel
+          ORDER BY
+            CASE categoria
+              WHEN 'imagen-suaje-papel'      THEN 1
+              WHEN 'catalogo-suaje-papel'    THEN 2
+              WHEN 'rendimiento-suaje-papel' THEN 3
+              ELSE 4
+            END,
+            id_archivo ASC
+          LIMIT 3
+        ) a
+      ) arch_prev ON true
+
       WHERE pp.activo = true
       ORDER BY pp.idproducto_papel DESC
     `);
 
-    console.log(`✅ Productos papel obtenidos: ${rows.length}`);
-    return res.json(rows);
+    // Generar presigned URLs para los archivos de preview
+    const rowsConUrls = await Promise.all(
+      rows.map(async (row) => {
+        const archivosRaw: any[] = row.archivos_raw ?? [];
+        const archivos_preview = await Promise.all(
+          archivosRaw.map(async (a) => ({
+            id_archivo: a.id_archivo,
+            nombre:     a.nombre,
+            categoria:  a.categoria,
+            tipo:       a.tipo,
+            url:        await getPresignedUrl(a.public_id),
+          }))
+        );
+        const { archivos_raw, ...rest } = row;
+        return { ...rest, archivos_preview };
+      })
+    );
+
+    console.log(`✅ Productos papel obtenidos: ${rowsConUrls.length}`);
+    return res.json(rowsConUrls);
 
   } catch (error: any) {
     console.error("❌ GET PRODUCTOS PAPEL ERROR:", error.message);
@@ -210,7 +287,7 @@ export const getProductoPapelById = async (req: Request, res: Response) => {
     }
     producto.grupos = Object.values(gruposMap);
 
-    // ── Suaje — con JOIN a matrix ─────────────────────────────────────────
+    // ── Suaje ─────────────────────────────────────────────────────────────
     const { rows: suajeRows } = await pool.query(`
       SELECT
         s.*,
@@ -258,7 +335,7 @@ export const getProductoPapelById = async (req: Request, res: Response) => {
         WHERE aa.idacabados_papel = $1
       `, [acabados.idacabados_papel]);
 
-      acabados.asas     = asasRows;
+      acabados.asas      = asasRows;
       acabados.laminados = await getLaminado(acabados.idacabados_papel);
       producto.acabados  = acabados;
     } else {
@@ -373,7 +450,7 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       }
     }
 
-    // ── 3. Suaje — usa idcat_matrix en lugar de matrix texto ──────────────
+    // ── 3. Suaje ──────────────────────────────────────────────────────────
     if (suaje) {
       await client.query(`
         INSERT INTO suaje_papel (
@@ -395,7 +472,7 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
         suaje.dobles1_tipo        ?? null,
         suaje.dobles1_medida      ?? null,
         suaje.metros              ?? null,
-        suaje.idcat_matrix        ?? null,  // ← FK a matrix
+        suaje.idcat_matrix        ?? null,
         suaje.tiempo_arreglo      ?? null,
         suaje.idcat_sacabocados   ?? null,
         suaje.cantidad_sacabocado ?? null,
@@ -544,7 +621,7 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
       }
     }
 
-    // ── 3. Suaje — upsert con idcat_matrix ────────────────────────────────
+    // ── 3. Suaje — upsert ─────────────────────────────────────────────────
     if (suaje) {
       const { rows: suajeCheck } = await client.query(
         `SELECT idsuaje_papel FROM suaje_papel WHERE idproducto_papel = $1`, [id]
@@ -569,7 +646,7 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
           suaje.dobles1_tipo        ?? null,
           suaje.dobles1_medida      ?? null,
           suaje.metros              ?? null,
-          suaje.idcat_matrix        ?? null,  // ← FK
+          suaje.idcat_matrix        ?? null,
           suaje.tiempo_arreglo      ?? null,
           suaje.idcat_sacabocados   ?? null,
           suaje.cantidad_sacabocado ?? null,
@@ -598,7 +675,7 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
           suaje.dobles1_tipo        ?? null,
           suaje.dobles1_medida      ?? null,
           suaje.metros              ?? null,
-          suaje.idcat_matrix        ?? null,  // ← FK
+          suaje.idcat_matrix        ?? null,
           suaje.tiempo_arreglo      ?? null,
           suaje.idcat_sacabocados   ?? null,
           suaje.cantidad_sacabocado ?? null,
