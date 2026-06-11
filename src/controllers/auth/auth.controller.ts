@@ -90,7 +90,7 @@ export const login = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    if (!/^\d{5}$/.test(codigo)) {
+    if (!/^\d{4,8}$/.test(codigo)) {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
@@ -271,7 +271,7 @@ export const verificarOperador = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Proceso inválido" });
     }
 
-    if (!/^\d{5}$/.test(codigo)) {
+    if (!/^\d{4,8}$/.test(codigo)) {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 

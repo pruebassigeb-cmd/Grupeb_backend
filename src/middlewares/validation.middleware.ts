@@ -16,7 +16,7 @@ export const validateLogin = (req: Request, res: Response, next: NextFunction) =
   }
   
   const codigoLimpio = codigo.trim().replace(/\D/g, "");
-  if (!/^\d{5}$/.test(codigoLimpio)) {
+  if (!/^\d{4,8}$/.test(codigoLimpio)) {
     return res.status(400).json({ error: "Formato de código inválido" });
   }
   
@@ -107,7 +107,7 @@ export const validateCreateUsuario = (req: Request, res: Response, next: NextFun
     return res.status(400).json({ error: "Datos de entrada inválidos" });
   }
   codigo = codigo.trim().replace(/\D/g, "");
-  if (!/^\d{5}$/.test(codigo)) {
+  if (!/^\d{4,8}$/.test(codigo)) {
     return res.status(400).json({ error: "Datos de entrada inválidos" });
   }
 
@@ -214,7 +214,7 @@ export const validateUsuario = (req: Request, res: Response, next: NextFunction)
       return res.status(400).json({ error: "Datos de entrada inválidos" });
     }
     codigo = codigo.trim().replace(/\D/g, "");
-    if (!/^\d{5}$/.test(codigo)) {
+    if (!/^\d{4,8}$/.test(codigo)) {
       return res.status(400).json({ error: "Datos de entrada inválidos" });
     }
   }

@@ -73,7 +73,7 @@ export const createUsuario = async (req: Request, res: Response) => {
 
     if (!nombre?.trim() || !apellido?.trim() || !correo?.trim() || !codigo)
       return res.status(400).json({ error: "Todos los campos requeridos deben estar completos" });
-    if (!/^\d{4,5}$/.test(codigo))
+    if (!/^\d{4,8}$/.test(codigo))
       return res.status(400).json({ error: "El código debe tener entre 4 y 5 dígitos" });
     if (!validator.isEmail(correo.trim()))
       return res.status(400).json({ error: "El formato del correo no es válido" });
@@ -344,7 +344,7 @@ export const updateUsuario = async (req: Request, res: Response) => {
     const updateValues: any[] = [nombre, apellido, correo, telefono || null, roles_idroles];
 
     if (codigo && codigo.trim() !== "") {
-      if (!/^\d{4,5}$/.test(codigo)) {
+      if (!/^\d{4,8}$/.test(codigo)) {
         await client.query("ROLLBACK");
         return res.status(400).json({ error: "El código debe tener entre 4 y 5 dígitos" });
       }
