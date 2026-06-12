@@ -111,31 +111,29 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
         tp.nombre                        AS tipo_producto,
         u.nombre || ' ' || u.apellido    AS creado_por,
 
-        -- Primer material del primer grupo (tipo papel, calibre, pliego)
+        -- Tipos de papel y calibres de todos los grupos (separados por " / ")
         mat_preview.primer_tipo_papel,
         mat_preview.primer_calibre,
         mat_preview.primer_pliego,
 
-        -- Archivos para vista previa en la tabla (url con presign se genera abajo)
+        -- Archivos para vista previa en la tabla
         arch_prev.archivos_raw
 
       FROM producto_papel pp
       LEFT JOIN cat_tipo_producto_papel tp ON tp.idcat_tipo_producto_papel = pp.idcat_tipo_producto_papel
       LEFT JOIN usuarios u ON u.idusuario = pp.creado_por
 
-      -- Primer material del primer grupo
+      -- Todos los tipos de papel y calibres de todos los grupos
       LEFT JOIN LATERAL (
         SELECT
-          ctp.nombre   AS primer_tipo_papel,
-          cal.nombre   AS primer_calibre,
-          dm.pliego    AS primer_pliego
+          string_agg(DISTINCT ctp.nombre, ' / ' ORDER BY ctp.nombre) AS primer_tipo_papel,
+          string_agg(DISTINCT cal.nombre, ' / ' ORDER BY cal.nombre) AS primer_calibre,
+          MIN(dm.pliego)                                              AS primer_pliego
         FROM grupo_papel gp
         JOIN detalle_material_papel dm ON dm.idgrupo_papel = gp.idgrupo_papel
-        LEFT JOIN cat_tipo_papel  ctp ON ctp.idcat_tipo_papel = dm.idcat_tipo_papel
-        LEFT JOIN cat_calibre     cal ON cal.idcat_calibre    = dm.idcat_calibre
+        LEFT JOIN cat_tipo_papel ctp ON ctp.idcat_tipo_papel = dm.idcat_tipo_papel
+        LEFT JOIN cat_calibre    cal ON cal.idcat_calibre    = dm.idcat_calibre
         WHERE gp.idproducto_papel = pp.idproducto_papel
-        ORDER BY gp.orden ASC, dm.orden ASC
-        LIMIT 1
       ) mat_preview ON true
 
       -- Archivos para preview (max 3, priorizando imagen primero)
