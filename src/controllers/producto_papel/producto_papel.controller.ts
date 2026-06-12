@@ -241,6 +241,7 @@ export const getProductoPapelById = async (req: Request, res: Response) => {
         dm.hoj_rendimiento,
         dm.hoj_guillotina,
         dm.hoj_hilo,
+        dm.hoj_bobina_extra,
         dm.orden             AS material_orden,
         tp.nombre            AS tipo_papel,
         tp.idcat_tipo_papel,
@@ -280,6 +281,7 @@ export const getProductoPapelById = async (req: Request, res: Response) => {
             rendimiento: row.hoj_rendimiento,
             guillotina:  row.hoj_guillotina,
             hilo:        row.hoj_hilo,
+            bobina_extra: row.hoj_bobina_extra,
           },
           orden: row.material_orden,
         });
@@ -296,11 +298,15 @@ export const getProductoPapelById = async (req: Request, res: Response) => {
         pe.nombre  AS perforado_nombre,
         pe.medida  AS perforado_medida,
         mx.medida_matrix AS matrix_nombre,
-        mx.idmatrix      AS idcat_matrix
+        mx.idmatrix      AS idcat_matrix,
+        pc.puntos  AS puntos_corte,
+        pd.puntos  AS puntos_doble
       FROM suaje_papel s
       LEFT JOIN cat_sacabocados sc ON sc.idcat_sacabocados = s.idcat_sacabocados
       LEFT JOIN cat_perforado   pe ON pe.idcat_perforado   = s.idcat_perforado
       LEFT JOIN matrix          mx ON mx.idmatrix          = s.idcat_matrix
+      LEFT JOIN cat_puntos      pc ON pc.idcat_punto       = s.idcat_punto_corte
+      LEFT JOIN cat_puntos      pd ON pd.idcat_punto       = s.idcat_punto_doble
       WHERE s.idproducto_papel = $1
     `, [id]);
     producto.suaje = suajeRows[0] ?? null;
@@ -429,9 +435,9 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
             idgrupo_papel,
             idcat_tipo_papel, idcat_calibre,
             pliego, rendimiento, corte,
-            hoj_bobina, hoj_corte, hoj_rendimiento, hoj_guillotina, hoj_hilo,
+            hoj_bobina, hoj_corte, hoj_rendimiento, hoj_guillotina, hoj_hilo, hoj_bobina_extra,
             orden, creado_por, actualizado_por
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
         `, [
           idgrupo_papel,
           mat.idcat_tipo_papel ?? null,
@@ -439,11 +445,12 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
           mat.pliego           ?? null,
           mat.rendimiento      ?? null,
           mat.corte            ?? null,
-          mat.hojeado?.bobina      ?? null,
-          mat.hojeado?.corte       ?? null,
-          mat.hojeado?.rendimiento ?? null,
-          mat.hojeado?.guillotina  ?? null,
-          mat.hojeado?.hilo        ?? null,
+          mat.hojeado?.bobina       ?? null,
+          mat.hojeado?.corte        ?? null,
+          mat.hojeado?.rendimiento  ?? null,
+          mat.hojeado?.guillotina   ?? null,
+          mat.hojeado?.hilo         ?? null,
+          mat.hojeado?.bobina_extra ?? null,
           mi + 1,
           idusuario,
         ]);
@@ -456,12 +463,13 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
         INSERT INTO suaje_papel (
           idproducto_papel,
           numero, pzs, tamano,
-          corte1_tipo, corte1_medida,
-          dobles1_tipo, dobles1_medida,
+          corte1_tipo, corte1_medida, idcat_corte, idcat_punto_corte,
+          dobles1_tipo, dobles1_medida, idcat_doble, idcat_punto_doble,
           metros, idcat_matrix, tiempo_arreglo,
           idcat_sacabocados, cantidad_sacabocado,
-          idcat_perforado,   cantidad_perforado
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+          idcat_perforado,   cantidad_perforado,
+          herramental_desbarbe, no_desbarbe
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
       `, [
         idproducto_papel,
         suaje.numero              ?? null,
@@ -469,8 +477,12 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
         suaje.tamano              ?? null,
         suaje.corte1_tipo         ?? null,
         suaje.corte1_medida       ?? null,
+        suaje.idcat_corte         ?? null,
+        suaje.idcat_punto_corte   ?? null,
         suaje.dobles1_tipo        ?? null,
         suaje.dobles1_medida      ?? null,
+        suaje.idcat_doble         ?? null,
+        suaje.idcat_punto_doble   ?? null,
         suaje.metros              ?? null,
         suaje.idcat_matrix        ?? null,
         suaje.tiempo_arreglo      ?? null,
@@ -478,6 +490,8 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
         suaje.cantidad_sacabocado ?? null,
         suaje.idcat_perforado     ?? null,
         suaje.cantidad_perforado  ?? null,
+        suaje.herramental_desbarbe === true,
+        suaje.no_desbarbe         ?? null,
       ]);
     }
 
@@ -600,9 +614,9 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
             idgrupo_papel,
             idcat_tipo_papel, idcat_calibre,
             pliego, rendimiento, corte,
-            hoj_bobina, hoj_corte, hoj_rendimiento, hoj_guillotina, hoj_hilo,
+            hoj_bobina, hoj_corte, hoj_rendimiento, hoj_guillotina, hoj_hilo, hoj_bobina_extra,
             orden, creado_por, actualizado_por
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
         `, [
           idgrupo_papel,
           mat.idcat_tipo_papel ?? null,
@@ -610,11 +624,12 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
           mat.pliego           ?? null,
           mat.rendimiento      ?? null,
           mat.corte            ?? null,
-          mat.hojeado?.bobina      ?? null,
-          mat.hojeado?.corte       ?? null,
-          mat.hojeado?.rendimiento ?? null,
-          mat.hojeado?.guillotina  ?? null,
-          mat.hojeado?.hilo        ?? null,
+          mat.hojeado?.bobina       ?? null,
+          mat.hojeado?.corte        ?? null,
+          mat.hojeado?.rendimiento  ?? null,
+          mat.hojeado?.guillotina   ?? null,
+          mat.hojeado?.hilo         ?? null,
+          mat.hojeado?.bobina_extra ?? null,
           mi + 1,
           idusuario,
         ]);
@@ -631,20 +646,25 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
         await client.query(`
           UPDATE suaje_papel SET
             numero = $1, pzs = $2, tamano = $3,
-            corte1_tipo = $4, corte1_medida = $5,
-            dobles1_tipo = $6, dobles1_medida = $7,
-            metros = $8, idcat_matrix = $9, tiempo_arreglo = $10,
-            idcat_sacabocados = $11, cantidad_sacabocado = $12,
-            idcat_perforado   = $13, cantidad_perforado  = $14
-          WHERE idproducto_papel = $15
+            corte1_tipo = $4, corte1_medida = $5, idcat_corte = $6, idcat_punto_corte = $7,
+            dobles1_tipo = $8, dobles1_medida = $9, idcat_doble = $10, idcat_punto_doble = $11,
+            metros = $12, idcat_matrix = $13, tiempo_arreglo = $14,
+            idcat_sacabocados = $15, cantidad_sacabocado = $16,
+            idcat_perforado   = $17, cantidad_perforado  = $18,
+            herramental_desbarbe = $19, no_desbarbe = $20
+          WHERE idproducto_papel = $21
         `, [
           suaje.numero              ?? null,
           suaje.pzs                 ?? null,
           suaje.tamano              ?? null,
           suaje.corte1_tipo         ?? null,
           suaje.corte1_medida       ?? null,
+          suaje.idcat_corte         ?? null,
+          suaje.idcat_punto_corte   ?? null,
           suaje.dobles1_tipo        ?? null,
           suaje.dobles1_medida      ?? null,
+          suaje.idcat_doble         ?? null,
+          suaje.idcat_punto_doble   ?? null,
           suaje.metros              ?? null,
           suaje.idcat_matrix        ?? null,
           suaje.tiempo_arreglo      ?? null,
@@ -652,6 +672,8 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
           suaje.cantidad_sacabocado ?? null,
           suaje.idcat_perforado     ?? null,
           suaje.cantidad_perforado  ?? null,
+          suaje.herramental_desbarbe === true,
+          suaje.no_desbarbe         ?? null,
           id,
         ]);
       } else {
@@ -659,12 +681,13 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
           INSERT INTO suaje_papel (
             idproducto_papel,
             numero, pzs, tamano,
-            corte1_tipo, corte1_medida,
-            dobles1_tipo, dobles1_medida,
+            corte1_tipo, corte1_medida, idcat_corte, idcat_punto_corte,
+            dobles1_tipo, dobles1_medida, idcat_doble, idcat_punto_doble,
             metros, idcat_matrix, tiempo_arreglo,
             idcat_sacabocados, cantidad_sacabocado,
-            idcat_perforado,   cantidad_perforado
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            idcat_perforado,   cantidad_perforado,
+            herramental_desbarbe, no_desbarbe
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
         `, [
           id,
           suaje.numero              ?? null,
@@ -672,8 +695,12 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
           suaje.tamano              ?? null,
           suaje.corte1_tipo         ?? null,
           suaje.corte1_medida       ?? null,
+          suaje.idcat_corte         ?? null,
+          suaje.idcat_punto_corte   ?? null,
           suaje.dobles1_tipo        ?? null,
           suaje.dobles1_medida      ?? null,
+          suaje.idcat_doble         ?? null,
+          suaje.idcat_punto_doble   ?? null,
           suaje.metros              ?? null,
           suaje.idcat_matrix        ?? null,
           suaje.tiempo_arreglo      ?? null,
@@ -681,6 +708,8 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
           suaje.cantidad_sacabocado ?? null,
           suaje.idcat_perforado     ?? null,
           suaje.cantidad_perforado  ?? null,
+          suaje.herramental_desbarbe === true,
+          suaje.no_desbarbe         ?? null,
         ]);
       }
     }

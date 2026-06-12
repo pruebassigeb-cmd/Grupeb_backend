@@ -12,6 +12,7 @@ const CATALOGOS: Record<string, {
   campoNombre?: string;
   esCorte?: boolean;
   esDoble?: boolean;
+  esPuntos?: boolean;
 }> = {
   tipo_producto: { tabla: "cat_tipo_producto_papel", pk: "idcat_tipo_producto_papel", tieneMedida: false, tieneNumMaquina: false },
   tipo_papel: { tabla: "cat_tipo_papel", pk: "idcat_tipo_papel", tieneMedida: false, tieneNumMaquina: false },
@@ -37,9 +38,48 @@ const CATALOGOS: Record<string, {
   desbarbe: { tabla: "cat_desbarbe", pk: "idcat_desbarbe", tieneMedida: false, tieneNumMaquina: true },
   matrix: { tabla: "matrix", pk: "idmatrix", tieneMedida: false, tieneNumMaquina: false, campoNombre: "medida_matrix" },
   // ── Nuevos ────────────────────────────────────────────────────────────
-  puntos: { tabla: "cat_puntos", pk: "idcat_punto", tieneMedida: false, tieneNumMaquina: false, campoNombre: "puntos" },
+  puntos: { tabla: "cat_puntos", pk: "idcat_punto", tieneMedida: false, tieneNumMaquina: false, esPuntos: true },
   cortes: { tabla: "cat_cortes", pk: "idcat_corte", tieneMedida: false, tieneNumMaquina: false, esCorte: true },
   dobles: { tabla: "cat_dobles", pk: "idcat_doble", tieneMedida: false, tieneNumMaquina: false, esDoble: true },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPER: query de listado según el catálogo y estado activo
+// ═══════════════════════════════════════════════════════════════════════════
+const buildListQuery = (key: string, cat: (typeof CATALOGOS)[string], activo: boolean): string => {
+  const flag = activo ? "true" : "false";
+
+  if (cat.esCorte) {
+    return `
+      SELECT c.idcat_corte AS id, c.corte AS nombre, c.altura, c.idcat_punto, p.puntos
+      FROM cat_cortes c
+      LEFT JOIN cat_puntos p ON p.idcat_punto = c.idcat_punto
+      WHERE c.activo = ${flag}
+      ORDER BY c.idcat_corte ASC`;
+  }
+  if (cat.esDoble) {
+    return `
+      SELECT d.idcat_doble AS id, d.doble AS nombre, d.altura, d.idcat_punto, p.puntos
+      FROM cat_dobles d
+      LEFT JOIN cat_puntos p ON p.idcat_punto = d.idcat_punto
+      WHERE d.activo = ${flag}
+      ORDER BY d.idcat_doble ASC`;
+  }
+  if (cat.esPuntos) {
+    return `
+      SELECT idcat_punto, puntos::text AS nombre, puntos, activo
+      FROM cat_puntos
+      WHERE activo = ${flag}
+      ORDER BY puntos ASC`;
+  }
+  if (cat.campoNombre) {
+    return `
+      SELECT ${cat.pk}, ${cat.campoNombre} AS nombre, activo
+      FROM ${cat.tabla}
+      WHERE activo = ${flag}
+      ORDER BY ${cat.campoNombre} ASC`;
+  }
+  return `SELECT * FROM ${cat.tabla} WHERE activo = ${flag} ORDER BY ${cat.pk} ASC`;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -51,30 +91,8 @@ export const getCatalogosPapel = async (_req: Request, res: Response) => {
 
     await Promise.all(
       Object.entries(CATALOGOS).map(async ([key, cat]) => {
-        if (cat.esCorte) {
-          const { rows } = await pool.query(
-            `SELECT idcat_corte AS id, corte AS nombre, altura
-   FROM cat_cortes WHERE activo = true ORDER BY idcat_corte ASC`
-          );
-          resultado[key] = rows;
-        } else if (cat.esDoble) {
-          const { rows } = await pool.query(
-            `SELECT idcat_doble AS id, doble AS nombre, altura
-   FROM cat_dobles WHERE activo = true ORDER BY idcat_doble ASC`
-          );
-          resultado[key] = rows;
-        } else if (cat.campoNombre) {
-          const { rows } = await pool.query(
-            `SELECT ${cat.pk}, ${cat.campoNombre} AS nombre, activo
-             FROM ${cat.tabla} WHERE activo = true ORDER BY ${cat.campoNombre} ASC`
-          );
-          resultado[key] = rows;
-        } else {
-          const { rows } = await pool.query(
-            `SELECT * FROM ${cat.tabla} WHERE activo = true ORDER BY ${cat.pk} ASC`
-          );
-          resultado[key] = rows;
-        }
+        const { rows } = await pool.query(buildListQuery(key, cat, true));
+        resultado[key] = rows;
       })
     );
 
@@ -96,30 +114,8 @@ export const getCatalogosInactivos = async (_req: Request, res: Response) => {
 
     await Promise.all(
       Object.entries(CATALOGOS).map(async ([key, cat]) => {
-        if (cat.esCorte) {
-          const { rows } = await pool.query(
-            `SELECT idcat_corte AS id, corte AS nombre, altura
-             FROM cat_cortes WHERE activo = false ORDER BY idcat_corte ASC`
-          );
-          resultado[key] = rows;
-        } else if (cat.esDoble) {
-          const { rows } = await pool.query(
-            `SELECT idcat_doble AS id, doble AS nombre, altura
-             FROM cat_dobles WHERE activo = false ORDER BY idcat_doble ASC`
-          );
-          resultado[key] = rows;
-        } else if (cat.campoNombre) {
-          const { rows } = await pool.query(
-            `SELECT ${cat.pk}, ${cat.campoNombre} AS nombre, activo
-             FROM ${cat.tabla} WHERE activo = false ORDER BY ${cat.campoNombre} ASC`
-          );
-          resultado[key] = rows;
-        } else {
-          const { rows } = await pool.query(
-            `SELECT * FROM ${cat.tabla} WHERE activo = false ORDER BY ${cat.pk} ASC`
-          );
-          resultado[key] = rows;
-        }
+        const { rows } = await pool.query(buildListQuery(key, cat, false));
+        resultado[key] = rows;
       })
     );
 
@@ -138,7 +134,7 @@ export const getCatalogosInactivos = async (_req: Request, res: Response) => {
 export const agregarItemCatalogo = async (req: Request, res: Response) => {
   try {
     const catalogo = req.params.catalogo as string;
-    const { nombre, medida, numero_maquina, altura } = req.body;
+    const { nombre, medida, numero_maquina, altura, idcat_punto } = req.body;
 
     const cat = CATALOGOS[catalogo];
     if (!cat) return res.status(400).json({ error: `Catálogo '${catalogo}' no válido` });
@@ -152,16 +148,41 @@ export const agregarItemCatalogo = async (req: Request, res: Response) => {
       const alturaVal = altura?.trim()
         ? (altura.trim().endsWith("mm") ? altura.trim() : `${altura.trim()} mm`)
         : null;
-      query = `INSERT INTO cat_cortes (corte, altura) VALUES ($1, $2) RETURNING idcat_corte AS id, corte AS nombre, altura`;
-      values = [corteVal, alturaVal];
+      query = `
+        WITH ins AS (
+          INSERT INTO cat_cortes (corte, altura, idcat_punto)
+          VALUES ($1, $2, $3)
+          RETURNING *
+        )
+        SELECT ins.idcat_corte AS id, ins.corte AS nombre, ins.altura, ins.idcat_punto, p.puntos
+        FROM ins
+        LEFT JOIN cat_puntos p ON p.idcat_punto = ins.idcat_punto`;
+      values = [corteVal, alturaVal, idcat_punto ?? null];
 
     } else if (cat.esDoble) {
       const dobleVal = nombre.trim().endsWith('"') ? nombre.trim() : `${nombre.trim()}"`;
       const alturaVal = altura?.trim()
         ? (altura.trim().endsWith("mm") ? altura.trim() : `${altura.trim()} mm`)
         : null;
-      query = `INSERT INTO cat_dobles (doble, altura) VALUES ($1, $2) RETURNING idcat_doble AS id, doble AS nombre, altura`;
-      values = [dobleVal, alturaVal];
+      query = `
+        WITH ins AS (
+          INSERT INTO cat_dobles (doble, altura, idcat_punto)
+          VALUES ($1, $2, $3)
+          RETURNING *
+        )
+        SELECT ins.idcat_doble AS id, ins.doble AS nombre, ins.altura, ins.idcat_punto, p.puntos
+        FROM ins
+        LEFT JOIN cat_puntos p ON p.idcat_punto = ins.idcat_punto`;
+      values = [dobleVal, alturaVal, idcat_punto ?? null];
+
+    } else if (cat.esPuntos) {
+      const puntosVal = parseInt(nombre.trim(), 10);
+      if (isNaN(puntosVal)) return res.status(400).json({ error: "El valor de puntos debe ser numérico" });
+      query = `
+        INSERT INTO cat_puntos (puntos)
+        VALUES ($1)
+        RETURNING idcat_punto, puntos::text AS nombre, puntos, activo`;
+      values = [puntosVal];
 
     } else if (cat.campoNombre) {
       query = `INSERT INTO ${cat.tabla} (${cat.campoNombre}) VALUES ($1) RETURNING ${cat.pk}, ${cat.campoNombre} AS nombre, activo`;
@@ -197,7 +218,7 @@ export const editarItemCatalogo = async (req: Request, res: Response) => {
   try {
     const catalogo = req.params.catalogo as string;
     const { id } = req.params;
-    const { nombre, medida, numero_maquina, altura } = req.body;
+    const { nombre, medida, numero_maquina, altura, idcat_punto } = req.body;
 
     const cat = CATALOGOS[catalogo];
     if (!cat) return res.status(400).json({ error: `Catálogo '${catalogo}' no válido` });
@@ -211,16 +232,43 @@ export const editarItemCatalogo = async (req: Request, res: Response) => {
       const alturaVal = altura?.trim()
         ? (altura.trim().endsWith("mm") ? altura.trim() : `${altura.trim()} mm`)
         : null;
-      query = `UPDATE cat_cortes SET corte = $1, altura = $2 WHERE idcat_corte = $3 RETURNING idcat_corte AS id, corte AS nombre, altura`;
-      values = [corteVal, alturaVal, id];
+      query = `
+        WITH upd AS (
+          UPDATE cat_cortes
+          SET corte = $1, altura = $2, idcat_punto = $3
+          WHERE idcat_corte = $4
+          RETURNING *
+        )
+        SELECT upd.idcat_corte AS id, upd.corte AS nombre, upd.altura, upd.idcat_punto, p.puntos
+        FROM upd
+        LEFT JOIN cat_puntos p ON p.idcat_punto = upd.idcat_punto`;
+      values = [corteVal, alturaVal, idcat_punto ?? null, id];
 
     } else if (cat.esDoble) {
       const dobleVal = nombre.trim().endsWith('"') ? nombre.trim() : `${nombre.trim()}"`;
       const alturaVal = altura?.trim()
         ? (altura.trim().endsWith("mm") ? altura.trim() : `${altura.trim()} mm`)
         : null;
-      query = `UPDATE cat_dobles SET doble = $1, altura = $2 WHERE idcat_doble = $3 RETURNING idcat_doble AS id, doble AS nombre, altura`;
-      values = [dobleVal, alturaVal, id];
+      query = `
+        WITH upd AS (
+          UPDATE cat_dobles
+          SET doble = $1, altura = $2, idcat_punto = $3
+          WHERE idcat_doble = $4
+          RETURNING *
+        )
+        SELECT upd.idcat_doble AS id, upd.doble AS nombre, upd.altura, upd.idcat_punto, p.puntos
+        FROM upd
+        LEFT JOIN cat_puntos p ON p.idcat_punto = upd.idcat_punto`;
+      values = [dobleVal, alturaVal, idcat_punto ?? null, id];
+
+    } else if (cat.esPuntos) {
+      const puntosVal = parseInt(nombre.trim(), 10);
+      if (isNaN(puntosVal)) return res.status(400).json({ error: "El valor de puntos debe ser numérico" });
+      query = `
+        UPDATE cat_puntos SET puntos = $1
+        WHERE idcat_punto = $2
+        RETURNING idcat_punto, puntos::text AS nombre, puntos, activo`;
+      values = [puntosVal, id];
 
     } else if (cat.campoNombre) {
       query = `UPDATE ${cat.tabla} SET ${cat.campoNombre} = $1 WHERE ${cat.pk} = $2 RETURNING ${cat.pk}, ${cat.campoNombre} AS nombre, activo`;
