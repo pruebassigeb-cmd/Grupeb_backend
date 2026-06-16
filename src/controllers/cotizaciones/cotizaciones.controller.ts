@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
+import { insertarProductoPapel, construirProductoPapel } from "./cotizacionPapel.helper";
 
 const ESTADO = {
   PENDIENTE:  1,
@@ -204,11 +205,17 @@ export const crearCotizacion = async (req: Request, res: Response) => {
     let subtotalTotal = 0;
 
     for (const producto of productos) {
+      // ── PAPEL: se delega al helper y se salta la lógica de plástico ──
+      if (producto.tipoCotizacion === "papel") {
+        subtotalTotal += await insertarProductoPapel(client, solicitudId, producto, tipoDocumento);
+        continue;
+      }
+
       const {
         productoId, tintasId, carasId, detalles,
         observacion = null,
         descripcion = null,
-        perforacion = false,   // ← NUEVO
+        perforacion = false,
         bk = null, foil = null,
         idsuaje = null, altoRel = null, laminado = null,
         uvBr = null, pigmentos = null, pantones = null,
@@ -235,7 +242,7 @@ export const crearCotizacion = async (req: Request, res: Response) => {
       const colorAsaGuardar      = colorAsaId      != null ? Number(colorAsaId)      : null;
       const medidaTroquelGuardar = idMedidaTroquel != null ? Number(idMedidaTroquel) : null;
       const descripcionGuardar   = typeof descripcion === "string" && descripcion.trim() !== "" ? descripcion.trim() : null;
-      const perforacionGuardar   = perforacion === true;   // ← NUEVO
+      const perforacionGuardar   = perforacion === true;
 
       const { rows: prodRows } = await client.query(
         `INSERT INTO solicitud_producto (
@@ -245,8 +252,9 @@ export const crearCotizacion = async (req: Request, res: Response) => {
           bk, foil, idsuaje, alto_rel, laminado, uv_br,
           pigmentos, pantones, observacion, descripcion,
           perforacion,
-          id_color, id_medidatro
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+          id_color, id_medidatro,
+          tipo_material
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'plastico')
         RETURNING idsolicitud_producto`,
         [solicitudId, productoId, tintasId, carasId,
          bk, foil, idsuaje, altoRel, laminado, uvBr,
@@ -380,6 +388,22 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           sp.id_color,
           sp.id_medidatro,
 
+          -- ── Discriminador + refs de PAPEL ──
+          sp.tipo_material,
+          sp.producto_papel_idproducto_papel,
+          sp.grupo_papel_idgrupo_papel,
+          sp.grupo_papel_descripcion,
+          tpp2.nombre              AS papel_tipo_producto,
+          pp2.descripcion_papel    AS papel_descripcion_papel,
+          pp2.medida               AS papel_medida,
+          gp2.precio_sugerido      AS papel_precio_sugerido,
+          spp.id_asa,              asa2.nombre   AS asa_nombre,
+          spp.idcat_laminado,      lam2.nombre   AS laminado_nombre,
+          spp.idfoil,              fo2.colorfoil AS foil_color, fo2.codigofoil AS foil_codigo,
+          spp.idcat_textura,       tx2.nombre    AS textura_nombre,
+          spp.uv,                  spp.alto_relieve,
+          spp.tintas_dentro_idtintas, spp.pantones_dentro, t2.cantidad AS tintas_dentro_cantidad,
+
           asz.tipo          AS suaje_tipo,
 
           ca.color          AS color_asa_nombre,
@@ -443,6 +467,27 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           ON t.idtintas = sp.tintas_idtintas
       LEFT JOIN caras car
           ON car.idcaras = sp.caras_idcaras
+
+      -- ── JOINs de PAPEL ──
+      LEFT JOIN solicitud_producto_papel spp
+          ON spp.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN producto_papel pp2
+          ON pp2.idproducto_papel = sp.producto_papel_idproducto_papel
+      LEFT JOIN cat_tipo_producto_papel tpp2
+          ON tpp2.idcat_tipo_producto_papel = pp2.idcat_tipo_producto_papel
+      LEFT JOIN grupo_papel gp2
+          ON gp2.idgrupo_papel = sp.grupo_papel_idgrupo_papel
+      LEFT JOIN cat_tipo_asa asa2
+          ON asa2.idcat_tipo_asa = spp.id_asa
+      LEFT JOIN cat_laminado lam2
+          ON lam2.idcat_laminado = spp.idcat_laminado
+      LEFT JOIN foil fo2
+          ON fo2.idfoil = spp.idfoil
+      LEFT JOIN cat_textura tx2
+          ON tx2.idcat_textura = spp.idcat_textura
+      LEFT JOIN tintas t2
+          ON t2.idtintas = spp.tintas_dentro_idtintas
+
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
       LEFT JOIN herramental h
@@ -502,77 +547,84 @@ export const getCotizaciones = async (req: Request, res: Response) => {
         );
 
         if (!producto) {
-          const tipoNombre     = row.tipo_producto_nombre || "";
-          const medida         = row.cfg_medida           || "";
-          const material       = (row.material_nombre     || "").toLowerCase();
-          const nombreCompleto =
-            [tipoNombre, medida, material].filter(Boolean).join(" ") ||
-            `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
+          if (row.tipo_material === "papel") {
+            // ── Producto de PAPEL ──
+            producto = construirProductoPapel(row);
+          } else {
+            // ── Producto de PLÁSTICO (lógica existente) ──
+            const tipoNombre     = row.tipo_producto_nombre || "";
+            const medida         = row.cfg_medida           || "";
+            const material       = (row.material_nombre     || "").toLowerCase();
+            const nombreCompleto =
+              [tipoNombre, medida, material].filter(Boolean).join(" ") ||
+              `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
 
-          const medidas = {
-            altura:         row.cfg_altura        ? String(row.cfg_altura)        : "",
-            ancho:          row.cfg_ancho         ? String(row.cfg_ancho)         : "",
-            fuelleFondo:    row.cfg_fuelle_fondo  ? String(row.cfg_fuelle_fondo)  : "",
-            fuelleLateral1: row.cfg_fuelle_lat_iz ? String(row.cfg_fuelle_lat_iz) : "",
-            fuelleLateral2: row.cfg_fuelle_lat_de ? String(row.cfg_fuelle_lat_de) : "",
-            refuerzo:       row.cfg_refuerzo      ? String(row.cfg_refuerzo)      : "",
-          };
+            const medidas = {
+              altura:         row.cfg_altura        ? String(row.cfg_altura)        : "",
+              ancho:          row.cfg_ancho         ? String(row.cfg_ancho)         : "",
+              fuelleFondo:    row.cfg_fuelle_fondo  ? String(row.cfg_fuelle_fondo)  : "",
+              fuelleLateral1: row.cfg_fuelle_lat_iz ? String(row.cfg_fuelle_lat_iz) : "",
+              fuelleLateral2: row.cfg_fuelle_lat_de ? String(row.cfg_fuelle_lat_de) : "",
+              refuerzo:       row.cfg_refuerzo      ? String(row.cfg_refuerzo)      : "",
+            };
 
-          const materialUpper = (row.material_nombre || "").toUpperCase();
-          const esBopp = materialUpper.includes("BOPP") ||
-                         materialUpper.includes("CELOFAN") ||
-                         materialUpper.includes("CELOFÁN");
+            const materialUpper = (row.material_nombre || "").toUpperCase();
+            const esBopp = materialUpper.includes("BOPP") ||
+                           materialUpper.includes("CELOFAN") ||
+                           materialUpper.includes("CELOFÁN");
 
-          const calibreResuelto = (() => {
-            if (esBopp) {
-              const cb = row.calibre_bopp;
-              if (cb !== null && cb !== undefined && String(cb).trim() !== "") return String(cb);
+            const calibreResuelto = (() => {
+              if (esBopp) {
+                const cb = row.calibre_bopp;
+                if (cb !== null && cb !== undefined && String(cb).trim() !== "") return String(cb);
+                return "";
+              }
+              const c = row.calibre_numero;
+              if (c !== null && c !== undefined && Number(c) !== 0) return String(c);
               return "";
-            }
-            const c = row.calibre_numero;
-            if (c !== null && c !== undefined && Number(c) !== 0) return String(c);
-            return "";
-          })();
+            })();
 
-          producto = {
-            idsolicitud:              row.idsolicitud,
-            idsolicitud_producto:     row.idsolicitud_producto,
-            idcotizacion_producto:    row.idsolicitud_producto,
-            producto_id:              row.configuracion_plastico_idconfiguracion_plastico,
-            nombre:                   nombreCompleto,
-            material:                 row.material_nombre || "",
-            calibre:                  calibreResuelto,
-            calibre_bopp:             row.calibre_bopp ? String(row.calibre_bopp) : null,
-            medidasFormateadas:       row.cfg_medida    || "",
-            medidas,
-            tintas:                   row.tintas_cantidad ?? row.tintas_idtintas,
-            caras:                    row.caras_cantidad  ?? row.caras_idcaras,
-            bk:                       row.bk,
-            foil:                     row.foil,
-            idsuaje:                  row.idsuaje         ?? null,
-            asa_suaje:                row.suaje_tipo       ?? null,
-            alto_rel:                 row.alto_rel,
-            laminado:                 row.laminado,
-            uv_br:                    row.uv_br,
-            pigmentos:                row.pigmentos || null,
-            pantones:                 row.pantones
-              ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
-              : null,
-            observacion:              row.observacion,
-            descripcion:              row.descripcion  ?? null,
-            perforacion:              row.perforacion  ?? false,   // ← NUEVO
-            por_kilo:                 row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
-            id_color:                 row.id_color         ?? null,
-            color_asa_nombre:         row.color_asa_nombre  ?? null,
-            id_medidatro:             row.id_medidatro     ?? null,
-            medida_troquel:           row.medida_troquel   ?? null,
-            herramental_descripcion:  row.herramental_descripcion ?? null,
-            herramental_precio:       row.herramental_precio != null ? Number(row.herramental_precio) : null,
-            herramental_aprobado:     row.herramental_aprobado ?? null,
-            herramental_id:           row.id_herramental ?? null,
-            detalles:                 [],
-            subtotal:                 0,
-          };
+            producto = {
+              idsolicitud:              row.idsolicitud,
+              idsolicitud_producto:     row.idsolicitud_producto,
+              idcotizacion_producto:    row.idsolicitud_producto,
+              producto_id:              row.configuracion_plastico_idconfiguracion_plastico,
+              nombre:                   nombreCompleto,
+              material:                 row.material_nombre || "",
+              calibre:                  calibreResuelto,
+              calibre_bopp:             row.calibre_bopp ? String(row.calibre_bopp) : null,
+              medidasFormateadas:       row.cfg_medida    || "",
+              medidas,
+              tintas:                   row.tintas_cantidad ?? row.tintas_idtintas,
+              caras:                    row.caras_cantidad  ?? row.caras_idcaras,
+              bk:                       row.bk,
+              foil:                     row.foil,
+              idsuaje:                  row.idsuaje         ?? null,
+              asa_suaje:                row.suaje_tipo       ?? null,
+              alto_rel:                 row.alto_rel,
+              laminado:                 row.laminado,
+              uv_br:                    row.uv_br,
+              pigmentos:                row.pigmentos || null,
+              pantones:                 row.pantones
+                ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
+                : null,
+              observacion:              row.observacion,
+              descripcion:              row.descripcion  ?? null,
+              perforacion:              row.perforacion  ?? false,
+              por_kilo:                 row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
+              id_color:                 row.id_color         ?? null,
+              color_asa_nombre:         row.color_asa_nombre  ?? null,
+              id_medidatro:             row.id_medidatro     ?? null,
+              medida_troquel:           row.medida_troquel   ?? null,
+              herramental_descripcion:  row.herramental_descripcion ?? null,
+              herramental_precio:       row.herramental_precio != null ? Number(row.herramental_precio) : null,
+              herramental_aprobado:     row.herramental_aprobado ?? null,
+              herramental_id:           row.id_herramental ?? null,
+              detalles:                 [],
+              subtotal:                 0,
+            };
+          }
+
           agrupadas[noCot].productos.push(producto);
         }
 
@@ -745,6 +797,10 @@ export const eliminarCotizacion = async (req: Request, res: Response) => {
         [productoIds]
       );
       await client.query(
+        `DELETE FROM solicitud_producto_papel WHERE idsolicitud_producto = ANY($1::int[])`,
+        [productoIds]
+      );
+      await client.query(
         `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = ANY($1::int[])`,
         [productoIds]
       );
@@ -815,12 +871,12 @@ export const actualizarObservacion = async (req: Request, res: Response) => {
   }
 };
 
-// ===========================ac=================================
+// ============================================================
 // APROBAR / RECHAZAR HERRAMENTAL
 // ============================================================
 export const aprobarHerramental = async (req: Request, res: Response) => {
   try {
-    const { idH }      = req.params;21
+    const { idH }      = req.params;
     const { aprobado } = req.body;
 
     if (typeof aprobado !== "boolean")

@@ -48,6 +48,8 @@ import proveedoresRoutes from "./routes/proveedores/proveedores.routes";
 import foilRoutes from "./routes/foil/foil.routes";
 import catalogosPapelRoutes  from "./routes/catalogos_papel/catalogos_papel.routes";
 import productoPapelRoutes   from "./routes/producto_papel/producto_papel.routes";
+import catTexturaRoutes from "./routes/catTextura/catTextura.routes";
+
 
 
 const app = express();
@@ -128,6 +130,7 @@ app.use("/api/proveedores", proveedoresRoutes);
 app.use("/api/foil", foilRoutes);
 app.use("/api/catalogos-papel",  catalogosPapelRoutes);
 app.use("/api/productos-papel",  productoPapelRoutes);
+app.use("/api",      catTexturaRoutes);
 
 
 

@@ -19,6 +19,7 @@ import {
 } from "../../middlewares/auth.middleware";
 import { preventSQLInjection } from "../../middlewares/validation.middleware";
 import type { Response, NextFunction } from "express";
+import { crearCotizacionPapelMock } from "../../controllers/cotizaciones/cotizacionPapel.mock.controller";
 
 const router = Router();
 
@@ -132,6 +133,12 @@ router.delete(
   checkPermiso(PERMISO),
   writeLimiter,
   eliminarCotizacion
+);
+
+router.post(
+  "/cotizaciones-papel/mock",
+  authMiddleware,
+  crearCotizacionPapelMock
 );
 
 export default router;
