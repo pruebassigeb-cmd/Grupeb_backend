@@ -205,22 +205,26 @@ export const crearCotizacion = async (req: Request, res: Response) => {
     let subtotalTotal = 0;
 
     for (const producto of productos) {
-      // ── PAPEL: se delega al helper y se salta la lógica de plástico ──
+      // ── PAPEL ──
       if (producto.tipoCotizacion === "papel") {
         subtotalTotal += await insertarProductoPapel(client, solicitudId, producto, tipoDocumento);
         continue;
       }
 
+      // ── PLÁSTICO ──
       const {
         productoId, tintasId, carasId, detalles,
         observacion = null,
         descripcion = null,
         perforacion = false,
-        bk = null, foil = null,
-        idsuaje = null, altoRel = null, laminado = null,
-        uvBr = null, pigmentos = null, pantones = null,
-        porKilo = null, colorAsaId = null, idMedidaTroquel = null,
-        herramental_descripcion = null, herramental_precio = null,
+        idsuaje = null,
+        pigmentos = null,
+        pantones = null,
+        porKilo = null,
+        colorAsaId = null,
+        idMedidaTroquel = null,
+        herramental_descripcion = null,
+        herramental_precio = null,
       } = producto;
 
       if (!productoId) {
@@ -249,19 +253,21 @@ export const crearCotizacion = async (req: Request, res: Response) => {
           solicitud_idsolicitud,
           configuracion_plastico_idconfiguracion_plastico,
           tintas_idtintas, caras_idcaras,
-          bk, foil, idsuaje, alto_rel, laminado, uv_br,
+          idsuaje,
           pigmentos, pantones, observacion, descripcion,
           perforacion,
           id_color, id_medidatro,
           tipo_material
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'plastico')
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'plastico')
         RETURNING idsolicitud_producto`,
-        [solicitudId, productoId, tintasId, carasId,
-         bk, foil, idsuaje, altoRel, laminado, uvBr,
-         pigmentosGuardar, pantonesGuardar, observacion,
-         descripcionGuardar,
-         perforacionGuardar,
-         colorAsaGuardar, medidaTroquelGuardar]
+        [
+          solicitudId, productoId, tintasId, carasId,
+          idsuaje,
+          pigmentosGuardar, pantonesGuardar, observacion,
+          descripcionGuardar,
+          perforacionGuardar,
+          colorAsaGuardar, medidaTroquelGuardar,
+        ]
       );
 
       const solicitudProductoId = prodRows[0].idsolicitud_producto;
@@ -380,8 +386,9 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           sp.configuracion_plastico_idconfiguracion_plastico,
           sp.tintas_idtintas,
           sp.caras_idcaras,
-          sp.bk, sp.foil, sp.idsuaje, sp.alto_rel,
-          sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones,
+          sp.idsuaje,
+          sp.pigmentos,
+          sp.pantones,
           sp.observacion,
           sp.descripcion,
           sp.perforacion,
@@ -551,7 +558,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
             // ── Producto de PAPEL ──
             producto = construirProductoPapel(row);
           } else {
-            // ── Producto de PLÁSTICO (lógica existente) ──
+            // ── Producto de PLÁSTICO ──
             const tipoNombre     = row.tipo_producto_nombre || "";
             const medida         = row.cfg_medida           || "";
             const material       = (row.material_nombre     || "").toLowerCase();
@@ -597,13 +604,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
               medidas,
               tintas:                   row.tintas_cantidad ?? row.tintas_idtintas,
               caras:                    row.caras_cantidad  ?? row.caras_idcaras,
-              bk:                       row.bk,
-              foil:                     row.foil,
               idsuaje:                  row.idsuaje         ?? null,
-              asa_suaje:                row.suaje_tipo       ?? null,
-              alto_rel:                 row.alto_rel,
-              laminado:                 row.laminado,
-              uv_br:                    row.uv_br,
+              asa_suaje:                row.suaje_tipo      ?? null,
               pigmentos:                row.pigmentos || null,
               pantones:                 row.pantones
                 ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)

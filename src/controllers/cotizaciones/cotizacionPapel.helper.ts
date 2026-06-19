@@ -1,33 +1,20 @@
 // ============================================================================
 // Helper de PRODUCTOS DE PAPEL dentro de cotizaciones / pedidos.
-//
-// Toda la lógica nueva de papel vive aquí para no inflar cotizacion.controller.ts.
-// Se engancha al flujo existente (mismo solicitud / solicitud_detalle / pipeline
-// de venta-diseño), así que los pedidos MIXTOS (plástico + papel) funcionan.
-//
-// Tablas que toca:
-//   - solicitud_producto         (tipo_material = 'papel' + refs de papel)
-//   - solicitud_producto_papel    (satélite 1:1: asa/laminado/foil/textura/uv/alto_relieve
-//                                   + tintas interiores)
-//   - solicitud_detalle           (cantidades/precios en PIEZAS; modo 'unidad', kilogramos NULL)
 // ============================================================================
 
 type TipoDocumento = "cotizacion" | "pedido";
 
-// Forma del producto de papel tal como lo manda el formulario.
 export interface ProductoPapelPayload {
   tipoCotizacion: "papel";
   idproducto_papel: number;
   nombre: string;
 
   idgrupo_papel: number | null;
-  grupo_descripcion: string | null;   // snapshot de la opción: "Couché 300pts + Kraft 200gms"
+  grupo_descripcion: string | null;
 
-  // Tintas exteriores
   tintasId: number | null;
   pantones: string | null;
 
-  // Tintas interiores ("por dentro")
   tintasDentroId: number | null;
   pantonesDentro: string | null;
 
@@ -44,14 +31,22 @@ export interface ProductoPapelPayload {
   descripcion: string | null;
 
   cantidades: [number, number, number];
-  precios: [number, number, number];  // precio UNITARIO por pieza
+  precios: [number, number, number];
+
+  // ── Herramental ──────────────────────────────────────────────────────────
+  herramental_descripcion?: string | null;
+  herramental_precio?: number | null;
+
+  // ── Cargo adicional (nuevo, exclusivo de papel, sin aprobación) ─────────
+  cargo_adicional_descripcion?: string | null;
+  cargo_adicional_precio?: number | null;
 }
 
 const limpiar = (v: unknown): string | null =>
   typeof v === "string" && v.trim() !== "" ? v.trim() : null;
 
 // ──────────────────────────────────────────────────────────────────────────
-// INSERT — devuelve el subtotal aportado por esta línea (para sumarlo al total)
+// INSERT
 // ──────────────────────────────────────────────────────────────────────────
 export async function insertarProductoPapel(
   client: any,
@@ -63,7 +58,6 @@ export async function insertarProductoPapel(
     throw new Error("Cada producto de papel requiere idproducto_papel");
   }
 
-  // Validar que tenga al menos una cantidad/precio válidos
   const indices = tipoDocumento === "pedido" ? [0] : [0, 1, 2];
   const tieneValido = indices.some(
     (i) => Number(prod.cantidades?.[i] ?? 0) > 0 && Number(prod.precios?.[i] ?? 0) > 0
@@ -72,7 +66,7 @@ export async function insertarProductoPapel(
     throw new Error(`El producto de papel "${prod.nombre}" no tiene cantidades o precios válidos`);
   }
 
-  // 1. Línea en solicitud_producto (discriminada como papel)
+  // 1. solicitud_producto
   const { rows: spRows } = await client.query(
     `INSERT INTO solicitud_producto (
        solicitud_idsolicitud,
@@ -102,12 +96,16 @@ export async function insertarProductoPapel(
 
   const solicitudProductoId = spRows[0].idsolicitud_producto;
 
-  // 2. Satélite con acabados de papel + tintas interiores
+  // 2. solicitud_producto_papel (acabados + cargo adicional)
+  const cargoAdicionalPrecio =
+    prod.cargo_adicional_precio != null ? Number(prod.cargo_adicional_precio) : null;
+
   await client.query(
     `INSERT INTO solicitud_producto_papel (
        idsolicitud_producto, id_asa, idcat_laminado, idfoil, idcat_textura,
-       uv, alto_relieve, tintas_dentro_idtintas, pantones_dentro
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+       uv, alto_relieve, tintas_dentro_idtintas, pantones_dentro,
+       cargo_adicional_descripcion, cargo_adicional_precio
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       solicitudProductoId,
       prod.id_asa ?? null,
@@ -118,12 +116,39 @@ export async function insertarProductoPapel(
       prod.alto_relieve === true,
       prod.tintasDentroId ?? null,
       limpiar(prod.pantonesDentro),
+      limpiar(prod.cargo_adicional_descripcion),
+      cargoAdicionalPrecio != null && cargoAdicionalPrecio > 0 ? cargoAdicionalPrecio : null,
     ]
   );
 
-  // 3. Detalles (cantidad × precio = precio_total de la línea, igual que en plástico)
-  const aprobadoValor = tipoDocumento === "pedido" ? true : null;
   let subtotal = 0;
+
+  // 3. Cargo adicional — siempre se suma, sin aprobación
+  if (cargoAdicionalPrecio != null && cargoAdicionalPrecio > 0) {
+    subtotal += cargoAdicionalPrecio;
+    console.log(`✅ [papel] Cargo adicional $${cargoAdicionalPrecio} agregado al producto ${solicitudProductoId}`);
+  }
+
+  // 4. Herramental (igual que en plástico)
+  const herramentalPrecio =
+    prod.herramental_precio != null ? Number(prod.herramental_precio) : null;
+
+  if (herramentalPrecio != null && herramentalPrecio > 0) {
+    await client.query(
+      `INSERT INTO herramental (idsolicitud_producto, herramental_descripcion, herramental_precio)
+       VALUES ($1, $2, $3)`,
+      [
+        solicitudProductoId,
+        limpiar(prod.herramental_descripcion) ?? null,
+        herramentalPrecio,
+      ]
+    );
+    subtotal += herramentalPrecio;
+    console.log(`✅ [papel] Herramental $${herramentalPrecio} agregado al producto ${solicitudProductoId}`);
+  }
+
+  // 5. Detalles
+  const aprobadoValor = tipoDocumento === "pedido" ? true : null;
 
   for (const i of indices) {
     const cant = Number(prod.cantidades?.[i] ?? 0);
@@ -140,13 +165,14 @@ export async function insertarProductoPapel(
     subtotal += precioTotal;
   }
 
-  console.log(`✅ [papel] línea ${solicitudProductoId} | producto_papel=${prod.idproducto_papel} | subtotal=${subtotal}`);
+  console.log(
+    `✅ [papel] línea ${solicitudProductoId} | producto_papel=${prod.idproducto_papel} | subtotal=${subtotal}`
+  );
   return subtotal;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// READ — construye el objeto de producto de papel para getCotizaciones.
-// Recibe una fila ya unida con los JOINs de papel (ver patch del controller).
+// READ
 // ──────────────────────────────────────────────────────────────────────────
 export function construirProductoPapel(row: any) {
   const foilNombre = row.foil_color
@@ -154,49 +180,57 @@ export function construirProductoPapel(row: any) {
     : null;
 
   return {
-    idsolicitud:            row.idsolicitud,
-    idsolicitud_producto:   row.idsolicitud_producto,
-    idcotizacion_producto:  row.idsolicitud_producto,
-    tipoCotizacion:         "papel",
-    tipo_material:          "papel",
+    idsolicitud:           row.idsolicitud,
+    idsolicitud_producto:  row.idsolicitud_producto,
+    idcotizacion_producto: row.idsolicitud_producto,
+    tipoCotizacion:        "papel",
+    tipo_material:         "papel",
 
-    idproducto_papel:       row.producto_papel_idproducto_papel,
-    nombre:                 row.papel_tipo_producto || `Papel #${row.producto_papel_idproducto_papel}`,
-    descripcion_papel:      row.papel_descripcion_papel ?? null,
-    medida:                 row.papel_medida ?? null,
+    idproducto_papel:      row.producto_papel_idproducto_papel,
+    nombre:                row.papel_tipo_producto || `Papel #${row.producto_papel_idproducto_papel}`,
+    descripcion_papel:     row.papel_descripcion_papel ?? null,
+    medida:                row.papel_medida ?? null,
 
-    idgrupo_papel:          row.grupo_papel_idgrupo_papel ?? null,
-    grupo_descripcion:      row.grupo_papel_descripcion ?? null,
-    precio_sugerido:        row.papel_precio_sugerido != null ? Number(row.papel_precio_sugerido) : null,
+    idgrupo_papel:         row.grupo_papel_idgrupo_papel ?? null,
+    grupo_descripcion:     row.grupo_papel_descripcion ?? null,
+    precio_sugerido:       row.papel_precio_sugerido != null ? Number(row.papel_precio_sugerido) : null,
 
-    // Tintas exteriores
-    tintas:                 row.tintas_cantidad ?? null,
-    tintasId:               row.tintas_idtintas ?? null,
-    pantones:               row.pantones || null,
+    tintas:                row.tintas_cantidad ?? null,
+    tintasId:              row.tintas_idtintas ?? null,
+    pantones:              row.pantones || null,
 
-    // Tintas interiores
-    tintasDentroId:         row.tintas_dentro_idtintas ?? null,
-    tintasDentro:           row.tintas_dentro_cantidad ?? 0,
-    pantonesDentro:         row.pantones_dentro || "",
+    tintasDentroId:        row.tintas_dentro_idtintas ?? null,
+    tintasDentro:          row.tintas_dentro_cantidad ?? 0,
+    pantonesDentro:        row.pantones_dentro || "",
 
-    caras:                  row.caras_cantidad ?? null,
-    carasId:                row.caras_idcaras ?? null,
+    caras:                 row.caras_cantidad ?? null,
+    carasId:               row.caras_idcaras ?? null,
 
-    id_asa:                 row.id_asa ?? null,
-    asa_nombre:             row.asa_nombre ?? null,
-    idcat_laminado:         row.idcat_laminado ?? null,
-    laminado_nombre:        row.laminado_nombre ?? null,
-    idfoil:                 row.idfoil ?? null,
-    foil_nombre:            foilNombre,
-    idcat_textura:          row.idcat_textura ?? null,
-    textura_nombre:         row.textura_nombre ?? null,
-    uv:                     row.uv ?? false,
-    alto_relieve:           row.alto_relieve ?? false,
+    id_asa:                row.id_asa ?? null,
+    asa_nombre:            row.asa_nombre ?? null,
+    idcat_laminado:        row.idcat_laminado ?? null,
+    laminado_nombre:       row.laminado_nombre ?? null,
+    idfoil:                row.idfoil ?? null,
+    foil_nombre:           foilNombre,
+    idcat_textura:         row.idcat_textura ?? null,
+    textura_nombre:        row.textura_nombre ?? null,
+    uv:                    row.uv ?? false,
+    alto_relieve:          row.alto_relieve ?? false,
 
-    observacion:            row.observacion ?? null,
-    descripcion:            row.descripcion ?? null,
+    observacion:           row.observacion ?? null,
+    descripcion:           row.descripcion ?? null,
 
-    detalles:               [],
-    subtotal:               0,
+    // ── Herramental ──────────────────────────────────────────────────────
+    herramental_descripcion: row.herramental_descripcion ?? null,
+    herramental_precio:      row.herramental_precio != null ? Number(row.herramental_precio) : null,
+    herramental_aprobado:    row.herramental_aprobado ?? null,
+    herramental_id:          row.id_herramental ?? null,
+
+    // ── Cargo adicional (nuevo) ──────────────────────────────────────────
+    cargo_adicional_descripcion: row.cargo_adicional_descripcion ?? null,
+    cargo_adicional_precio:      row.cargo_adicional_precio != null ? Number(row.cargo_adicional_precio) : null,
+
+    detalles:              [],
+    subtotal:              0,
   };
 }

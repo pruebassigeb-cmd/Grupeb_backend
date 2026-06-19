@@ -24,7 +24,7 @@ async function resolverIdCaras(client: any, cantidad: number): Promise<number | 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// GET /pedidos
+// GET /pedidos — con JOINs de papel igual que getCotizaciones
 // ═══════════════════════════════════════════════════════════════════════════════
 export const getPedidos = async (req: Request, res: Response) => {
   try {
@@ -71,13 +71,28 @@ export const getPedidos = async (req: Request, res: Response) => {
           sp.configuracion_plastico_idconfiguracion_plastico,
           sp.tintas_idtintas,
           sp.caras_idcaras,
-          sp.bk, sp.foil, sp.idsuaje, sp.alto_rel,
-          sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones,
+          sp.pigmentos, sp.pantones,
           sp.observacion,
           sp.descripcion,
           sp.perforacion,
           sp.id_color,
           sp.id_medidatro,
+
+          -- ── Discriminador + refs de PAPEL ──
+          sp.tipo_material,
+          sp.producto_papel_idproducto_papel,
+          sp.grupo_papel_idgrupo_papel,
+          sp.grupo_papel_descripcion,
+          tpp2.nombre              AS papel_tipo_producto,
+          pp2.descripcion_papel    AS papel_descripcion_papel,
+          pp2.medida               AS papel_medida,
+          gp2.precio_sugerido      AS papel_precio_sugerido,
+          spp.id_asa,              asa2.nombre   AS asa_nombre,
+          spp.idcat_laminado,      lam2.nombre   AS laminado_nombre,
+          spp.idfoil,              fo2.colorfoil AS foil_color, fo2.codigofoil AS foil_codigo,
+          spp.idcat_textura,       tx2.nombre    AS textura_nombre,
+          spp.uv,                  spp.alto_relieve,
+          spp.tintas_dentro_idtintas, spp.pantones_dentro, t2.cantidad AS tintas_dentro_cantidad,
 
           asz.tipo          AS suaje_tipo,
 
@@ -143,6 +158,27 @@ export const getPedidos = async (req: Request, res: Response) => {
           ON t.idtintas = sp.tintas_idtintas
       LEFT JOIN caras car
           ON car.idcaras = sp.caras_idcaras
+
+      -- ── JOINs de PAPEL ──
+      LEFT JOIN solicitud_producto_papel spp
+          ON spp.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN producto_papel pp2
+          ON pp2.idproducto_papel = sp.producto_papel_idproducto_papel
+      LEFT JOIN cat_tipo_producto_papel tpp2
+          ON tpp2.idcat_tipo_producto_papel = pp2.idcat_tipo_producto_papel
+      LEFT JOIN grupo_papel gp2
+          ON gp2.idgrupo_papel = sp.grupo_papel_idgrupo_papel
+      LEFT JOIN cat_tipo_asa asa2
+          ON asa2.idcat_tipo_asa = spp.id_asa
+      LEFT JOIN cat_laminado lam2
+          ON lam2.idcat_laminado = spp.idcat_laminado
+      LEFT JOIN foil fo2
+          ON fo2.idfoil = spp.idfoil
+      LEFT JOIN cat_textura tx2
+          ON tx2.idcat_textura = spp.idcat_textura
+      LEFT JOIN tintas t2
+          ON t2.idtintas = spp.tintas_dentro_idtintas
+
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
       LEFT JOIN herramental h
@@ -196,78 +232,127 @@ export const getPedidos = async (req: Request, res: Response) => {
         );
 
         if (!producto) {
-          const tipoNombre = row.tipo_producto_nombre || "";
-          const medida = row.cfg_medida || "";
-          const material = (row.material_nombre || "").toLowerCase();
-          const nombreCompleto =
-            [tipoNombre, medida, material].filter(Boolean).join(" ") ||
-            `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
+          if (row.tipo_material === "papel") {
+            // ── Producto de PAPEL ──
+            const foilNombre = row.foil_color
+              ? `${row.foil_color}${row.foil_codigo ? " " + row.foil_codigo : ""}`
+              : null;
 
-          const medidas = {
-            altura: row.cfg_altura ? String(row.cfg_altura) : "",
-            ancho: row.cfg_ancho ? String(row.cfg_ancho) : "",
-            fuelleFondo: row.cfg_fuelle_fondo ? String(row.cfg_fuelle_fondo) : "",
-            fuelleLateral1: row.cfg_fuelle_lat_iz ? String(row.cfg_fuelle_lat_iz) : "",
-            fuelleLateral2: row.cfg_fuelle_lat_de ? String(row.cfg_fuelle_lat_de) : "",
-            refuerzo: row.cfg_refuerzo ? String(row.cfg_refuerzo) : "",
-          };
+            producto = {
+              idsolicitud: row.idsolicitud,
+              idsolicitud_producto: row.idsolicitud_producto,
+              idcotizacion_producto: row.idsolicitud_producto,
+              tipoCotizacion: "papel",
+              tipo_material: "papel",
 
-          const materialUpper = (row.material_nombre || "").toUpperCase();
-          const esBopp = materialUpper.includes("BOPP") ||
-            materialUpper.includes("CELOFAN") ||
-            materialUpper.includes("CELOFÁN");
+              idproducto_papel: row.producto_papel_idproducto_papel,
+              nombre: row.papel_tipo_producto || `Papel #${row.producto_papel_idproducto_papel}`,
+              descripcion_papel: row.papel_descripcion_papel ?? null,
+              medida: row.papel_medida ?? null,
 
-          const calibreResuelto = (() => {
-            if (esBopp) {
-              const cb = row.calibre_bopp;
-              if (cb !== null && cb !== undefined && String(cb).trim() !== "") return String(cb);
+              idgrupo_papel: row.grupo_papel_idgrupo_papel ?? null,
+              grupo_descripcion: row.grupo_papel_descripcion ?? null,
+              precio_sugerido: row.papel_precio_sugerido != null ? Number(row.papel_precio_sugerido) : null,
+
+              // Tintas exteriores
+              tintas: row.tintas_cantidad ?? null,
+              tintasId: row.tintas_idtintas ?? null,
+              pantones: row.pantones || null,
+
+              // Tintas interiores
+              tintasDentroId: row.tintas_dentro_idtintas ?? null,
+              tintasDentro: row.tintas_dentro_cantidad ?? 0,
+              pantonesDentro: row.pantones_dentro || "",
+
+              caras: row.caras_cantidad ?? null,
+              carasId: row.caras_idcaras ?? null,
+
+              id_asa: row.id_asa ?? null,
+              asa_nombre: row.asa_nombre ?? null,
+              idcat_laminado: row.idcat_laminado ?? null,
+              laminado_nombre: row.laminado_nombre ?? null,
+              idfoil: row.idfoil ?? null,
+              foil_nombre: foilNombre,
+              idcat_textura: row.idcat_textura ?? null,
+              textura_nombre: row.textura_nombre ?? null,
+              uv: row.uv ?? false,
+              alto_relieve: row.alto_relieve ?? false,
+
+              observacion: row.observacion ?? null,
+              descripcion: row.descripcion ?? null,
+
+              detalles: [],
+              subtotal: 0,
+            };
+          } else {
+            // ── Producto de PLÁSTICO ──
+            const tipoNombre = row.tipo_producto_nombre || "";
+            const medida = row.cfg_medida || "";
+            const material = (row.material_nombre || "").toLowerCase();
+            const nombreCompleto =
+              [tipoNombre, medida, material].filter(Boolean).join(" ") ||
+              `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
+
+            const medidas = {
+              altura: row.cfg_altura ? String(row.cfg_altura) : "",
+              ancho: row.cfg_ancho ? String(row.cfg_ancho) : "",
+              fuelleFondo: row.cfg_fuelle_fondo ? String(row.cfg_fuelle_fondo) : "",
+              fuelleLateral1: row.cfg_fuelle_lat_iz ? String(row.cfg_fuelle_lat_iz) : "",
+              fuelleLateral2: row.cfg_fuelle_lat_de ? String(row.cfg_fuelle_lat_de) : "",
+              refuerzo: row.cfg_refuerzo ? String(row.cfg_refuerzo) : "",
+            };
+
+            const materialUpper = (row.material_nombre || "").toUpperCase();
+            const esBopp = materialUpper.includes("BOPP") ||
+              materialUpper.includes("CELOFAN") ||
+              materialUpper.includes("CELOFÁN");
+
+            const calibreResuelto = (() => {
+              if (esBopp) {
+                const cb = row.calibre_bopp;
+                if (cb !== null && cb !== undefined && String(cb).trim() !== "") return String(cb);
+                return "";
+              }
+              const c = row.calibre_numero;
+              if (c !== null && c !== undefined && Number(c) !== 0) return String(c);
               return "";
-            }
-            const c = row.calibre_numero;
-            if (c !== null && c !== undefined && Number(c) !== 0) return String(c);
-            return "";
-          })();
+            })();
 
-          producto = {
-            idsolicitud: row.idsolicitud,
-            idsolicitud_producto: row.idsolicitud_producto,
-            idcotizacion_producto: row.idsolicitud_producto,
-            producto_id: row.configuracion_plastico_idconfiguracion_plastico,
-            nombre: nombreCompleto,
-            material: row.material_nombre || "",
-            calibre: calibreResuelto,
-            calibre_bopp: row.calibre_bopp ? String(row.calibre_bopp) : null,
-            medidasFormateadas: row.cfg_medida || "",
-            medidas,
-            tintas: row.tintas_cantidad ?? row.tintas_idtintas,
-            tintas_idtintas: row.tintas_idtintas,
-            caras: row.caras_cantidad ?? row.caras_idcaras,
-            bk: row.bk,
-            foil: row.foil,
-            idsuaje: row.idsuaje ?? null,
-            asa_suaje: row.suaje_tipo ?? null,
-            alto_rel: row.alto_rel,
-            laminado: row.laminado,
-            uv_br: row.uv_br,
-            pigmentos: row.pigmentos || null,
-            pantones: row.pantones
-              ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
-              : null,
-            observacion: row.observacion,
-            descripcion: row.descripcion ?? null,
-            perforacion: row.perforacion ?? false,
-            por_kilo: row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
-            id_color: row.id_color ?? null,
-            color_asa_nombre: row.color_asa_nombre ?? null,
-            id_medidatro: row.id_medidatro ?? null,
-            medida_troquel: row.medida_troquel ?? null,
-            herramental_descripcion: row.herramental_descripcion ?? null,
-            herramental_precio: row.herramental_precio != null ? Number(row.herramental_precio) : null,
-            herramental_aprobado: row.herramental_aprobado ?? null,
-            herramental_id: row.id_herramental ?? null,
-            detalles: [],
-            subtotal: 0,
-          };
+            producto = {
+              idsolicitud: row.idsolicitud,
+              idsolicitud_producto: row.idsolicitud_producto,
+              idcotizacion_producto: row.idsolicitud_producto,
+              producto_id: row.configuracion_plastico_idconfiguracion_plastico,
+              nombre: nombreCompleto,
+              material: row.material_nombre || "",
+              calibre: calibreResuelto,
+              calibre_bopp: row.calibre_bopp ? String(row.calibre_bopp) : null,
+              medidasFormateadas: row.cfg_medida || "",
+              medidas,
+              tintas: row.tintas_cantidad ?? row.tintas_idtintas,
+              tintas_idtintas: row.tintas_idtintas,
+              caras: row.caras_cantidad ?? row.caras_idcaras,
+              pigmentos: row.pigmentos || null,
+              pantones: row.pantones
+                ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
+                : null,
+              observacion: row.observacion,
+              descripcion: row.descripcion ?? null,
+              perforacion: row.perforacion ?? false,
+              por_kilo: row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
+              id_color: row.id_color ?? null,
+              color_asa_nombre: row.color_asa_nombre ?? null,
+              id_medidatro: row.id_medidatro ?? null,
+              medida_troquel: row.medida_troquel ?? null,
+              herramental_descripcion: row.herramental_descripcion ?? null,
+              herramental_precio: row.herramental_precio != null ? Number(row.herramental_precio) : null,
+              herramental_aprobado: row.herramental_aprobado ?? null,
+              herramental_id: row.id_herramental ?? null,
+              detalles: [],
+              subtotal: 0,
+            };
+          }
+
           agrupados[noPedido].productos.push(producto);
         }
 
@@ -339,6 +424,157 @@ export const actualizarPedido = async (req: Request, res: Response) => {
         herramental_precio,
         detalles,
       } = prod;
+
+      // ── Pegar esto al inicio del loop for (const prod of productos), ANTES del if (eliminado) ──
+
+      if (prod.tipo_material === "papel") {
+        if (prod.eliminado) {
+          await client.query(
+            `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
+            [prod.idsolicitud_producto]
+          );
+
+          const { rows: odRows } = await client.query(
+            `SELECT idorden_diseno FROM orden_diseno WHERE solicitud_producto_id = $1`,
+            [prod.idsolicitud_producto]
+          );
+          const ordenIds: number[] = odRows.map((r: any) => r.idorden_diseno);
+          if (ordenIds.length > 0) {
+            await client.query(
+              `DELETE FROM orden_diseno_participante WHERE orden_diseno_id = ANY($1::int[])`,
+              [ordenIds]
+            );
+            await client.query(
+              `DELETE FROM archivos WHERE revision_diseno_id = ANY($1::int[])`,
+              [ordenIds]
+            );
+            await client.query(
+              `DELETE FROM orden_diseno WHERE idorden_diseno = ANY($1::int[])`,
+              [ordenIds]
+            );
+          }
+
+          await client.query(
+            `DELETE FROM diseno_producto WHERE solicitud_producto_idsolicitud_producto = $1`,
+            [prod.idsolicitud_producto]
+          );
+          await client.query(
+            `DELETE FROM orden_produccion WHERE idsolicitud_producto = $1`,
+            [prod.idsolicitud_producto]
+          );
+          await client.query(
+            `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = $1`,
+            [prod.idsolicitud_producto]
+          );
+          await client.query(
+            `DELETE FROM solicitud_producto_papel WHERE idsolicitud_producto = $1`,
+            [prod.idsolicitud_producto]
+          );
+          await client.query(
+            `DELETE FROM solicitud_producto WHERE idsolicitud_producto = $1`,
+            [prod.idsolicitud_producto]
+          );
+          continue;
+        }
+
+        await client.query(
+          `UPDATE solicitud_producto SET
+       producto_papel_idproducto_papel = $1,
+       grupo_papel_idgrupo_papel       = $2,
+       grupo_papel_descripcion         = $3,
+       tintas_idtintas                 = $4,
+       caras_idcaras                   = $5,
+       pantones                        = $6,
+       observacion                     = $7,
+       descripcion                     = $8
+     WHERE idsolicitud_producto = $9`,
+          [
+            prod.idproducto_papel,
+            prod.idgrupo_papel ?? null,
+            prod.grupo_descripcion ?? null,
+            prod.tintasId ?? null,
+            prod.carasId ?? null,
+            prod.pantones || null,
+            prod.observacion || null,
+            prod.descripcion || null,
+            prod.idsolicitud_producto,
+          ]
+        );
+
+        const { rows: sppCheck } = await client.query(
+          `SELECT idsolicitud_producto_papel FROM solicitud_producto_papel WHERE idsolicitud_producto = $1`,
+          [prod.idsolicitud_producto]
+        );
+
+        if (sppCheck.length > 0) {
+          await client.query(
+            `UPDATE solicitud_producto_papel SET
+         id_asa                 = $1,
+         idcat_laminado         = $2,
+         idfoil                 = $3,
+         idcat_textura          = $4,
+         uv                     = $5,
+         alto_relieve           = $6,
+         tintas_dentro_idtintas = $7,
+         pantones_dentro        = $8
+       WHERE idsolicitud_producto = $9`,
+            [
+              prod.id_asa ?? null,
+              prod.idcat_laminado ?? null,
+              prod.idfoil ?? null,
+              prod.idcat_textura ?? null,
+              prod.uv === true,
+              prod.alto_relieve === true,
+              prod.tintasDentroId ?? null,
+              prod.pantonesDentro || null,
+              prod.idsolicitud_producto,
+            ]
+          );
+        } else {
+          await client.query(
+            `INSERT INTO solicitud_producto_papel
+         (idsolicitud_producto, id_asa, idcat_laminado, idfoil, idcat_textura,
+          uv, alto_relieve, tintas_dentro_idtintas, pantones_dentro)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            [
+              prod.idsolicitud_producto,
+              prod.id_asa ?? null,
+              prod.idcat_laminado ?? null,
+              prod.idfoil ?? null,
+              prod.idcat_textura ?? null,
+              prod.uv === true,
+              prod.alto_relieve === true,
+              prod.tintasDentroId ?? null,
+              prod.pantonesDentro || null,
+            ]
+          );
+        }
+
+        for (const det of (prod.detalles as any[])) {
+          const { iddetalle, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad } = det;
+          if (iddetalle) {
+            await client.query(
+              `UPDATE solicitud_detalle SET
+           cantidad        = $1,
+           precio_total    = $2,
+           precio_unitario = $3,
+           kilogramos      = $4,
+           modo_cantidad   = $5
+         WHERE idsolicitud_detalle = $6`,
+              [cantidad, precio_total, precio_unitario ?? null, kilogramos ?? null, modo_cantidad, iddetalle]
+            );
+          } else {
+            await client.query(
+              `INSERT INTO solicitud_detalle
+           (solicitud_producto_id, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad, aprobado)
+         VALUES ($1,$2,$3,$4,$5,$6,true)`,
+              [prod.idsolicitud_producto, cantidad, precio_total, precio_unitario ?? null, kilogramos ?? null, modo_cantidad]
+            );
+          }
+        }
+
+        continue;
+      }
 
       // ── Eliminar producto completo ──────────────────────────────────────────
       if (eliminado) {
@@ -1120,10 +1356,25 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
           sp.configuracion_plastico_idconfiguracion_plastico,
           sp.tintas_idtintas,
           sp.caras_idcaras,
-          sp.bk, sp.foil, sp.idsuaje, sp.alto_rel,
-          sp.laminado, sp.uv_br, sp.pigmentos, sp.pantones,
+          sp.pigmentos, sp.pantones,
           sp.observacion, sp.descripcion, sp.perforacion,
           sp.id_color, sp.id_medidatro,
+
+          -- ── Discriminador + refs de PAPEL ──
+          sp.tipo_material,
+          sp.producto_papel_idproducto_papel,
+          sp.grupo_papel_idgrupo_papel,
+          sp.grupo_papel_descripcion,
+          tpp2.nombre              AS papel_tipo_producto,
+          pp2.descripcion_papel    AS papel_descripcion_papel,
+          pp2.medida               AS papel_medida,
+          gp2.precio_sugerido      AS papel_precio_sugerido,
+          spp.id_asa,              asa2.nombre   AS asa_nombre,
+          spp.idcat_laminado,      lam2.nombre   AS laminado_nombre,
+          spp.idfoil,              fo2.colorfoil AS foil_color, fo2.codigofoil AS foil_codigo,
+          spp.idcat_textura,       tx2.nombre    AS textura_nombre,
+          spp.uv,                  spp.alto_relieve,
+          spp.tintas_dentro_idtintas, spp.pantones_dentro, t2.cantidad AS tintas_dentro_cantidad,
 
           asz.tipo          AS suaje_tipo,
           ca.color          AS color_asa_nombre,
@@ -1158,24 +1409,45 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
           h.aprobado AS herramental_aprobado
 
       FROM solicitud s
-      LEFT JOIN clientes cli       ON cli.idclientes = s.clientes_idclientes
+      LEFT JOIN clientes cli         ON cli.idclientes = s.clientes_idclientes
       LEFT JOIN datos_facturacion df ON df.clientes_idclientes = cli.idclientes
-      LEFT JOIN domicilio dom       ON dom.clientes_idclientes = cli.idclientes
+      LEFT JOIN domicilio dom         ON dom.clientes_idclientes = cli.idclientes
       LEFT JOIN solicitud_producto sp ON sp.solicitud_idsolicitud = s.idsolicitud
-      LEFT JOIN asa_suaje asz       ON asz.idsuaje = sp.idsuaje
-      LEFT JOIN color_asa ca        ON ca.id_color = sp.id_color
-      LEFT JOIN medidas_troquel mt  ON mt.id_medidatro = sp.id_medidatro
+      LEFT JOIN asa_suaje asz         ON asz.idsuaje = sp.idsuaje
+      LEFT JOIN color_asa ca          ON ca.id_color = sp.id_color
+      LEFT JOIN medidas_troquel mt    ON mt.id_medidatro = sp.id_medidatro
       LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
           ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
       LEFT JOIN material_plastico mp
           ON mp.idmaterial_plastico = cfg.material_plastico_plastico_idmaterial_plastico
-      LEFT JOIN calibre cal         ON cal.idcalibre = cfg.calibre_idcalibre
-      LEFT JOIN tintas t            ON t.idtintas = sp.tintas_idtintas
-      LEFT JOIN caras car           ON car.idcaras = sp.caras_idcaras
-      LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id = sp.idsolicitud_producto
-      LEFT JOIN herramental h       ON h.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN calibre cal           ON cal.idcalibre = cfg.calibre_idcalibre
+      LEFT JOIN tintas t              ON t.idtintas = sp.tintas_idtintas
+      LEFT JOIN caras car             ON car.idcaras = sp.caras_idcaras
+
+      -- ── JOINs de PAPEL ──
+      LEFT JOIN solicitud_producto_papel spp
+          ON spp.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN producto_papel pp2
+          ON pp2.idproducto_papel = sp.producto_papel_idproducto_papel
+      LEFT JOIN cat_tipo_producto_papel tpp2
+          ON tpp2.idcat_tipo_producto_papel = pp2.idcat_tipo_producto_papel
+      LEFT JOIN grupo_papel gp2
+          ON gp2.idgrupo_papel = sp.grupo_papel_idgrupo_papel
+      LEFT JOIN cat_tipo_asa asa2
+          ON asa2.idcat_tipo_asa = spp.id_asa
+      LEFT JOIN cat_laminado lam2
+          ON lam2.idcat_laminado = spp.idcat_laminado
+      LEFT JOIN foil fo2
+          ON fo2.idfoil = spp.idfoil
+      LEFT JOIN cat_textura tx2
+          ON tx2.idcat_textura = spp.idcat_textura
+      LEFT JOIN tintas t2
+          ON t2.idtintas = spp.tintas_dentro_idtintas
+
+      LEFT JOIN solicitud_detalle sd  ON sd.solicitud_producto_id = sp.idsolicitud_producto
+      LEFT JOIN herramental h         ON h.idsolicitud_producto = sp.idsolicitud_producto
 
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
@@ -1184,33 +1456,33 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
       ORDER BY s.fecha DESC, sp.idsolicitud_producto, sd.idsolicitud_detalle
     `, [clienteId]);
 
-    // Mismo agrupamiento que getPedidos
     const agrupados: Record<string, any> = {};
 
     for (const row of rows) {
       const noPedido: string = row.no_pedido;
+
       if (!agrupados[noPedido]) {
         agrupados[noPedido] = {
-          no_pedido:     noPedido,
+          no_pedido: noPedido,
           no_cotizacion: row.no_cotizacion ?? null,
-          es_directo:    row.no_cotizacion === null,
-          fecha:         row.fecha,
-          prioridad:     row.prioridad ?? false,
-          cliente_id:    row.clientes_idclientes,
-          identificar:   row.cliente_identificar || null,
-          cliente:       row.cliente_nombre || "",
-          telefono:      row.cliente_telefono || "",
-          correo:        row.cliente_correo || "",
-          impresion:     row.cliente_impresion || null,
-          empresa:       row.cliente_empresa || "",
-          celular:       row.cliente_celular || null,
-          razon_social:  row.cliente_razon_social || null,
-          rfc:           row.cliente_rfc || null,
-          domicilio:     row.cliente_domicilio || null,
-          numero:        row.cliente_numero || null,
-          colonia:       row.cliente_colonia || null,
+          es_directo: row.no_cotizacion === null,
+          fecha: row.fecha,
+          prioridad: row.prioridad ?? false,
+          cliente_id: row.clientes_idclientes,
+          identificar: row.cliente_identificar || null,
+          cliente: row.cliente_nombre || "",
+          telefono: row.cliente_telefono || "",
+          correo: row.cliente_correo || "",
+          impresion: row.cliente_impresion || null,
+          empresa: row.cliente_empresa || "",
+          celular: row.cliente_celular || null,
+          razon_social: row.cliente_razon_social || null,
+          rfc: row.cliente_rfc || null,
+          domicilio: row.cliente_domicilio || null,
+          numero: row.cliente_numero || null,
+          colonia: row.cliente_colonia || null,
           codigo_postal: row.cliente_codigo_postal || null,
-          poblacion:     row.cliente_poblacion || null,
+          poblacion: row.cliente_poblacion || null,
           estado_cliente: row.cliente_estado || null,
           productos: [],
           total: 0,
@@ -1221,77 +1493,130 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
         let producto = agrupados[noPedido].productos.find(
           (p: any) => p.idsolicitud_producto === row.idsolicitud_producto
         );
-        if (!producto) {
-          const tipoNombre = row.tipo_producto_nombre || "";
-          const medida     = row.cfg_medida || "";
-          const material   = (row.material_nombre || "").toLowerCase();
-          const nombre     = [tipoNombre, medida, material].filter(Boolean).join(" ")
-                            || `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
 
-          const materialUpper = (row.material_nombre || "").toUpperCase();
-          const esBopp = materialUpper.includes("BOPP") ||
-                         materialUpper.includes("CELOFAN") ||
-                         materialUpper.includes("CELOFÁN");
-          const calibre = esBopp
-            ? (row.calibre_bopp ? String(row.calibre_bopp) : "")
-            : (row.calibre_numero && Number(row.calibre_numero) !== 0
+        if (!producto) {
+          if (row.tipo_material === "papel") {
+            // ── Producto de PAPEL ──
+            const foilNombre = row.foil_color
+              ? `${row.foil_color}${row.foil_codigo ? " " + row.foil_codigo : ""}`
+              : null;
+
+            producto = {
+              idsolicitud: row.idsolicitud,
+              idsolicitud_producto: row.idsolicitud_producto,
+              idcotizacion_producto: row.idsolicitud_producto,
+              tipoCotizacion: "papel",
+              tipo_material: "papel",
+
+              idproducto_papel: row.producto_papel_idproducto_papel,
+              nombre: row.papel_tipo_producto || `Papel #${row.producto_papel_idproducto_papel}`,
+              descripcion_papel: row.papel_descripcion_papel ?? null,
+              medida: row.papel_medida ?? null,
+
+              idgrupo_papel: row.grupo_papel_idgrupo_papel ?? null,
+              grupo_descripcion: row.grupo_papel_descripcion ?? null,
+              precio_sugerido: row.papel_precio_sugerido != null ? Number(row.papel_precio_sugerido) : null,
+
+              // Tintas exteriores
+              tintas: row.tintas_cantidad ?? null,
+              tintasId: row.tintas_idtintas ?? null,
+              pantones: row.pantones || null,
+
+              // Tintas interiores
+              tintasDentroId: row.tintas_dentro_idtintas ?? null,
+              tintasDentro: row.tintas_dentro_cantidad ?? 0,
+              pantonesDentro: row.pantones_dentro || "",
+
+              caras: row.caras_cantidad ?? null,
+              carasId: row.caras_idcaras ?? null,
+
+              id_asa: row.id_asa ?? null,
+              asa_nombre: row.asa_nombre ?? null,
+              idcat_laminado: row.idcat_laminado ?? null,
+              laminado_nombre: row.laminado_nombre ?? null,
+              idfoil: row.idfoil ?? null,
+              foil_nombre: foilNombre,
+              idcat_textura: row.idcat_textura ?? null,
+              textura_nombre: row.textura_nombre ?? null,
+              uv: row.uv ?? false,
+              alto_relieve: row.alto_relieve ?? false,
+
+              observacion: row.observacion ?? null,
+              descripcion: row.descripcion ?? null,
+
+              detalles: [],
+              subtotal: 0,
+            };
+          } else {
+            // ── Producto de PLÁSTICO ──
+            const tipoNombre = row.tipo_producto_nombre || "";
+            const medida = row.cfg_medida || "";
+            const material = (row.material_nombre || "").toLowerCase();
+            const nombre = [tipoNombre, medida, material].filter(Boolean).join(" ")
+              || `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
+
+            const materialUpper = (row.material_nombre || "").toUpperCase();
+            const esBopp = materialUpper.includes("BOPP") ||
+              materialUpper.includes("CELOFAN") ||
+              materialUpper.includes("CELOFÁN");
+            const calibre = esBopp
+              ? (row.calibre_bopp ? String(row.calibre_bopp) : "")
+              : (row.calibre_numero && Number(row.calibre_numero) !== 0
                 ? String(row.calibre_numero) : "");
 
-          producto = {
-            idsolicitud_producto: row.idsolicitud_producto,
-            producto_id:   row.configuracion_plastico_idconfiguracion_plastico,
-            nombre,
-            material:      row.material_nombre || "",
-            calibre,
-            calibre_bopp:  row.calibre_bopp ? String(row.calibre_bopp) : null,
-            medidasFormateadas: row.cfg_medida || "",
-            medidas: {
-              altura:        row.cfg_altura        ? String(row.cfg_altura)        : "",
-              ancho:         row.cfg_ancho         ? String(row.cfg_ancho)         : "",
-              fuelleFondo:   row.cfg_fuelle_fondo  ? String(row.cfg_fuelle_fondo)  : "",
-              fuelleLateral1: row.cfg_fuelle_lat_iz ? String(row.cfg_fuelle_lat_iz) : "",
-              fuelleLateral2: row.cfg_fuelle_lat_de ? String(row.cfg_fuelle_lat_de) : "",
-              refuerzo:      row.cfg_refuerzo      ? String(row.cfg_refuerzo)      : "",
-            },
-            tintas:        row.tintas_cantidad ?? row.tintas_idtintas,
-            tintas_idtintas: row.tintas_idtintas,
-            caras:         row.caras_cantidad  ?? row.caras_idcaras,
-            caras_idcaras: row.caras_idcaras,
-            por_kilo:      row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
-            bk:            row.bk,
-            foil:          row.foil,
-            idsuaje:       row.idsuaje ?? null,
-            asa_suaje:     row.suaje_tipo ?? null,
-            laminado:      row.laminado,
-            uv_br:         row.uv_br,
-            pigmentos:     row.pigmentos || null,
-            pantones:      row.pantones
-              ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
-              : null,
-            observacion:   row.observacion,
-            descripcion:   row.descripcion ?? null,
-            perforacion:   row.perforacion ?? false,
-            id_color:      row.id_color ?? null,
-            color_asa_nombre: row.color_asa_nombre ?? null,
-            id_medidatro:  row.id_medidatro ?? null,
-            medida_troquel: row.medida_troquel ?? null,
-            herramental_descripcion: row.herramental_descripcion ?? null,
-            herramental_precio:      row.herramental_precio != null ? Number(row.herramental_precio) : null,
-            herramental_aprobado:    row.herramental_aprobado ?? null,
-            detalles: [],
-            subtotal: 0,
-          };
+            producto = {
+              idsolicitud: row.idsolicitud,
+              idsolicitud_producto: row.idsolicitud_producto,
+              idcotizacion_producto: row.idsolicitud_producto,
+              producto_id: row.configuracion_plastico_idconfiguracion_plastico,
+              nombre,
+              material: row.material_nombre || "",
+              calibre,
+              calibre_bopp: row.calibre_bopp ? String(row.calibre_bopp) : null,
+              medidasFormateadas: row.cfg_medida || "",
+              medidas: {
+                altura: row.cfg_altura ? String(row.cfg_altura) : "",
+                ancho: row.cfg_ancho ? String(row.cfg_ancho) : "",
+                fuelleFondo: row.cfg_fuelle_fondo ? String(row.cfg_fuelle_fondo) : "",
+                fuelleLateral1: row.cfg_fuelle_lat_iz ? String(row.cfg_fuelle_lat_iz) : "",
+                fuelleLateral2: row.cfg_fuelle_lat_de ? String(row.cfg_fuelle_lat_de) : "",
+                refuerzo: row.cfg_refuerzo ? String(row.cfg_refuerzo) : "",
+              },
+              tintas: row.tintas_cantidad ?? row.tintas_idtintas,
+              tintas_idtintas: row.tintas_idtintas,
+              caras: row.caras_cantidad ?? row.caras_idcaras,
+              caras_idcaras: row.caras_idcaras,
+              por_kilo: row.cfg_por_kilo ? String(row.cfg_por_kilo) : null,
+              pigmentos: row.pigmentos || null,
+              pantones: row.pantones
+                ? row.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
+                : null,
+              observacion: row.observacion,
+              descripcion: row.descripcion ?? null,
+              perforacion: row.perforacion ?? false,
+              id_color: row.id_color ?? null,
+              color_asa_nombre: row.color_asa_nombre ?? null,
+              id_medidatro: row.id_medidatro ?? null,
+              medida_troquel: row.medida_troquel ?? null,
+              herramental_descripcion: row.herramental_descripcion ?? null,
+              herramental_precio: row.herramental_precio != null ? Number(row.herramental_precio) : null,
+              herramental_aprobado: row.herramental_aprobado ?? null,
+              detalles: [],
+              subtotal: 0,
+            };
+          }
+
           agrupados[noPedido].productos.push(producto);
         }
 
         if (row.idsolicitud_detalle) {
           producto.detalles.push({
-            iddetalle:      row.idsolicitud_detalle,
-            cantidad:       Number(row.cantidad),
-            precio_total:   Number(row.precio_total),
+            iddetalle: row.idsolicitud_detalle,
+            cantidad: Number(row.cantidad),
+            precio_total: Number(row.precio_total),
             precio_unitario: row.precio_unitario != null ? Number(row.precio_unitario) : null,
-            kilogramos:     row.kilogramos != null ? Number(row.kilogramos) : null,
-            modo_cantidad:  row.modo_cantidad || "unidad",
+            kilogramos: row.kilogramos != null ? Number(row.kilogramos) : null,
+            modo_cantidad: row.modo_cantidad || "unidad",
           });
           producto.subtotal += Number(row.precio_total);
         }
