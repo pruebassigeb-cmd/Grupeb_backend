@@ -98,8 +98,6 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         sp.observacion,
         sp.perforacion,
         sp.descripcion,
-        sp.bk,
-        sp.foil,
         asz.tipo                        AS asa_suaje,
 
         sp.id_color,
@@ -249,8 +247,6 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         observacion: row.observacion || null,
         descripcion: row.descripcion ?? null,
         perforacion: row.perforacion ?? false,
-        bk: row.bk != null ? Boolean(row.bk) : null,
-        foil: row.foil != null ? Boolean(row.foil) : null,
         asa_suaje: row.asa_suaje || null,
         id_color: row.id_color ?? null,
         color_asa_nombre: row.color_asa_nombre ?? null,
@@ -333,11 +329,6 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
 
         t.cantidad   AS tintas,
         car.cantidad AS caras,
-        sp.bk,
-        sp.foil,
-        sp.alto_rel,
-        sp.laminado,
-        sp.uv_br,
         sp.pigmentos,
         sp.pantones,
         sp.observacion,
@@ -457,11 +448,6 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         },
         tintas: r.tintas ?? null,
         caras: r.caras ?? null,
-        bk: r.bk ?? null,
-        foil: r.foil ?? null,
-        alto_rel: r.alto_rel ?? null,
-        laminado: r.laminado ?? null,
-        uv_br: r.uv_br ?? null,
         pigmentos: r.pigmentos || null,
         pantones: r.pantones
           ? r.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
