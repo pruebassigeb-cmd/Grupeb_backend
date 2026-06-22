@@ -77,11 +77,6 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         -- Características
         t.cantidad   AS tintas,
         car.cantidad AS caras,
-        sp.bk,
-        sp.foil,
-        sp.alto_rel,
-        sp.laminado,
-        sp.uv_br,
         sp.pigmentos,
         sp.pantones,
         sp.observacion,
@@ -243,11 +238,6 @@ LEFT JOIN archivos am
         },
         tintas:      r.tintas   ?? null,
         caras:       r.caras    ?? null,
-        bk:          r.bk       ?? null,
-        foil:        r.foil     ?? null,
-        alto_rel:    r.alto_rel ?? null,
-        laminado:    r.laminado ?? null,
-        uv_br:       r.uv_br    ?? null,
         pigmentos:   r.pigmentos || null,
         pantones:    r.pantones
           ? r.pantones.split(",").map((p: string) => p.trim()).filter(Boolean)
