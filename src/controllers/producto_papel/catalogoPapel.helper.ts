@@ -1,281 +1,375 @@
-// src/controllers/producto_papel/catalogoPapel.helper.ts
-//
-// Helper interno del módulo de producto_papel (mismo patrón que
-// cotizacionPapel.helper.ts dentro de controllers/cotizaciones/).
-//
-// Resuelve un NOMBRE de catálogo a su ID. Si no existe, lo crea
-// automáticamente y lo registra en un "reporte" para devolverlo al final
-// de la carga masiva (opción 3 que elegimos: crear + avisar).
-//
-// Se usa dentro de la MISMA transacción (mismo `client`) que el resto
-// de la carga masiva, para que si algo falla después, el rollback también
-// deshaga los catálogos recién creados (consistencia total).
+type QueryClient = {
+  query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }>;
+};
 
-import { PoolClient } from "pg";
+export type ReporteCatalogos = Record<string, Set<string>>;
 
-export interface ReporteCatalogos {
-  // key = nombre de catálogo (ej "tipo_papel"), value = lista de nombres nuevos creados
-  nuevos: Record<string, Set<string>>;
+type CatalogoSimpleConfig = {
+  tabla: string;
+  pk: string;
+  catalogoKey: string;
+  nombreCrudo?: unknown;
+  creadoPor?: number | null;
+};
+
+type CatalogoMaquinaConfig = CatalogoSimpleConfig & {
+  numeroMaquinaCrudo?: unknown;
+};
+
+type CatalogoMedidaConfig = {
+  tabla: string;
+  pk: string;
+  catalogoKey: string;
+  nombreFijo: string;
+  medidaCrudo?: unknown;
+};
+
+type CorteDobleConfig = {
+  tabla: string;
+  pk: string;
+  campo: "corte" | "doble";
+  catalogoKey: string;
+  valorCrudo?: unknown;
+  alturaMmCrudo?: unknown;
+  idcatPunto?: number | null;
+};
+
+type ListaCatalogoConfig = {
+  tabla: string;
+  pk: string;
+  catalogoKey: string;
+  textoComas?: unknown;
+};
+
+const IDENTIFICADOR_SQL = /^[a-z_][a-z0-9_]*$/i;
+
+function idSql(valor: string): string {
+  if (!IDENTIFICADOR_SQL.test(valor)) {
+    throw new Error(`Identificador SQL no válido: ${valor}`);
+  }
+  return valor;
+}
+
+function texto(valor: unknown): string | null {
+  if (valor === null || valor === undefined) return null;
+  const limpio = String(valor).trim();
+  return limpio === "" ? null : limpio;
+}
+
+function registrarCreado(
+  reporte: ReporteCatalogos,
+  catalogo: string,
+  valor: string
+): void {
+  if (!reporte[catalogo]) reporte[catalogo] = new Set<string>();
+  reporte[catalogo].add(valor);
+}
+
+async function buscarPorTexto(
+  client: QueryClient,
+  tabla: string,
+  pk: string,
+  campo: string,
+  valor: string
+): Promise<number | null> {
+  const resultado = await client.query(
+    `SELECT ${idSql(pk)} AS id
+     FROM ${idSql(tabla)}
+     WHERE LOWER(TRIM(${idSql(campo)}::text)) = LOWER(TRIM($1))
+     ORDER BY CASE WHEN COALESCE(activo, true) THEN 0 ELSE 1 END
+     LIMIT 1`,
+    [valor]
+  );
+  return resultado.rows.length > 0 ? Number(resultado.rows[0].id) : null;
+}
+
+async function reactivar(
+  client: QueryClient,
+  tabla: string,
+  pk: string,
+  id: number
+): Promise<void> {
+  await client.query(
+    `UPDATE ${idSql(tabla)}
+     SET activo = true
+     WHERE ${idSql(pk)} = $1
+       AND COALESCE(activo, true) = false`,
+    [id]
+  );
 }
 
 export function nuevoReporte(): ReporteCatalogos {
-  return { nuevos: {} };
+  return {};
 }
 
-function registrarNuevo(reporte: ReporteCatalogos, catalogo: string, nombre: string) {
-  if (!reporte.nuevos[catalogo]) reporte.nuevos[catalogo] = new Set();
-  reporte.nuevos[catalogo].add(nombre);
+export function reporteAFilas(
+  reporte: ReporteCatalogos
+): Array<{ catalogo: string; valores: string[] }> {
+  return Object.entries(reporte)
+    .filter(([, valores]) => valores.size > 0)
+    .map(([catalogo, valores]) => ({
+      catalogo,
+      valores: [...valores].sort((a, b) => a.localeCompare(b, "es")),
+    }))
+    .sort((a, b) => a.catalogo.localeCompare(b.catalogo, "es"));
 }
 
-/**
- * Resuelve un catálogo simple: tabla con (pk serial, nombre varchar, activo boolean).
- * Ejemplos: cat_tipo_papel, cat_tipo_producto_papel, cat_tipo_asa, cat_laminado,
- *           cat_tipo_pegado, cat_pegamento, cat_refuerzo_material, cat_refuerzo_medidas,
- *           cat_empaque.
- *
- * Devuelve null si `nombreCrudo` viene vacío/undefined (campo opcional sin valor).
- */
 export async function resolverCatalogoSimple(
-  client: PoolClient,
+  client: QueryClient,
   reporte: ReporteCatalogos,
-  opts: {
-    tabla: string;          // ej "cat_tipo_papel"
-    pk: string;             // ej "idcat_tipo_papel"
-    catalogoKey: string;    // clave legible para el reporte, ej "tipo_papel"
-    nombreCrudo: string | null | undefined;
-    creadoPor: number | null;
+  config: CatalogoSimpleConfig
+): Promise<number | null> {
+  const nombre = texto(config.nombreCrudo);
+  if (!nombre) return null;
+
+  const tabla = idSql(config.tabla);
+  const pk = idSql(config.pk);
+  const existente = await buscarPorTexto(
+    client,
+    tabla,
+    pk,
+    "nombre",
+    nombre
+  );
+
+  if (existente != null) {
+    await reactivar(client, tabla, pk, existente);
+    return existente;
   }
-): Promise<number | null> {
-  const { tabla, pk, catalogoKey, creadoPor } = opts;
-  const nombre = (opts.nombreCrudo ?? "").trim();
-  if (!nombre) return null;
 
-  // Búsqueda case-insensitive para evitar duplicados por mayúsculas/espacios
-  const { rows: existe } = await client.query(
-    `SELECT ${pk} AS id FROM ${tabla} WHERE LOWER(TRIM(nombre)) = LOWER($1) LIMIT 1`,
+  const creado = await client.query(
+    `INSERT INTO ${tabla} (nombre)
+     VALUES ($1)
+     RETURNING ${pk} AS id`,
     [nombre]
   );
-  if (existe.length > 0) return existe[0].id;
-
-  // No existe → lo creamos (todas estas tablas solo tienen columna `nombre` insertable)
-  const { rows: creado } = await client.query(
-    `INSERT INTO ${tabla} (nombre) VALUES ($1) RETURNING ${pk} AS id`,
-    [nombre]
-  );
-  registrarNuevo(reporte, catalogoKey, nombre);
-  return creado[0].id;
+  registrarCreado(reporte, config.catalogoKey, nombre);
+  return Number(creado.rows[0].id);
 }
 
-/**
- * Resuelve catálogos con número de máquina (cat_impresora, cat_uv, cat_textura, etc.)
- * — misma tabla (pk, nombre, activo, numero_maquina).
- * Si no existe, se crea con numero_maquina = null (no viene en el Excel multi-select).
- */
 export async function resolverCatalogoMaquina(
-  client: PoolClient,
+  client: QueryClient,
   reporte: ReporteCatalogos,
-  opts: { tabla: string; pk: string; catalogoKey: string; nombreCrudo: string }
+  config: CatalogoMaquinaConfig
 ): Promise<number | null> {
-  const { tabla, pk, catalogoKey } = opts;
-  const nombre = (opts.nombreCrudo ?? "").trim();
+  const nombre = texto(config.nombreCrudo);
   if (!nombre) return null;
 
-  const { rows: existe } = await client.query(
-    `SELECT ${pk} AS id FROM ${tabla} WHERE LOWER(TRIM(nombre)) = LOWER($1) LIMIT 1`,
-    [nombre]
-  );
-  if (existe.length > 0) return existe[0].id;
+  const tabla = idSql(config.tabla);
+  const pk = idSql(config.pk);
+  const numeroMaquina = texto(config.numeroMaquinaCrudo);
 
-  const { rows: creado } = await client.query(
-    `INSERT INTO ${tabla} (nombre) VALUES ($1) RETURNING ${pk} AS id`,
-    [nombre]
+  const existente = await client.query(
+    `SELECT ${pk} AS id
+     FROM ${tabla}
+     WHERE LOWER(TRIM(nombre)) = LOWER(TRIM($1))
+       AND COALESCE(LOWER(TRIM(numero_maquina)), '') =
+           COALESCE(LOWER(TRIM($2)), '')
+     ORDER BY CASE WHEN COALESCE(activo, true) THEN 0 ELSE 1 END
+     LIMIT 1`,
+    [nombre, numeroMaquina]
   );
-  registrarNuevo(reporte, catalogoKey, nombre);
-  return creado[0].id;
+
+  if (existente.rows.length > 0) {
+    const id = Number(existente.rows[0].id);
+    await reactivar(client, tabla, pk, id);
+    return id;
+  }
+
+  const creado = await client.query(
+    `INSERT INTO ${tabla} (nombre, numero_maquina)
+     VALUES ($1, $2)
+     RETURNING ${pk} AS id`,
+    [nombre, numeroMaquina]
+  );
+  registrarCreado(reporte, config.catalogoKey, nombre);
+  return Number(creado.rows[0].id);
 }
 
-/**
- * Resuelve calibre — se identifica por el campo `nombre` tal cual viene
- * escrito en el Excel: "14pts", "180gms", "24ect".
- */
 export async function resolverCalibre(
-  client: PoolClient,
+  client: QueryClient,
   reporte: ReporteCatalogos,
-  calibreCrudo: string | null | undefined
+  calibreCrudo: unknown
 ): Promise<number | null> {
   return resolverCatalogoSimple(client, reporte, {
     tabla: "cat_calibre",
     pk: "idcat_calibre",
     catalogoKey: "calibre",
     nombreCrudo: calibreCrudo,
-    creadoPor: null,
   });
 }
 
-/**
- * Sacabocados / Perforado: tabla tiene (pk, nombre, medida, activo).
- * En el Excel solo se captura la MEDIDA (ej "3 mm"); el `nombre` se
- * fija automáticamente como "Sacabocado" / "Perforación" — igual que
- * hace agregarItemCatalogo en tu controller de catálogos.
- */
 export async function resolverPorMedida(
-  client: PoolClient,
+  client: QueryClient,
   reporte: ReporteCatalogos,
-  opts: {
-    tabla: string;              // "cat_sacabocados" | "cat_perforado"
-    pk: string;                 // "idcat_sacabocados" | "idcat_perforado"
-    catalogoKey: string;        // "sacabocados" | "perforado"
-    nombreFijo: string;         // "Sacabocado" | "Perforación"
-    medidaCrudo: string | null | undefined;
-  }
+  config: CatalogoMedidaConfig
 ): Promise<number | null> {
-  const { tabla, pk, catalogoKey, nombreFijo } = opts;
-  const medida = (opts.medidaCrudo ?? "").trim();
+  const medida = texto(config.medidaCrudo);
   if (!medida) return null;
 
-  const { rows: existe } = await client.query(
-    `SELECT ${pk} AS id FROM ${tabla} WHERE LOWER(TRIM(medida)) = LOWER($1) LIMIT 1`,
+  const tabla = idSql(config.tabla);
+  const pk = idSql(config.pk);
+  const nombre = texto(config.nombreFijo) ?? medida;
+  const existente = await client.query(
+    `SELECT ${pk} AS id
+     FROM ${tabla}
+     WHERE LOWER(TRIM(COALESCE(medida, ''))) = LOWER(TRIM($1))
+     ORDER BY CASE WHEN COALESCE(activo, true) THEN 0 ELSE 1 END
+     LIMIT 1`,
     [medida]
   );
-  if (existe.length > 0) return existe[0].id;
 
-  const { rows: creado } = await client.query(
-    `INSERT INTO ${tabla} (nombre, medida) VALUES ($1, $2) RETURNING ${pk} AS id`,
-    [nombreFijo, medida]
-  );
-  registrarNuevo(reporte, catalogoKey, medida);
-  return creado[0].id;
-}
-
-/**
- * Cortes / Dobles: tabla tiene (pk, corte|doble, altura, activo, idcat_punto).
- * Se identifica por el valor en pulgadas (ej `0.937"`).
- */
-export async function resolverCorteDoble(
-  client: PoolClient,
-  reporte: ReporteCatalogos,
-  opts: {
-    tabla: "cat_cortes" | "cat_dobles";
-    pk: "idcat_corte" | "idcat_doble";
-    campo: "corte" | "doble";
-    catalogoKey: "cortes" | "dobles";
-    valorCrudo: string | null | undefined;   // ej 0.937"
-    alturaMmCrudo: string | number | null | undefined; // ej 23.8
-    idcatPunto: number | null;
-  }
-): Promise<number | null> {
-  const { tabla, pk, campo, catalogoKey, idcatPunto } = opts;
-  let valor = (opts.valorCrudo ?? "").toString().trim();
-  if (!valor) return null;
-  if (!valor.endsWith('"')) valor = `${valor}"`;
-
-  const { rows: existe } = await client.query(
-    `SELECT ${pk} AS id FROM ${tabla} WHERE LOWER(TRIM(${campo})) = LOWER($1) LIMIT 1`,
-    [valor]
-  );
-  if (existe.length > 0) return existe[0].id;
-
-  let alturaVal: string | null = null;
-  if (opts.alturaMmCrudo !== null && opts.alturaMmCrudo !== undefined && opts.alturaMmCrudo !== "") {
-    const alturaStr = opts.alturaMmCrudo.toString().trim();
-    alturaVal = alturaStr.toLowerCase().endsWith("mm") ? alturaStr : `${alturaStr} mm`;
+  if (existente.rows.length > 0) {
+    const id = Number(existente.rows[0].id);
+    await reactivar(client, tabla, pk, id);
+    return id;
   }
 
-  const { rows: creado } = await client.query(
-    `INSERT INTO ${tabla} (${campo}, altura, idcat_punto) VALUES ($1, $2, $3) RETURNING ${pk} AS id`,
-    [valor, alturaVal, idcatPunto]
+  const creado = await client.query(
+    `INSERT INTO ${tabla} (nombre, medida)
+     VALUES ($1, $2)
+     RETURNING ${pk} AS id`,
+    [nombre, medida]
   );
-  registrarNuevo(reporte, catalogoKey, valor);
-  return creado[0].id;
+  registrarCreado(reporte, config.catalogoKey, medida);
+  return Number(creado.rows[0].id);
 }
 
-/**
- * Puntos: tabla (idcat_punto, puntos integer, activo). Identificado por
- * el número directo, ej "8".
- */
 export async function resolverPuntos(
-  client: PoolClient,
+  client: QueryClient,
   reporte: ReporteCatalogos,
-  puntosCrudo: string | number | null | undefined
+  puntosCrudos: unknown
 ): Promise<number | null> {
-  if (puntosCrudo === null || puntosCrudo === undefined || puntosCrudo === "") return null;
-  const puntos = parseInt(puntosCrudo.toString().trim(), 10);
-  if (isNaN(puntos)) return null;
+  const valor = texto(puntosCrudos);
+  if (!valor) return null;
 
-  const { rows: existe } = await client.query(
-    `SELECT idcat_punto AS id FROM cat_puntos WHERE puntos = $1 LIMIT 1`,
+  const puntos = Number.parseInt(valor, 10);
+  if (!Number.isFinite(puntos)) {
+    throw new Error(`Puntos no válidos: "${valor}"`);
+  }
+
+  const existente = await client.query(
+    `SELECT idcat_punto AS id
+     FROM cat_puntos
+     WHERE puntos = $1
+     LIMIT 1`,
     [puntos]
   );
-  if (existe.length > 0) return existe[0].id;
 
-  const { rows: creado } = await client.query(
-    `INSERT INTO cat_puntos (puntos) VALUES ($1) RETURNING idcat_punto AS id`,
+  if (existente.rows.length > 0) {
+    const id = Number(existente.rows[0].id);
+    await reactivar(client, "cat_puntos", "idcat_punto", id);
+    return id;
+  }
+
+  const creado = await client.query(
+    `INSERT INTO cat_puntos (puntos)
+     VALUES ($1)
+     RETURNING idcat_punto AS id`,
     [puntos]
   );
-  registrarNuevo(reporte, "puntos", String(puntos));
-  return creado[0].id;
+  registrarCreado(reporte, "puntos", String(puntos));
+  return Number(creado.rows[0].id);
 }
 
-/**
- * Matrix: tabla (idmatrix, medida_matrix, activo). Identificado por el
- * texto de medida tal cual, ej "0.5 x 1.5".
- */
-export async function resolverMatrix(
-  client: PoolClient,
+export async function resolverCorteDoble(
+  client: QueryClient,
   reporte: ReporteCatalogos,
-  medidaCrudo: string | null | undefined
+  config: CorteDobleConfig
 ): Promise<number | null> {
-  const medida = (medidaCrudo ?? "").trim();
+  const valor = texto(config.valorCrudo);
+  if (!valor) return null;
+
+  const tabla = idSql(config.tabla);
+  const pk = idSql(config.pk);
+  const campo = idSql(config.campo);
+  const altura = texto(config.alturaMmCrudo);
+
+  const existente = await buscarPorTexto(
+    client,
+    tabla,
+    pk,
+    campo,
+    valor
+  );
+  if (existente != null) {
+    await reactivar(client, tabla, pk, existente);
+    await client.query(
+      `UPDATE ${tabla}
+       SET altura = COALESCE($1, altura),
+           idcat_punto = COALESCE($2, idcat_punto)
+       WHERE ${pk} = $3`,
+      [altura, config.idcatPunto ?? null, existente]
+    );
+    return existente;
+  }
+
+  const creado = await client.query(
+    `INSERT INTO ${tabla} (${campo}, altura, idcat_punto)
+     VALUES ($1, $2, $3)
+     RETURNING ${pk} AS id`,
+    [valor, altura, config.idcatPunto ?? null]
+  );
+  registrarCreado(reporte, config.catalogoKey, valor);
+  return Number(creado.rows[0].id);
+}
+
+export async function resolverMatrix(
+  client: QueryClient,
+  reporte: ReporteCatalogos,
+  matrixCrudo: unknown
+): Promise<number | null> {
+  const medida = texto(matrixCrudo);
   if (!medida) return null;
 
-  const { rows: existe } = await client.query(
-    `SELECT idmatrix AS id FROM matrix WHERE LOWER(TRIM(medida_matrix)) = LOWER($1) LIMIT 1`,
-    [medida]
+  const existente = await buscarPorTexto(
+    client,
+    "matrix",
+    "idmatrix",
+    "medida_matrix",
+    medida
   );
-  if (existe.length > 0) return existe[0].id;
+  if (existente != null) {
+    await reactivar(client, "matrix", "idmatrix", existente);
+    return existente;
+  }
 
-  const { rows: creado } = await client.query(
-    `INSERT INTO matrix (medida_matrix) VALUES ($1) RETURNING idmatrix AS id`,
+  const creado = await client.query(
+    `INSERT INTO matrix (medida_matrix)
+     VALUES ($1)
+     RETURNING idmatrix AS id`,
     [medida]
   );
-  registrarNuevo(reporte, "matrix", medida);
-  return creado[0].id;
+  registrarCreado(reporte, "matrix", medida);
+  return Number(creado.rows[0].id);
 }
 
-/**
- * Resuelve una lista de nombres separados por coma (multi-select) contra
- * un catálogo simple. Devuelve los IDs resueltos/creados.
- * Útil para: asas, laminados, y cada tabla de maquinaria.
- */
 export async function resolverListaCatalogoSimple(
-  client: PoolClient,
+  client: QueryClient,
   reporte: ReporteCatalogos,
-  opts: { tabla: string; pk: string; catalogoKey: string; textoComas: string | null | undefined }
+  config: ListaCatalogoConfig
 ): Promise<number[]> {
-  const texto = (opts.textoComas ?? "").trim();
-  if (!texto) return [];
-  const nombres = texto.split(",").map(s => s.trim()).filter(Boolean);
+  const entrada = texto(config.textoComas);
+  if (!entrada) return [];
+
+  const nombres = [
+    ...new Set(
+      entrada
+        .split(/[,;\n]+/)
+        .map(valor => valor.trim())
+        .filter(Boolean)
+    ),
+  ];
+
   const ids: number[] = [];
   for (const nombre of nombres) {
     const id = await resolverCatalogoSimple(client, reporte, {
-      tabla: opts.tabla,
-      pk: opts.pk,
-      catalogoKey: opts.catalogoKey,
+      tabla: config.tabla,
+      pk: config.pk,
+      catalogoKey: config.catalogoKey,
       nombreCrudo: nombre,
-      creadoPor: null,
     });
     if (id != null) ids.push(id);
   }
   return ids;
-}
-
-/** Convierte el Set acumulado en un arreglo plano de filas para el reporte Excel. */
-export function reporteAFilas(reporte: ReporteCatalogos): { catalogo: string; valor_nuevo: string }[] {
-  const filas: { catalogo: string; valor_nuevo: string }[] = [];
-  for (const [catalogo, valores] of Object.entries(reporte.nuevos)) {
-    for (const valor of valores) {
-      filas.push({ catalogo, valor_nuevo: valor });
-    }
-  }
-  return filas;
 }

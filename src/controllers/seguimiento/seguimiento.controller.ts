@@ -1,12 +1,78 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
+const toNumberOrNull = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const round2 = (value: number): number => Math.round(value * 100) / 100;
+
+const splitMedidaCm = (value: unknown): number[] => {
+  if (value === null || value === undefined) return [];
+  return String(value)
+    .replace(/,/g, ".")
+    .match(/\d+(?:\.\d+)?/g)
+    ?.map((n) => Number(n))
+    .filter((n) => Number.isFinite(n)) ?? [];
+};
+
+const primeraMedidaCm = (...values: unknown[]): number | null => {
+  for (const value of values) {
+    const medidas = splitMedidaCm(value);
+    if (medidas.length > 0) return medidas[0];
+  }
+  return null;
+};
+
+const ultimaMedidaCm = (...values: unknown[]): number | null => {
+  for (const value of values) {
+    const medidas = splitMedidaCm(value);
+    if (medidas.length > 0) return medidas[medidas.length - 1];
+  }
+  return null;
+};
+
+const calcularPliegosPorRendimiento = (cantidad: unknown, rendimiento: unknown): number | null => {
+  const cantidadNum = toNumberOrNull(cantidad);
+  const rendimientoNum = toNumberOrNull(rendimiento);
+  if (cantidadNum === null || rendimientoNum === null || rendimientoNum <= 0) return null;
+  return round2(cantidadNum * rendimientoNum);
+};
+
+const calcularBolsasPorRendimiento = (pliegos: unknown, rendimiento: unknown): number | null => {
+  const pliegosNum = toNumberOrNull(pliegos);
+  const rendimientoNum = toNumberOrNull(rendimiento);
+  if (pliegosNum === null || rendimientoNum === null || rendimientoNum <= 0) return null;
+  return round2(pliegosNum / rendimientoNum);
+};
+
+const calcularDesarrolloMm = (...medidas: unknown[]): number | null => {
+  const largoCm = ultimaMedidaCm(...medidas);
+  return largoCm === null ? null : round2(largoCm * 10);
+};
+
+const calcularCtesMod = (...medidas: unknown[]): string | null => {
+  const largoCm = ultimaMedidaCm(...medidas);
+  if (largoCm === null) return null;
+  return `${round2((largoCm - 0.5) * 0.3937)}"`;
+};
+
+const calcularMetrosLaminacion = (pliegos: unknown, desarrolloMm: unknown): number | null => {
+  const pliegosNum = toNumberOrNull(pliegos);
+  const desarrolloNum = toNumberOrNull(desarrolloMm);
+  if (pliegosNum === null || desarrolloNum === null || desarrolloNum <= 0) return null;
+  return round2((pliegosNum * desarrolloNum) / 1000);
+};
+
 // ============================================================
 // GET /api/seguimiento
 // ============================================================
 export const getSeguimiento = async (req: Request, res: Response) => {
   try {
-    const { rows } = await pool.query(`
+    // ── Query de PLÁSTICO (idéntico al original, sin cambios) ──────────
+    const { rows: rowsPlastico } = await pool.query(`
       SELECT
         s.idsolicitud,
         s.no_pedido,
@@ -173,10 +239,245 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
+        AND sp.tipo_material = 'plastico'
 
       ORDER BY s.no_pedido DESC, sp.idsolicitud_producto ASC
     `);
 
+    // ── Query de PAPEL (nuevo, independiente) ───────────────────────────
+    // Mismo nivel de detalle administrativo (anticipo, diseño, OD, envío)
+    // que plástico, pero la ficha del producto se resuelve vía
+    // grupo_papel -> producto_papel -> cat_tipo_producto_papel, y
+    // grupo_papel -> detalle_material_papel -> cat_tipo_papel/cat_calibre.
+    // El estado de producción NO se desglosa en columnas Ext/Imp/Bol/Asa
+    // (no aplica a papel, que tiene hasta 11 procesos dinámicos) — en su
+    // lugar se calcula un único estado_resumen_papel que el frontend usa
+    // para pintar la columna "Producción" (ver mapEstadoResumenPapel).
+    const { rows: rowsPapel } = await pool.query(`
+      SELECT
+        s.idsolicitud,
+        s.no_pedido,
+        s.no_cotizacion,
+        s.fecha,
+        s.prioridad,
+        cli.razon_social                              AS cliente,
+        cli.empresa,
+        cli.impresion                                 AS impresion,
+
+        v.anticipo                                    AS anticipo_requerido,
+        v.abono                                        AS anticipo_pagado,
+        CASE WHEN v.abono >= v.anticipo
+              OR v.estado_administrativo_cat_idestado_administrativo_cat IN (2, 6)
+             THEN true ELSE false END                 AS anticipo_cubierto,
+        CASE WHEN v.saldo <= 0.01
+             THEN true ELSE false END                 AS pago_completo,
+        v.saldo                                       AS saldo_venta,
+
+        dp.estado_administrativo_cat_idestado_administrativo_cat AS producto_diseno_estado_id,
+        CASE WHEN dp.estado_administrativo_cat_idestado_administrativo_cat = 3
+             THEN true ELSE false END                 AS producto_diseno_aprobado,
+
+        op.no_produccion,
+        op.idproduccion,
+
+        CASE WHEN (v.abono >= v.anticipo OR v.estado_administrativo_cat_idestado_administrativo_cat IN (2, 6))
+              AND dp.estado_administrativo_cat_idestado_administrativo_cat = 3
+              AND op.no_produccion IS NOT NULL
+             THEN true ELSE false END                 AS puede_pdf,
+
+        CASE WHEN v.abono < v.anticipo
+              AND v.estado_administrativo_cat_idestado_administrativo_cat NOT IN (2, 6)
+             THEN v.fecha_creacion ELSE NULL END                            AS anticipo_fecha_estado,
+        CASE WHEN v.saldo > 0.01
+             THEN v.fecha_creacion ELSE NULL END                            AS pago_fecha_estado,
+        CASE WHEN dp.estado_administrativo_cat_idestado_administrativo_cat != 3
+             THEN d.fecha ELSE NULL END                                     AS diseno_fecha_estado,
+        CASE WHEN od.estado != 'aprobado'
+             THEN od.created_at ELSE NULL END                               AS od_fecha_estado,
+        en.fecha_envio                                                      AS envio_fecha_estado,
+
+        -- ── Ficha del producto de papel ──
+        pp.idproducto_papel,
+        ctpp.nombre                     AS nombre_producto,
+        pp.medida,
+        pp.ancho,
+        pp.fuelle,
+        pp.altura,
+        dmp.idcat_tipo_papel,
+        ctp.nombre                      AS material,
+        dmp.idcat_calibre,
+        cc.nombre                       AS calibre,
+        dmp.pliego,
+        dmp.rendimiento,
+        dmp.corte,
+        dmp.hoj_bobina,
+        dmp.hoj_corte,
+        dmp.hoj_rendimiento,
+        dmp.hoj_bobina_extra,
+
+        -- ── Specs de la solicitud (lo que el cliente eligió) ──
+        t.cantidad                      AS tintas_frente,
+        sp.pantones                     AS pantones_frente,
+        tdentro.cantidad                AS tintas_dentro,
+        spp.pantones_dentro,
+        spp.metodo_hojeado,
+        spp.lleva_armado,
+        spp.uv,
+        spp.alto_relieve,
+        catlam.nombre                   AS laminado_acabado,
+        CASE WHEN f.colorfoil IS NOT NULL
+             THEN f.colorfoil || COALESCE(' ' || f.codigofoil, '')
+             ELSE NULL END              AS foil_nombre,
+        ctex.nombre                     AS textura_nombre,
+        cta.nombre                      AS asa_tipo,
+        sp.descripcion,
+        sp.observacion,
+        sp.perforacion,
+
+        -- ── Acabados de la FICHA del producto (no de la solicitud) ──
+        -- acabados_papel cuelga de idproducto_papel, no de
+        -- idsolicitud_producto: son propiedades fijas del producto base,
+        -- no algo que el cliente elige por pedido (a diferencia de
+        -- laminado/UV/foil/textura, que sí viven en solicitud_producto_papel).
+        ctpegado.nombre                 AS tipo_pegue,
+        ctpega.nombre                   AS pegamento,
+        ctrefm.nombre                   AS refuerzo_material,
+        ctrefmed.nombre                 AS refuerzo_medida,
+        -- base_material: SIN catálogo real -- acabados_papel.idcat_base_material
+        -- apunta a una tabla cat_base_material que nunca se creó en el DDL.
+        -- Se omite el JOIN; base_material queda fijo en null en el mapeo
+        -- final hasta que decidan si de verdad necesitan ese catálogo.
+        ap.base_medida,
+        ctemp.nombre                    AS tipo_caja,
+        ap.pzs_caja                     AS cantidad_por_caja,
+
+        sd.cantidad                     AS cantidad_orden,
+        sd.modo_cantidad,
+
+        od.idorden_diseno,
+        od.estado                       AS od_estado
+
+      FROM solicitud s
+      LEFT JOIN clientes cli
+          ON cli.idclientes = s.clientes_idclientes
+      LEFT JOIN solicitud_producto sp
+          ON sp.solicitud_idsolicitud = s.idsolicitud
+      LEFT JOIN solicitud_producto_papel spp
+          ON spp.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN grupo_papel gp
+          ON gp.idgrupo_papel = sp.grupo_papel_idgrupo_papel
+      LEFT JOIN producto_papel pp
+          ON pp.idproducto_papel = COALESCE(sp.producto_papel_idproducto_papel, gp.idproducto_papel)
+      LEFT JOIN cat_tipo_producto_papel ctpp
+          ON ctpp.idcat_tipo_producto_papel = pp.idcat_tipo_producto_papel
+      LEFT JOIN detalle_material_papel dmp
+          ON dmp.idgrupo_papel = gp.idgrupo_papel
+      LEFT JOIN cat_tipo_papel ctp
+          ON ctp.idcat_tipo_papel = dmp.idcat_tipo_papel
+      LEFT JOIN cat_calibre cc
+          ON cc.idcat_calibre = dmp.idcat_calibre
+      LEFT JOIN ventas v
+          ON v.solicitud_idsolicitud = s.idsolicitud
+      LEFT JOIN diseno d
+          ON d.solicitud_idsolicitud = s.idsolicitud
+      LEFT JOIN diseno_producto dp
+          ON dp.diseno_iddiseno = d.iddiseno
+          AND dp.solicitud_producto_idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN orden_produccion op
+          ON op.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN tintas t
+          ON t.idtintas = sp.tintas_idtintas
+      LEFT JOIN tintas tdentro
+          ON tdentro.idtintas = spp.tintas_dentro_idtintas
+      LEFT JOIN cat_laminado catlam
+          ON catlam.idcat_laminado = spp.idcat_laminado
+      LEFT JOIN foil f
+          ON f.idfoil = spp.idfoil
+      LEFT JOIN cat_textura ctex
+          ON ctex.idcat_textura = spp.idcat_textura
+      LEFT JOIN cat_tipo_asa cta
+          ON cta.idcat_tipo_asa = spp.id_asa
+      LEFT JOIN acabados_papel ap
+          ON ap.idproducto_papel = pp.idproducto_papel
+      LEFT JOIN cat_tipo_pegado ctpegado
+          ON ctpegado.idcat_tipo_pegado = ap.idcat_tipo_pegado
+      LEFT JOIN cat_pegamento ctpega
+          ON ctpega.idcat_pegamento = ap.idcat_pegamento
+      LEFT JOIN cat_refuerzo_material ctrefm
+          ON ctrefm.idcat_refuerzo_material = ap.idcat_refuerzo_material
+      LEFT JOIN cat_refuerzo_medidas ctrefmed
+          ON ctrefmed.idcat_refuerzo_medidas = ap.idcat_refuerzo_medidas
+      LEFT JOIN cat_empaque ctemp
+          ON ctemp.idcat_empaque = ap.idcat_empaque
+      LEFT JOIN solicitud_detalle sd
+          ON sd.solicitud_producto_id = sp.idsolicitud_producto
+          AND sd.aprobado = true
+      LEFT JOIN orden_diseno od
+          ON od.solicitud_producto_id = sp.idsolicitud_producto
+      LEFT JOIN envio en
+          ON en.solicitud_idsolicitud = s.idsolicitud
+
+      WHERE s.estado = 'pedido'
+        AND s.no_pedido IS NOT NULL
+        AND sp.tipo_material = 'papel'
+
+      ORDER BY s.no_pedido DESC, sp.idsolicitud_producto ASC
+    `);
+
+    // ── Resumen de estado de producción de papel (1 valor, no 11 columnas) ──
+    // Se calcula con un query adicional, por cada idproduccion de papel,
+    // contando cuántos de los procesos que aplican están terminados.
+    // Se hace en lote para no disparar N queries innecesarios.
+    const idproduccionesPapel = rowsPapel
+      .map((r: any) => r.idproduccion)
+      .filter((id: any) => id != null);
+
+    const resumenPorIdproduccion = new Map<number, { estado: string; fecha: string | null }>();
+
+    if (idproduccionesPapel.length > 0) {
+      // Estado por orden: si NO tiene ningún registro de proceso aún -> pendiente.
+      // Si todos los que existen están terminados Y la orden ya no tiene
+      // proceso_actual -> finalizado. Si hay al menos un registro con
+      // fecha_inicio -> proceso. Se apoya en orden_produccion.idestado_produccion_cat
+      // que el orquestador ya mantiene actualizado (ESTADO_PROD.TERMINADO
+      // cuando proceso_actual queda NULL).
+      const { rows: estadoRows } = await pool.query(`
+        SELECT
+          op.idproduccion,
+          op.idestado_produccion_cat,
+          op.proceso_actual,
+          GREATEST(
+            (SELECT MAX(fecha_inicio) FROM hojeado_papel WHERE orden_produccion_idproduccion = op.idproduccion),
+            (SELECT MAX(fecha_inicio) FROM guillotina_papel WHERE orden_produccion_idproduccion = op.idproduccion),
+            (SELECT MAX(fecha_inicio) FROM impresion_papel WHERE orden_produccion_idproduccion = op.idproduccion),
+            (SELECT MAX(fecha_inicio) FROM laminacion_papel WHERE orden_produccion_idproduccion = op.idproduccion),
+            (SELECT MAX(fecha_inicio) FROM barniz_uv_papel WHERE orden_produccion_idproduccion = op.idproduccion),
+            (SELECT MAX(fecha_inicio) FROM hot_stamping_papel WHERE orden_produccion_idproduccion = op.idproduccion),
+            (SELECT MAX(fecha_inicio) FROM texturizado_papel WHERE orden_produccion_idproduccion = op.idproduccion),
+            (SELECT MAX(fecha_inicio) FROM alto_relieve_papel WHERE orden_produccion_idproduccion = op.idproduccion),
+            (SELECT MAX(fecha_inicio) FROM suaje_produccion_papel WHERE orden_produccion_idproduccion = op.idproduccion),
+            (SELECT MAX(fecha_inicio) FROM armado_papel WHERE orden_produccion_idproduccion = op.idproduccion),
+            (SELECT MAX(fecha_inicio) FROM empaque_papel WHERE orden_produccion_idproduccion = op.idproduccion)
+          ) AS ultima_fecha_inicio
+        FROM orden_produccion op
+        WHERE op.idproduccion = ANY($1)
+      `, [idproduccionesPapel]);
+
+      for (const r of estadoRows) {
+        const estId = Number(r.idestado_produccion_cat);
+        let estado = "pendiente";
+        if (estId === 3) estado = "finalizado"; // ESTADO_PROD.TERMINADO
+        else if (estId === 4) estado = "resagado"; // ESTADO_PROD.RESAGADO
+        else if (r.proceso_actual != null && r.ultima_fecha_inicio != null) estado = "proceso";
+
+        resumenPorIdproduccion.set(Number(r.idproduccion), {
+          estado,
+          fecha: r.ultima_fecha_inicio ?? null,
+        });
+      }
+    }
+
+    // ── Mapeo a forma final ──────────────────────────────────────────────
     const mapEstadoProceso = (estadoId: number | null): string => {
       if (estadoId === null || estadoId === undefined) return "pendiente";
       switch (estadoId) {
@@ -188,7 +489,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       }
     };
 
-    const resultado = rows.map((row: any) => {
+    const resultadoPlastico = rowsPlastico.map((row: any) => {
       const mat = (row.material || "").toUpperCase();
       const esBopp = mat.includes("BOPP") || mat.includes("CELOFAN") || mat.includes("CELOFÁN");
       const calibre = esBopp
@@ -268,7 +569,107 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       };
     });
 
-    return res.json(resultado);
+    const resultadoPapel = rowsPapel.map((row: any) => {
+      const resumen = row.idproduccion != null
+        ? resumenPorIdproduccion.get(Number(row.idproduccion))
+        : undefined;
+
+      return {
+        idsolicitud: Number(row.idsolicitud),
+        no_pedido: row.no_pedido,
+        no_cotizacion: row.no_cotizacion ?? null,
+        fecha: row.fecha,
+        prioridad: Boolean(row.prioridad),
+        cliente: row.cliente || "",
+        empresa: row.empresa || "",
+        tipo_producto: "papel",
+        impresion: row.impresion || "",
+        anticipo_requerido: Number(row.anticipo_requerido ?? 0),
+        anticipo_pagado: Number(row.anticipo_pagado ?? 0),
+        anticipo_cubierto: Boolean(row.anticipo_cubierto),
+        pago_completo: Boolean(row.pago_completo),
+        saldo_venta: row.saldo_venta != null ? Number(row.saldo_venta) : null,
+        diseno_estado_id: Number(row.producto_diseno_estado_id ?? 1),
+        diseno_aprobado: Boolean(row.producto_diseno_aprobado),
+        no_produccion: row.no_produccion ?? null,
+        idproduccion: row.idproduccion ?? null,
+        puede_pdf: Boolean(row.puede_pdf),
+
+        // Columnas de plástico (Ext/Imp/Bol/Asa) siempre no-aplica para
+        // papel — el frontend ya está hecho para tratarlas así y mostrar
+        // en su lugar la columna "Producción" vía estado_resumen_papel.
+        extrusion_estado: "no-aplica",
+        impresion_estado: "no-aplica",
+        bolseo_estado: "no-aplica",
+        asa_flexible_estado: "no-aplica",
+        extrusion_fecha_estado: null,
+        impresion_fecha_estado: null,
+        bolseo_fecha_estado: null,
+        asa_flexible_fecha_estado: null,
+
+        // Estado resumido de producción de papel (consume el modal
+        // selector de procesos, no columnas individuales).
+        estado_resumen_papel: resumen?.estado ?? "pendiente",
+        estado_resumen_papel_fecha: resumen?.fecha ?? null,
+
+        anticipo_fecha_estado: row.anticipo_fecha_estado ?? null,
+        pago_fecha_estado: row.pago_fecha_estado ?? null,
+        diseno_fecha_estado: row.diseno_fecha_estado ?? null,
+        od_fecha_estado: row.od_fecha_estado ?? null,
+        envio_fecha_estado: row.envio_fecha_estado ?? null,
+
+        nombre_producto: row.nombre_producto || "",
+        descripcion: row.descripcion ?? null,
+        material: row.material || null,
+        calibre: row.calibre || null,
+        medida: row.medida || null,
+        ancho: row.ancho != null ? String(row.ancho) : null,
+        fuelle: row.fuelle != null ? String(row.fuelle) : null,
+        altura: row.altura != null ? String(row.altura) : null,
+        asa_tipo: row.asa_tipo || null,
+        asa_color: null, // sin campo estructurado en el DDL -- texto libre en observaciones si aplica
+        asa_medida: null, // idem
+        pegamento: row.pegamento || null,
+        tipo_pegue: row.tipo_pegue || null,
+        suaje: null, // referencia visual del PDF -- el folio real vive en suaje_papel, no en la ficha
+        rendimiento: row.rendimiento || null,
+
+        hoj_bobina: row.hoj_bobina || null,
+        hoj_bobina_extra: row.hoj_bobina_extra || null,
+        hoj_corte: row.hoj_corte || null,
+        hoj_rendimiento: row.hoj_rendimiento || null,
+        pliego: row.pliego || null,
+
+        tintas_frente: row.tintas_frente != null ? Number(row.tintas_frente) : null,
+        pantones_frente: row.pantones_frente
+          ? row.pantones_frente.split(",").map((p: string) => p.trim()).filter(Boolean)
+          : null,
+        tintas_dentro: row.tintas_dentro != null ? Number(row.tintas_dentro) : null,
+        pantones_dentro: row.pantones_dentro
+          ? row.pantones_dentro.split(",").map((p: string) => p.trim()).filter(Boolean)
+          : null,
+
+        laminado_acabado: row.laminado_acabado || null,
+        foil_nombre: row.foil_nombre || null,
+        textura_nombre: row.textura_nombre || null,
+
+        refuerzo_material: row.refuerzo_material || null,
+        refuerzo_medida: row.refuerzo_medida || null,
+        base_material: null, // pendiente: cat_base_material no existe en el DDL todavía (ver nota arriba)
+        base_medida: row.base_medida || null,
+
+        tipo_caja: row.tipo_caja || null,
+        cantidad_por_caja: row.cantidad_por_caja != null ? Number(row.cantidad_por_caja) : null,
+
+        cantidad_orden: row.cantidad_orden ? Number(row.cantidad_orden) : null,
+        fecha_entrega: null,
+
+        idorden_diseno: row.idorden_diseno ?? null,
+        od_estado: row.od_estado ?? null,
+      };
+    });
+
+    return res.json([...resultadoPlastico, ...resultadoPapel]);
 
   } catch (error: any) {
     console.error("❌ GET SEGUIMIENTO ERROR:", error.message);
@@ -278,6 +679,28 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
 // ============================================================
 // GET /api/seguimiento/:noPedido/orden-produccion
+//
+// SIN CAMBIOS -- igual que el original. Pendiente: adaptar para papel
+// en una próxima vuelta (no se tocó en esta conversación).
+// ============================================================
+// ============================================================
+// GET /api/seguimiento/:noPedido/orden-produccion
+//
+// REEMPLAZA SOLO esta función en seguimiento.controller.ts.
+// Tu getSeguimiento (y todos sus comentarios) queda intacta.
+//
+// Cambios respecto a tu versión:
+//   1. El SELECT de productosPapel ahora trae un subquery
+//      `registros_procesos` con los registros runtime de los 11
+//      procesos de papel (hojeado/guillotina resuelven 'maquina'
+//      vía cat_hojeado_guillotina porque guardan maquinaria_idmaquinaria).
+//   2. El .map de productosPapelFormateados agrega
+//      `registros_procesos: r.registros_procesos ?? {}`.
+//
+// Los helpers de módulo (toNumberOrNull, round2, primeraMedidaCm,
+// ultimaMedidaCm, calcularPliegosPorRendimiento, calcularBolsasPorRendimiento,
+// calcularDesarrolloMm, calcularCtesMod, calcularMetrosLaminacion) ya viven
+// en tu archivo arriba de getSeguimiento — NO los redeclares.
 // ============================================================
 export const getOrdenProduccion = async (req: Request, res: Response) => {
   try {
@@ -305,6 +728,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
 
     const pedido = pedidoRows[0];
 
+    // ── PLÁSTICO (sin cambios, filtra tipo_material <> 'papel') ──────────
     const { rows: productos } = await pool.query(`
       SELECT
         sp.idsolicitud_producto,
@@ -398,10 +822,210 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       LEFT JOIN extrusion ext
           ON ext.orden_produccion_idproduccion = op.idproduccion
       WHERE sp.solicitud_idsolicitud = $1
+        AND sp.tipo_material <> 'papel'
       ORDER BY sp.idsolicitud_producto
     `, [pedido.idsolicitud]);
 
-    const productosFormateados = productos.map((r: any) => {
+    // ── PAPEL (ficha completa + registros_procesos runtime) ──────────────
+    const { rows: productosPapel } = await pool.query(`
+      SELECT
+        sp.idsolicitud_producto,
+        op.idproduccion,
+        op.no_produccion,
+        op.fecha AS fecha_produccion,
+        op.fecha_entrega,
+        op.es_parcialidad,
+        dp.fecha_aprobacion AS fecha_aprobacion_diseno,
+        dp.observaciones AS observaciones_diseno,
+
+        ctpp.nombre AS nombre_producto,
+        pp.descripcion_papel,
+        pp.medida,
+        pp.ancho,
+        pp.fuelle,
+        pp.altura,
+        pp.tamano_asa_default,
+        sp.grupo_papel_descripcion AS grupo_descripcion,
+        ctp.nombre AS material,
+        cc.nombre AS calibre,
+        dmp.pliego,
+        dmp.rendimiento,
+        dmp.corte,
+        dmp.hoj_bobina,
+        dmp.hoj_corte,
+        dmp.hoj_rendimiento,
+        dmp.hoj_guillotina,
+        dmp.hoj_hilo,
+        dmp.hoj_bobina_extra,
+
+        t.cantidad AS tintas,
+        td.cantidad AS tintas_dentro,
+        sp.pantones,
+        spp.pantones_dentro,
+        sp.observacion,
+        sp.descripcion,
+        sd.cantidad,
+        sd.kilogramos,
+        sd.modo_cantidad,
+
+        spp.metodo_hojeado,
+        spp.lleva_armado,
+        COALESCE((
+          SELECT jsonb_object_agg(
+            spm.proceso,
+            jsonb_build_object('id', spm.idmaquina, 'nombre', spm.nombre_maquina)
+          )
+          FROM solicitud_producto_papel_maquinaria spm
+          WHERE spm.idsolicitud_producto_papel = spp.idsolicitud_producto_papel
+        ), '{}'::jsonb) AS maquinaria_seleccionada,
+        spp.uv,
+        spp.alto_relieve,
+        cl.nombre AS laminado_nombre,
+        CASE
+          WHEN f.colorfoil IS NULL THEN NULL
+          ELSE f.colorfoil || COALESCE(' ' || f.codigofoil, '')
+        END AS foil_nombre,
+        ctx.nombre AS textura_nombre,
+        cta.nombre AS asa_nombre,
+        ca.color AS color_asa_nombre,
+        COALESCE(spp.tamano_asa, pp.tamano_asa_default) AS asa_medida,
+
+        ctpgo.nombre AS tipo_pegue,
+        cpeg.nombre AS pegamento,
+        crmat.nombre AS refuerzo_material,
+        crmed.nombre AS refuerzo_medida,
+        ap.base_medida,
+        cemp.nombre AS tipo_caja,
+        ap.pzs_caja,
+
+        suj.numero AS suaje,
+        suj.tamano AS suaje_tamano,
+        suj.matrix AS matrix,
+
+        -- ── Registros runtime de los 11 procesos de papel ──
+        -- jsonb_strip_nulls deja fuera los procesos sin registro todavía.
+        -- hojeado/guillotina guardan maquinaria_idmaquinaria (id), así que
+        -- se resuelve el nombre vía cat_hojeado_guillotina y se inyecta como
+        -- 'maquina' para que el PDF lo lea igual que las otras 9 tablas
+        -- (que ya guardan 'maquina' como texto).
+        jsonb_strip_nulls(jsonb_build_object(
+          'hojeado_papel', (
+            SELECT to_jsonb(h) || jsonb_build_object('maquina', chg.nombre)
+            FROM hojeado_papel h
+            LEFT JOIN cat_hojeado_guillotina chg
+              ON chg.idcat_hojeado_guillotina = h.maquinaria_idmaquinaria
+            WHERE h.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'guillotina_papel', (
+            SELECT to_jsonb(g) || jsonb_build_object('maquina', chg.nombre)
+            FROM guillotina_papel g
+            LEFT JOIN cat_hojeado_guillotina chg
+              ON chg.idcat_hojeado_guillotina = g.maquinaria_idmaquinaria
+            WHERE g.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'impresion_papel', (
+            SELECT to_jsonb(i) FROM impresion_papel i
+            WHERE i.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'laminacion_papel', (
+            SELECT to_jsonb(l) FROM laminacion_papel l
+            WHERE l.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'barniz_uv_papel', (
+            SELECT to_jsonb(u) FROM barniz_uv_papel u
+            WHERE u.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'hot_stamping_papel', (
+            SELECT to_jsonb(hs) FROM hot_stamping_papel hs
+            WHERE hs.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'texturizado_papel', (
+            SELECT to_jsonb(tx) FROM texturizado_papel tx
+            WHERE tx.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'alto_relieve_papel', (
+            SELECT to_jsonb(ar) FROM alto_relieve_papel ar
+            WHERE ar.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'suaje_produccion_papel', (
+            SELECT to_jsonb(su) FROM suaje_produccion_papel su
+            WHERE su.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'armado_papel', (
+            SELECT to_jsonb(am) FROM armado_papel am
+            WHERE am.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'empaque_papel', (
+            SELECT to_jsonb(em) FROM empaque_papel em
+            WHERE em.orden_produccion_idproduccion = op.idproduccion
+          )
+        )) AS registros_procesos
+
+      FROM solicitud_producto sp
+      JOIN solicitud_producto_papel spp
+        ON spp.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN orden_produccion op
+        ON op.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN diseno_producto dp
+        ON dp.solicitud_producto_idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN grupo_papel gp
+        ON gp.idgrupo_papel = sp.grupo_papel_idgrupo_papel
+      LEFT JOIN producto_papel pp
+        ON pp.idproducto_papel = COALESCE(sp.producto_papel_idproducto_papel, gp.idproducto_papel)
+      LEFT JOIN cat_tipo_producto_papel ctpp
+        ON ctpp.idcat_tipo_producto_papel = pp.idcat_tipo_producto_papel
+      LEFT JOIN detalle_material_papel dmp
+        ON dmp.idgrupo_papel = gp.idgrupo_papel
+      LEFT JOIN cat_tipo_papel ctp
+        ON ctp.idcat_tipo_papel = dmp.idcat_tipo_papel
+      LEFT JOIN cat_calibre cc
+        ON cc.idcat_calibre = dmp.idcat_calibre
+      LEFT JOIN tintas t
+        ON t.idtintas = sp.tintas_idtintas
+      LEFT JOIN tintas td
+        ON td.idtintas = spp.tintas_dentro_idtintas
+      LEFT JOIN cat_laminado cl
+        ON cl.idcat_laminado = spp.idcat_laminado
+      LEFT JOIN foil f
+        ON f.idfoil = spp.idfoil
+      LEFT JOIN cat_textura ctx
+        ON ctx.idcat_textura = spp.idcat_textura
+      LEFT JOIN cat_tipo_asa cta
+        ON cta.idcat_tipo_asa = spp.id_asa
+      LEFT JOIN color_asa ca
+        ON ca.id_color = sp.id_color
+      LEFT JOIN acabados_papel ap
+        ON ap.idproducto_papel = pp.idproducto_papel
+      LEFT JOIN cat_tipo_pegado ctpgo
+        ON ctpgo.idcat_tipo_pegado = ap.idcat_tipo_pegado
+      LEFT JOIN cat_pegamento cpeg
+        ON cpeg.idcat_pegamento = ap.idcat_pegamento
+      LEFT JOIN cat_refuerzo_material crmat
+        ON crmat.idcat_refuerzo_material = ap.idcat_refuerzo_material
+      LEFT JOIN cat_refuerzo_medidas crmed
+        ON crmed.idcat_refuerzo_medidas = ap.idcat_refuerzo_medidas
+      LEFT JOIN cat_empaque cemp
+        ON cemp.idcat_empaque = ap.idcat_empaque
+      LEFT JOIN solicitud_detalle sd
+        ON sd.solicitud_producto_id = sp.idsolicitud_producto
+        AND sd.aprobado = true
+      LEFT JOIN LATERAL (
+        SELECT
+          spj.idsuaje_papel,
+          spj.numero,
+          spj.tamano,
+          spj.matrix
+        FROM suaje_papel spj
+        WHERE spj.idproducto_papel = pp.idproducto_papel
+        ORDER BY spj.idsuaje_papel DESC
+        LIMIT 1
+      ) suj ON true
+      WHERE sp.solicitud_idsolicitud = $1
+        AND sp.tipo_material = 'papel'
+      ORDER BY sp.idsolicitud_producto
+    `, [pedido.idsolicitud]);
+
+    const productosPlasticoFormateados = productos.map((r: any) => {
       const materialUpper = (r.material || "").toUpperCase();
       const esBopp = materialUpper.includes("BOPP") ||
         materialUpper.includes("CELOFAN") ||
@@ -476,33 +1100,209 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         kilos_extruir: r.kilos_extruir ? Number(r.kilos_extruir) : null,
         metros_extruir: r.metros_extruir ? Number(r.metros_extruir) : null,
         es_parcialidad: Boolean(r.es_parcialidad ?? false),
+        tipo_material: "plastico",
       };
     });
+
+    const productosPapelFormateados = productosPapel.map((r: any) => {
+      const pliegosCalculados = calcularPliegosPorRendimiento(r.cantidad, r.rendimiento);
+      const pliegoHojeado = r.hoj_corte || r.pliego || r.medida || null;
+      const bobinaCm = primeraMedidaCm(r.hoj_corte, r.pliego, r.medida);
+      const desarrolloMm = calcularDesarrolloMm(r.hoj_corte, r.pliego, r.medida);
+      const ctesMod = calcularCtesMod(r.hoj_corte, r.pliego, r.medida);
+      const metrosLaminacion = calcularMetrosLaminacion(pliegosCalculados, desarrolloMm);
+      const rollosLaminacion = metrosLaminacion === null ? null : round2(metrosLaminacion / 3000);
+      const bolsasArmadas = calcularBolsasPorRendimiento(pliegosCalculados, r.rendimiento);
+      const refuerzoTexto = [r.refuerzo_material, r.refuerzo_medida]
+        .filter(Boolean)
+        .join(" ");
+      const asaTexto = [
+        r.asa_nombre,
+        r.color_asa_nombre,
+        r.asa_medida,
+      ].filter(Boolean).join(" ");
+
+      const procesosAplican = [
+        r.metodo_hojeado === "hojeado"
+          ? "hojeado_papel"
+          : r.metodo_hojeado === "guillotina"
+            ? "guillotina_papel"
+            : null,
+        "impresion_papel",
+        r.laminado_nombre ? "laminacion_papel" : null,
+        r.uv === true ? "barniz_uv_papel" : null,
+        r.foil_nombre ? "hot_stamping_papel" : null,
+        r.textura_nombre ? "texturizado_papel" : null,
+        r.alto_relieve === true ? "alto_relieve_papel" : null,
+        "suaje_produccion_papel",
+        r.lleva_armado === true ? "armado_papel" : null,
+        "empaque_papel",
+      ].filter(Boolean);
+
+      return {
+        idsolicitud_producto: r.idsolicitud_producto,
+        tipo_material: "papel",
+        no_produccion: r.no_produccion ?? null,
+        idproduccion: r.idproduccion ?? null,
+        fecha_produccion: r.fecha_produccion ?? null,
+        fecha_aprobacion_diseno: r.fecha_aprobacion_diseno ?? null,
+        observaciones_diseno: r.observaciones_diseno || null,
+        tiene_orden: !!r.no_produccion,
+        nombre_producto: r.nombre_producto || "",
+        descripcion: r.descripcion ?? r.descripcion_papel ?? null,
+        categoria: "Papel",
+        material: r.material || "",
+        calibre: r.calibre || "",
+        medida: r.medida || "",
+        altura: r.altura != null ? String(r.altura) : "",
+        ancho: r.ancho != null ? String(r.ancho) : "",
+        fuelle_fondo: r.fuelle != null ? String(r.fuelle) : "",
+        fuelle_lat_iz: "",
+        fuelle_lat_de: "",
+        refuerzo: refuerzoTexto || null,
+        medidas: {
+          altura: r.altura != null ? String(r.altura) : "",
+          ancho: r.ancho != null ? String(r.ancho) : "",
+          fuelleFondo: r.fuelle != null ? String(r.fuelle) : "",
+          fuelleLateral1: "",
+          fuelleLateral2: "",
+          refuerzo: [r.refuerzo_material, r.refuerzo_medida]
+            .filter(Boolean)
+            .join(" "),
+        },
+        tintas: r.tintas != null ? Number(r.tintas) : null,
+        tintas_dentro: r.tintas_dentro != null ? Number(r.tintas_dentro) : null,
+        pantones: r.pantones
+          ? String(r.pantones).split(",").map((p: string) => p.trim()).filter(Boolean)
+          : null,
+        pantones_dentro: r.pantones_dentro || null,
+        observacion: r.observacion || null,
+        cantidad: r.cantidad != null ? Number(r.cantidad) : null,
+        kilogramos: r.kilogramos != null ? Number(r.kilogramos) : null,
+        modo_cantidad: r.modo_cantidad || "unidad",
+        fecha_entrega: r.fecha_entrega ?? null,
+        es_parcialidad: Boolean(r.es_parcialidad ?? false),
+
+        metodo_hojeado: r.metodo_hojeado,
+        lleva_armado: r.lleva_armado === true,
+        procesos_aplican: procesosAplican,
+        maquinaria_seleccionada: r.maquinaria_seleccionada ?? {},
+        laminado_nombre: r.laminado_nombre || null,
+        laminado: r.laminado_nombre || null,
+        laminado_acabado: r.laminado_nombre || null,
+        uv: r.uv === true,
+        foil_nombre: r.foil_nombre || null,
+        foil: r.foil_nombre || null,
+        textura_nombre: r.textura_nombre || null,
+        textura: r.textura_nombre || null,
+        alto_relieve: r.alto_relieve === true,
+        asa_nombre: r.asa_nombre || null,
+        asa_tipo: r.asa_nombre || null,
+        asa: r.asa_nombre || null,
+        color_asa_nombre: r.color_asa_nombre || null,
+        asa_color: r.color_asa_nombre || null,
+        asa_medida: r.asa_medida || null,
+        medida_asa: r.asa_medida || null,
+        tamano_asa: r.asa_medida || null,
+        asa_descripcion: asaTexto || null,
+        grupo_descripcion: r.grupo_descripcion || null,
+        pliego: r.pliego || null,
+        pliego_hojeado: pliegoHojeado,
+        rendimiento: r.rendimiento != null ? Number(r.rendimiento) : null,
+        corte: r.corte || null,
+        hoj_bobina: r.hoj_bobina || null,
+        hoj_bobina_extra: r.hoj_bobina_extra || null,
+        hoj_corte: r.hoj_corte || null,
+        hoj_rendimiento:
+          r.hoj_rendimiento != null ? Number(r.hoj_rendimiento) : null,
+        hoj_guillotina: r.hoj_guillotina || null,
+        hoj_hilo: r.hoj_hilo || null,
+
+        // Valores listos para el PDF de procesos.
+        // Impresión: cantidad de hojas/pliegos calculada desde piezas x rendimiento.
+        cantidad_hojeada_calculada: pliegosCalculados,
+        pliegos_impresion_estimados: pliegosCalculados,
+        material_impresion: [r.material, r.calibre, pliegoHojeado]
+          .filter(Boolean)
+          .join(" "),
+        tintas_frente: r.tintas != null ? Number(r.tintas) : null,
+        tintas_reverso: r.tintas_dentro != null ? Number(r.tintas_dentro) : null,
+        pantones_frente: r.pantones
+          ? String(r.pantones).split(",").map((p: string) => p.trim()).filter(Boolean)
+          : null,
+        pantones_reverso: r.pantones_dentro
+          ? String(r.pantones_dentro).split(",").map((p: string) => p.trim()).filter(Boolean)
+          : null,
+
+        // Laminación: desarrollo en mm, bobina y CTES/mod se derivan del pliego hojeado.
+        bobina_cm: bobinaCm,
+        bobina_laminacion_cm: bobinaCm,
+        desarrollo_mm: desarrolloMm,
+        desarrollo_laminacion_mm: desarrolloMm,
+        ctes_mod: ctesMod,
+        ctes_mod_laminacion: ctesMod,
+        metros_laminacion_estimados: metrosLaminacion,
+        // Temporal: 3000 m por rollo, porque el ejemplo usa 2700 m = 0.9 rollos.
+        rollos_laminacion_estimados: rollosLaminacion,
+
+        tipo_pegue: r.tipo_pegue || null,
+        tipo_pegado: r.tipo_pegue || null,
+        pegamento: r.pegamento || null,
+        suaje: r.suaje || null,
+        suaje_nombre: r.suaje || null,
+        numero_suaje: r.suaje || null,
+        suaje_tamano: r.suaje_tamano || null,
+        matrix: r.matrix || null,
+        base_medida: r.base_medida || null,
+        base: r.base_medida || null,
+        refuerzo_material: r.refuerzo_material || null,
+        refuerzo_medida: r.refuerzo_medida || null,
+        maquina_armado_pdf: "Manual",
+        bolsas_armadas_calculadas: bolsasArmadas,
+        tipo_caja: r.tipo_caja || null,
+        empaque: r.tipo_caja || null,
+        cantidad_por_caja:
+          r.pzs_caja != null ? Number(r.pzs_caja) : null,
+        pzs_caja: r.pzs_caja != null ? Number(r.pzs_caja) : null,
+
+        // ── Registros runtime de los procesos (merma, entregadas, máquina…) ──
+        registros_procesos: r.registros_procesos ?? {},
+      };
+    });
+
+    const productosFormateados = [
+      ...productosPlasticoFormateados,
+      ...productosPapelFormateados,
+    ];
 
     return res.json({
       no_pedido: pedido.no_pedido ?? "",
       no_cotizacion: pedido.no_cotizacion ?? null,
       fecha: pedido.fecha,
       prioridad: Boolean(pedido.prioridad),
-      cliente: pedido.cliente || "",
-      empresa: pedido.empresa || "",
-      telefono: pedido.telefono || "",
-      correo: pedido.correo || "",
+      cliente: pedido.cliente ?? "",
+      empresa: pedido.empresa ?? "",
+      telefono: pedido.telefono ?? "",
+      correo: pedido.correo ?? "",
       impresion: pedido.cliente_impresion ?? null,
-      productos: productosFormateados,
       total_productos: productosFormateados.length,
       con_orden: productosFormateados.filter((p: any) => p.tiene_orden).length,
+      productos: productosFormateados,
     });
 
   } catch (error: any) {
     console.error("❌ GET ORDEN PRODUCCION ERROR:", error.message);
-    return res.status(500).json({ error: "Error al obtener orden de producción" });
+    return res.status(500).json({ error: "Error al obtener la orden de producción" });
   }
 };
 
 // ============================================================
 // GET /api/seguimiento/:idproduccion/bultos/etiqueta
 // ── Prioriza direccion_envio, si no hay cae a domicilio ──
+//
+// SIN CAMBIOS -- igual que el original. Pendiente: adaptar para
+// reconocer bultos de papel (empaque_papel_idempaque_papel) en una
+// próxima vuelta (no se tocó en esta conversación).
 // ============================================================
 export const getBultosEtiqueta = async (req: Request, res: Response) => {
   try {

@@ -67,21 +67,34 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     console.log(`   es_credito_anticipo: ${pedido.es_credito_anticipo}`);
     console.log(`   abono_actual: ${pedido.abono} | total_original: ${pedido.total_original}`);
 
+    // ════════════════════════════════════════════════════════════════════
+    // QUERY DE PRODUCTOS — AHORA INCLUYE PAPEL
+    // ════════════════════════════════════════════════════════════════════
+    // Antes: los JOINs con configuracion_plastico / tipo_producto_plastico /
+    // material_plastico eran INNER JOIN, así que cualquier producto de
+    // papel desaparecía silenciosamente de este reporte (y de los cálculos
+    // de subtotal_real / saldo). Ahora son LEFT JOIN, y se agregan las
+    // columnas de papel (también con LEFT JOIN) para poder armar el nombre
+    // y los datos del producto sin importar el tipo de material.
+    // ════════════════════════════════════════════════════════════════════
     const { rows: prodRows } = await client.query(`
       SELECT
         sp.idsolicitud_producto,
+        sp.tipo_material,
         sp.tintas_idtintas,
         sp.caras_idcaras,
-        cfg.por_kilo,
-        cfg.medida,
-        tpp.material_plastico_producto AS tipo_producto,
-        mp.tipo_material               AS material,
         sd.cantidad                    AS cantidad_original,
         sd.kilogramos                  AS kilogramos_original,
         sd.precio_total                AS precio_total_original,
         sd.modo_cantidad,
         t.cantidad   AS tintas_num,
         car.cantidad AS caras_num,
+
+        -- ── Plástico ──
+        cfg.por_kilo,
+        cfg.medida                     AS medida_plastico,
+        tpp.material_plastico_producto AS tipo_producto_plastico,
+        mp.tipo_material               AS material_plastico,
         EXISTS (
           SELECT 1
           FROM tipo_producto_plastico_proceso tppp
@@ -89,17 +102,32 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
             cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
             AND tppp.idproceso_cat = 3
         ) AS tiene_asa_flexible,
+
+        -- ── Papel ──
+        sp.grupo_papel_descripcion     AS papel_grupo_descripcion,
+        tpp2.nombre                    AS papel_tipo_producto,
+        pp2.medida                     AS papel_medida,
+
         h.id_herramental,
         h.herramental_descripcion,
         h.herramental_precio,
         h.aprobado AS herramental_aprobado
       FROM solicitud_producto sp
-      JOIN configuracion_plastico cfg
+
+      -- ── Plástico (LEFT JOIN: no existe la fila si el producto es de papel) ──
+      LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
-      JOIN tipo_producto_plastico tpp
+      LEFT JOIN tipo_producto_plastico tpp
           ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
-      JOIN material_plastico mp
+      LEFT JOIN material_plastico mp
           ON mp.idmaterial_plastico = cfg.material_plastico_plastico_idmaterial_plastico
+
+      -- ── Papel (LEFT JOIN: no existe la fila si el producto es de plástico) ──
+      LEFT JOIN producto_papel pp2
+          ON pp2.idproducto_papel = sp.producto_papel_idproducto_papel
+      LEFT JOIN cat_tipo_producto_papel tpp2
+          ON tpp2.idcat_tipo_producto_papel = pp2.idcat_tipo_producto_papel
+
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
           AND sd.aprobado = true
@@ -114,8 +142,33 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "No se encontraron productos para este pedido" });
     }
 
+    // ════════════════════════════════════════════════════════════════════
+    // RESOLVER "cantidad_real" — bifurca por tipo_material
+    // ════════════════════════════════════════════════════════════════════
+    // Plástico: igual que antes (bolseo / asa_flexible).
+    // Papel: TODAVÍA NO tiene proceso de producción propio (bultos,
+    // parcialidades, etc. se definirán en la siguiente etapa). Por
+    // indicación explícita, el Estado de Cuenta para papel debe esperar
+    // a que ese proceso exista — así que se marca como "producción
+    // pendiente de definir" en lugar de:
+    //   a) excluir el producto silenciosamente (bug anterior), o
+    //   b) inventar una regla de bultos que aún no existe.
+    // Esto NO bloquea el estado de cuenta de los demás productos
+    // (plástico) del mismo pedido.
+    // ════════════════════════════════════════════════════════════════════
     const productosConReal = await Promise.all(prodRows.map(async (prod: any) => {
+      const esPapel  = prod.tipo_material === "papel";
       const modoKilo = prod.modo_cantidad === "kilo";
+
+      if (esPapel) {
+        // Papel: producción propia aún no definida (ver nota arriba).
+        return {
+          ...prod,
+          cantidad_real: null,
+          no_produccion: null,
+          motivo_null:   "papel_sin_proceso_produccion",
+        };
+      }
 
       const { rows: opRows } = await client.query(`
         SELECT op.idproduccion, op.no_produccion
@@ -161,13 +214,21 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       }
     }));
 
-    const incompletos = productosConReal.filter(p => p.cantidad_real === null);
-    if (incompletos.length > 0) {
+    // ── Separamos: productos de papel (siempre "incompletos" por ahora)
+    // de los de plástico realmente incompletos ──
+    const incompletosPlastico = productosConReal.filter(
+      p => p.cantidad_real === null && p.tipo_material !== "papel"
+    );
+    const pendientesPapel = productosConReal.filter(
+      p => p.tipo_material === "papel"
+    );
+
+    if (incompletosPlastico.length > 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({
         error: "Producción incompleta",
-        detalle: `${incompletos.length} producto(s) aún no tienen cantidad final de producción.`,
-        productos_incompletos: incompletos.map(p => ({
+        detalle: `${incompletosPlastico.length} producto(s) aún no tienen cantidad final de producción.`,
+        productos_incompletos: incompletosPlastico.map(p => ({
           idsolicitud_producto: p.idsolicitud_producto,
           no_produccion:        p.no_produccion,
           motivo:               p.motivo_null,
@@ -179,11 +240,69 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     let herramentalTotal = 0;
 
     const productos = productosConReal.map((prod: any) => {
+      const esPapel    = prod.tipo_material === "papel";
       const porKilo    = Number(prod.por_kilo) || 0;
-      const cantReal   = Number(prod.cantidad_real);
       const precioOrig = Number(prod.precio_total_original);
       const modoKilo   = prod.modo_cantidad === "kilo";
 
+      const nombre = esPapel
+        ? ([prod.papel_tipo_producto, prod.papel_medida].filter(Boolean).join(" ") ||
+           `Papel #${prod.idsolicitud_producto}`)
+        : ([prod.tipo_producto_plastico, prod.medida_plastico, prod.material_plastico]
+            .filter(Boolean).join(" "));
+
+      const herrPrecio = prod.herramental_aprobado === true && prod.herramental_precio != null
+        ? Number(prod.herramental_precio)
+        : null;
+
+      // ── PAPEL: sin recálculo de producción real. El precio aprobado
+      // en la cotización/pedido (precio_total_original) ES el precio
+      // real, porque papel aún no tiene proceso de producción propio
+      // que pueda generar variación (merma, piezas reales, etc.).
+      //
+      // IMPORTANTE: papel SIEMPRE se cuenta por piezas/unidades, nunca
+      // por kilogramos. modo_cantidad/kilogramos en solicitud_detalle
+      // es una columna agnóstica de material (la usa también plástico),
+      // así que aquí se ignora deliberadamente cualquier valor de
+      // modo_cantidad/kilogramos para papel y se fuerza a "unidad". ──
+      if (esPapel) {
+        nuevoSubtotal += precioOrig;
+        if (herrPrecio != null) {
+          nuevoSubtotal    += herrPrecio;
+          herramentalTotal += herrPrecio;
+        }
+
+        const cantidadPiezas = Number(prod.cantidad_original);
+
+        return {
+          idsolicitud_producto:    prod.idsolicitud_producto,
+          tipo_material:           "papel",
+          no_produccion:           null,
+          produccion_pendiente:    true, // ← bandera para el frontend
+          nombre,
+          medida:                  prod.papel_medida ?? null,
+          material:                prod.papel_grupo_descripcion ?? null,
+          impresion:               pedido.impresion ?? null,
+          tintas:                  prod.tintas_num,
+          caras:                   prod.caras_num,
+          modo_cantidad:           "unidad", // ← forzado: papel nunca es por kilo
+          cantidad_original:       cantidadPiezas,
+          precio_total_original:   precioOrig,
+          // Para papel, "real" = "original" (precio ya fijo, sin merma)
+          cantidad_real:           cantidadPiezas,
+          peso_kg_real:            null, // ← papel no maneja peso, solo piezas
+          precio_unitario_real:    null,
+          precio_total_real:       precioOrig,
+          diferencia_piezas:       0,
+          diferencia_precio:       0,
+          herramental_descripcion: prod.herramental_descripcion ?? null,
+          herramental_precio:      prod.herramental_precio != null ? Number(prod.herramental_precio) : null,
+          herramental_aprobado:    prod.herramental_aprobado ?? null,
+        };
+      }
+
+      // ── PLÁSTICO: lógica original sin cambios ──
+      const cantReal = Number(prod.cantidad_real);
       const baseOriginal = modoKilo
         ? Number(prod.kilogramos_original)
         : Number(prod.cantidad_original);
@@ -200,9 +319,6 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
       nuevoSubtotal += precio_total_real;
 
-      const herrPrecio = prod.herramental_aprobado === true && prod.herramental_precio != null
-        ? Number(prod.herramental_precio)
-        : null;
       if (herrPrecio != null) {
         nuevoSubtotal    += herrPrecio;
         herramentalTotal += herrPrecio;
@@ -218,10 +334,12 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
       return {
         idsolicitud_producto:    prod.idsolicitud_producto,
+        tipo_material:           "plastico",
         no_produccion:           prod.no_produccion,
-        nombre:                  [prod.tipo_producto, prod.medida, prod.material].filter(Boolean).join(" "),
-        medida:                  prod.medida   ?? null,
-        material:                prod.material ?? null,
+        produccion_pendiente:    false,
+        nombre,
+        medida:                  prod.medida_plastico ?? null,
+        material:                prod.material_plastico ?? null,
         impresion:               pedido.impresion ?? null,
         tintas:                  prod.tintas_num,
         caras:                   prod.caras_num,
@@ -270,7 +388,8 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
     console.log(
       `   sinIva=${sinIva} | umbral40%=${umbralActivacion} | abono=${abonoActual} | anticipoYaCubierto=${anticipoYaCubierto}` +
-      ` | credito=${pedido.es_credito_anticipo} | nuevoSaldo=${nuevoSaldo} | estado=${nuevoEstado}`
+      ` | credito=${pedido.es_credito_anticipo} | nuevoSaldo=${nuevoSaldo} | estado=${nuevoEstado}` +
+      ` | productos_papel_pendientes=${pendientesPapel.length}`
     );
 
     await client.query(`
@@ -298,6 +417,15 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       sin_iva:       sinIva,
 
       productos,
+
+      // ── Bandera a nivel pedido: avisa al frontend que hay productos
+      // de papel cuya "producción real" aún no se puede calcular porque
+      // el proceso de producción de papel no está implementado todavía.
+      // El subtotal/total/saldo de este endpoint YA incluye el precio
+      // cotizado de esos productos (no los excluye), solo no puede
+      // mostrar una "cantidad real" distinta a la original. ──
+      tiene_productos_papel_pendientes: pendientesPapel.length > 0,
+      productos_papel_pendientes_count: pendientesPapel.length,
 
       subtotal_original: Number(pedido.subtotal_original),
       iva_original:      Number(pedido.iva_original),

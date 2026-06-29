@@ -11,11 +11,13 @@ const MAQ_PIVOTS: Record<string, { tabla: string; col: string }> = {
   hs_ar:              { tabla: "maquinaria_hs_ar",              col: "idcat_hs_ar"              },
   suaje_maquina:      { tabla: "maquinaria_suaje_maquina",      col: "idcat_suaje_maquina"      },
   uv:                 { tabla: "maquinaria_uv",                 col: "idcat_uv"                 },
-  textura:            { tabla: "maquinaria_textura",            col: "idcat_textura"            },
+  texturizadora:      { tabla: "maquinaria_texturizadora",      col: "idcat_texturizadora"      },
   empalme:            { tabla: "maquinaria_empalme",            col: "idcat_empalme"            },
   armado:             { tabla: "maquinaria_armado",             col: "idcat_armado"             },
   asas_maquina:       { tabla: "maquinaria_asas_maquina",       col: "idcat_asas_maquina"       },
   desbarbe:           { tabla: "maquinaria_desbarbe",           col: "idcat_desbarbe"           },
+  laminado_maquina:   { tabla: "maquinaria_laminado",           col: "idcat_laminado_maquina"   },
+  empaque_maquina:    { tabla: "maquinaria_empaque",            col: "idcat_empaque_maquina"    },
 };
 
 const CAT_TABLES: Record<string, string> = {
@@ -24,11 +26,13 @@ const CAT_TABLES: Record<string, string> = {
   hs_ar:              "cat_hs_ar",
   suaje_maquina:      "cat_suaje_maquina",
   uv:                 "cat_uv",
-  textura:            "cat_textura",
+  texturizadora:      "cat_texturizadora",
   empalme:            "cat_empalme",
   armado:             "cat_armado",
   asas_maquina:       "cat_asas_maquina",
   desbarbe:           "cat_desbarbe",
+  laminado_maquina:   "cat_laminado_maquina",
+  empaque_maquina:    "cat_empaque_maquina",
 };
 
 async function insertarMaquinaria(client: any, idproducto_papel: number, maquinaria: Record<string, number[]>) {
@@ -54,14 +58,18 @@ async function eliminarMaquinaria(client: any, idproducto_papel: number) {
 }
 
 async function getMaquinaria(id: number) {
-  const result: Record<string, { id: number; nombre: string }[]> = {};
+  const result: Record<string, { id: number; nombre: string; numero_maquina?: string | null; tipo_maquina?: string | null }[]> = {};
   for (const [key, pivot] of Object.entries(MAQ_PIVOTS)) {
     const cat = CAT_TABLES[key];
+    const extraSelect = key === "hojeado_guillotina"
+      ? ", c.numero_maquina, c.tipo_maquina"
+      : ", c.numero_maquina";
     const { rows } = await pool.query(
-      `SELECT m.${pivot.col} AS id, c.nombre
+      `SELECT m.${pivot.col} AS id, c.nombre${extraSelect}
        FROM ${pivot.tabla} m
        JOIN ${cat} c ON c.${pivot.col} = m.${pivot.col}
-       WHERE m.idproducto_papel = $1`,
+       WHERE m.idproducto_papel = $1
+       ORDER BY c.nombre ASC`,
       [id]
     );
     result[key] = rows;
@@ -105,6 +113,7 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
         pp.fuelle,
         pp.altura,
         pp.medida,
+        pp.tamano_asa_default,
         pp.descripcion_papel,
         pp.activo,
         pp.created_at,
@@ -383,6 +392,7 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       idcat_tipo_producto_papel,
       descripcion_papel,
       ancho, fuelle, altura, medida,
+      tamano_asa_default,
       grupos = [],
       suaje,
       acabados,
@@ -400,14 +410,17 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
     const { rows: prodRows } = await client.query(`
       INSERT INTO producto_papel (
         idproductos, idcat_tipo_producto_papel,
-        descripcion_papel, ancho, fuelle, altura, medida,
+        descripcion_papel, ancho, fuelle, altura, medida, tamano_asa_default,
         creado_por, actualizado_por
-      ) VALUES (2, $1, $2, $3, $4, $5, $6, $7, $7)
+      ) VALUES (2, $1, $2, $3, $4, $5, $6, $7, $8, $8)
       RETURNING idproducto_papel
     `, [
       idcat_tipo_producto_papel,
       descripcion_papel ?? null,
       ancho ?? null, fuelle ?? null, altura ?? null, medida ?? null,
+      typeof tamano_asa_default === "string" && tamano_asa_default.trim()
+        ? tamano_asa_default.trim()
+        : null,
       idusuario,
     ]);
 
@@ -558,6 +571,7 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
       idcat_tipo_producto_papel,
       descripcion_papel,
       ancho, fuelle, altura, medida,
+      tamano_asa_default,
       grupos = [],
       suaje,
       acabados,
@@ -580,13 +594,17 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
         idcat_tipo_producto_papel = $1,
         descripcion_papel = $2,
         ancho = $3, fuelle = $4, altura = $5, medida = $6,
-        actualizado_por = $7,
+        tamano_asa_default = $7,
+        actualizado_por = $8,
         updated_at = NOW()
-      WHERE idproducto_papel = $8
+      WHERE idproducto_papel = $9
     `, [
       idcat_tipo_producto_papel,
       descripcion_papel ?? null,
       ancho ?? null, fuelle ?? null, altura ?? null, medida ?? null,
+      typeof tamano_asa_default === "string" && tamano_asa_default.trim()
+        ? tamano_asa_default.trim()
+        : null,
       idusuario, id,
     ]);
 

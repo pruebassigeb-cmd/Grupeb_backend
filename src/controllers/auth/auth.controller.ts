@@ -8,7 +8,7 @@ import { getPresignedUrl } from "../../config/multer";
 // ==========================
 // CONSTANTES DE SEGURIDAD
 // ==========================
-const JWT_EXPIRATION = "8h";
+const JWT_EXPIRATION = "10h";
 
 // ==========================
 // HELPER — obtener privilegios del usuario

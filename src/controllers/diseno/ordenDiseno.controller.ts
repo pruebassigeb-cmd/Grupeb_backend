@@ -50,7 +50,7 @@ const ESTADO = {
 } as const;
 
 // ============================================================
-// HELPERS DE PRODUCCIÓN
+// HELPERS DE PRODUCCIÓN — PLÁSTICO (sin cambios)
 // ============================================================
 
 async function generarNoProduccion(client: any): Promise<string> {
@@ -264,6 +264,56 @@ async function prepararDatosOrden(client: any, idsolicitudProducto: number) {
 }
 
 // ============================================================
+// HELPER NUEVO — PAPEL
+// ============================================================
+// Mismo criterio que en diseno.controller.ts: papel no recalcula
+// merma/extrusión (no tiene proceso propio definido aún). El precio
+// y la cantidad ya están fijos desde la cotización/pedido.
+// ============================================================
+
+async function esProductoPapel(client: any, idsolicitudProducto: number): Promise<boolean> {
+  const { rows } = await client.query(
+    `SELECT tipo_material FROM solicitud_producto WHERE idsolicitud_producto = $1`,
+    [idsolicitudProducto]
+  );
+  return rows[0]?.tipo_material === "papel";
+}
+
+async function prepararDatosOrdenPapel(client: any, idsolicitudProducto: number) {
+  const { rows } = await client.query(`
+    SELECT
+      COALESCE(sd.cantidad, 0) AS cantidad,
+      sd.kilogramos,
+      sd.modo_cantidad
+    FROM solicitud_detalle sd
+    WHERE sd.solicitud_producto_id = $1
+      AND sd.aprobado = true
+    LIMIT 1
+  `, [idsolicitudProducto]);
+
+  const detalle  = rows[0] ?? null;
+  const modoKilo = detalle?.modo_cantidad === "kilo";
+  const cantidad = detalle ? Number(detalle.cantidad) : null;
+  const kilos    = modoKilo && detalle?.kilogramos != null
+    ? Number(Number(detalle.kilogramos).toFixed(4))
+    : null;
+
+  return {
+    repeticion_extrusion: null,
+    repeticion_metro:     null,
+    metros:               null,
+    metros_merma:         null,
+    ancho_bobina:         null,
+    repeticion_kidder:    null,
+    repeticion_sicosa:    null,
+    kilos,
+    kilos_merma: null,
+    pzas:        cantidad,
+    pzas_merma:  null,
+  };
+}
+
+// ============================================================
 // CREAR ORDEN DE DISEÑO
 // ============================================================
 export const crearOrdenDiseno = async (req: AuthRequest, res: Response) => {
@@ -318,7 +368,7 @@ export const crearOrdenDiseno = async (req: AuthRequest, res: Response) => {
         );
       }
     }
- 
+
     await crearMensajeSistema(
       client,
       ordenId,
@@ -682,11 +732,11 @@ export const subirRevision = async (req: AuthRequest, res: Response) => {
     const revisionId = revRows[0].idrevision;
 
     for (const archivo of archivos) {
-  await client.query(
-    `UPDATE archivos SET revision_diseno_id = $1, categoria = $2 WHERE id_archivo = $3`,
-    [revisionId, archivo.categoria ?? "otro", archivo.id_archivo]
-  );
-}
+      await client.query(
+        `UPDATE archivos SET revision_diseno_id = $1, categoria = $2 WHERE id_archivo = $3`,
+        [revisionId, archivo.categoria ?? "otro", archivo.id_archivo]
+      );
+    }
 
     if (tipo === "render") {
       await client.query(
@@ -831,8 +881,14 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
         );
 
         if (ordenExistente.length === 0) {
-          noProduccion     = await generarNoProduccion(client);
-          const datosOrden = await prepararDatosOrden(client, solicitudProductoId);
+          noProduccion = await generarNoProduccion(client);
+
+          // ── DISCRIMINADOR PAPEL vs PLÁSTICO (mismo criterio que en
+          // diseno.controller.ts → actualizarEstadoProducto) ──
+          const esPapel    = await esProductoPapel(client, solicitudProductoId);
+          const datosOrden = esPapel
+            ? await prepararDatosOrdenPapel(client, solicitudProductoId)
+            : await prepararDatosOrden(client, solicitudProductoId);
 
           await client.query(
             `INSERT INTO orden_produccion (
@@ -855,7 +911,11 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
             ]
           );
           ordenGenerada = true;
-          console.log(`✅ Orden ${noProduccion} creada desde aprobación de orden de diseño`);
+          console.log(
+            esPapel
+              ? `✅ Orden ${noProduccion} creada para PAPEL desde aprobación de orden de diseño`
+              : `✅ Orden ${noProduccion} creada desde aprobación de orden de diseño`
+          );
         } else {
           ordenGenerada = true;
         }
@@ -1110,6 +1170,11 @@ export const limpiarChatsAntiguos = async (req: Request, res: Response) => {
 
 // ============================================================
 // GET /orden-diseno/:id/observacion-producto
+// ════════════════════════════════════════════════════════════
+// AHORA SOPORTA PAPEL: se hace LEFT JOIN tanto con la rama de
+// plástico (configuracion_plastico / tipo_producto_plastico) como
+// con la rama de papel (producto_papel / cat_tipo_producto_papel),
+// y se elige el nombre/medida correctos según sp.tipo_material.
 // ============================================================
 export const getObservacionProducto = async (req: Request, res: Response) => {
   try {
@@ -1117,27 +1182,63 @@ export const getObservacionProducto = async (req: Request, res: Response) => {
 
     const { rows } = await pool.query(`
       SELECT
+        sp.tipo_material,
         sp.observacion,
         sp.descripcion,
         sp.pigmentos,
         sp.pantones,
         sp.perforacion,
-        tpp.material_plastico_producto AS nombre_producto,
-        cfg.medida
+
+        -- Plástico
+        tpp.material_plastico_producto AS nombre_producto_plastico,
+        cfg.medida                     AS medida_plastico,
+
+        -- Papel
+        tpp2.nombre                    AS nombre_producto_papel,
+        pp2.medida                     AS medida_papel,
+        spp.uv,
+        spp.alto_relieve
+
       FROM orden_diseno od
       JOIN solicitud_producto sp
           ON sp.idsolicitud_producto = od.solicitud_producto_id
+
+      -- ── Plástico ──
       LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
           ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
+
+      -- ── Papel ──
+      LEFT JOIN producto_papel pp2
+          ON pp2.idproducto_papel = sp.producto_papel_idproducto_papel
+      LEFT JOIN cat_tipo_producto_papel tpp2
+          ON tpp2.idcat_tipo_producto_papel = pp2.idcat_tipo_producto_papel
+      LEFT JOIN solicitud_producto_papel spp
+          ON spp.idsolicitud_producto = sp.idsolicitud_producto
+
       WHERE od.idorden_diseno = $1
     `, [id]);
 
     if (rows.length === 0)
       return res.status(404).json({ error: "Orden no encontrada" });
 
-    return res.json(rows[0]);
+    const r = rows[0];
+    const esPapel = r.tipo_material === "papel";
+
+    return res.json({
+      tipo_material:   r.tipo_material ?? "plastico",
+      observacion:     r.observacion,
+      descripcion:     r.descripcion,
+      pigmentos:       esPapel ? null : r.pigmentos,
+      pantones:        r.pantones,
+      perforacion:     esPapel ? false : r.perforacion,
+      nombre_producto: esPapel ? r.nombre_producto_papel : r.nombre_producto_plastico,
+      medida:          esPapel ? r.medida_papel : r.medida_plastico,
+      // ── Datos exclusivos de papel, útiles para el panel de info ──
+      uv:              esPapel ? (r.uv ?? false) : null,
+      alto_relieve:    esPapel ? (r.alto_relieve ?? false) : null,
+    });
   } catch (error: any) {
     console.error("❌ GET OBSERVACION PRODUCTO ERROR:", error.message);
     return res.status(500).json({ error: "Error al obtener observación" });

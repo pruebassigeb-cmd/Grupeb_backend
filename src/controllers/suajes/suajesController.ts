@@ -20,7 +20,7 @@ export const getSuajes = async (req: Request, res: Response) => {
       WHERE s.idproductos = 1
       ORDER BY s.tipo ASC
     `);
-
+      
     console.log(`✅ Suajes obtenidos: ${rows.length}`);
     return res.json(rows);
 

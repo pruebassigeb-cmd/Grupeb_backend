@@ -46,10 +46,13 @@ import backupRoutes from "./routes/backup/backup.routes";
 import historialRoutes from "./routes/envios/historial.routes";
 import proveedoresRoutes from "./routes/proveedores/proveedores.routes";
 import foilRoutes from "./routes/foil/foil.routes";
-import catalogosPapelRoutes  from "./routes/catalogos_papel/catalogos_papel.routes";
-import productoPapelRoutes   from "./routes/producto_papel/producto_papel.routes";
+import catalogosPapelRoutes from "./routes/catalogos_papel/catalogos_papel.routes";
+import productoPapelRoutes from "./routes/producto_papel/producto_papel.routes";
 import catTexturaRoutes from "./routes/catTextura/catTextura.routes";
-
+import expoRoutes from "./routes/expo/expo.routes";
+import procesosPapelRoutes from "./routes/producto_papel/procesosPapel.routes";
+import productosPapelRoutes from "./routes/producto_papel/producto_papel.routes";
+import maquinariaPedidoPapelRoutes from "./routes/producto_papel/maquinariaPedidoPapel.routes";
 
 
 const app = express();
@@ -83,44 +86,44 @@ app.use((req, res, next) => {
 // RATE LIMITERS
 // El más específico va primero para tomar precedencia sobre el general
 // ==========================
-app.use("/api/cotizaciones/detalle",     approvalLimiter);
+app.use("/api/cotizaciones/detalle", approvalLimiter);
 app.use("/api/cotizaciones/herramental", approvalLimiter);
-app.use("/api/auth/login",               loginLimiter);
-app.use("/api",                          generalLimiter);
+app.use("/api/auth/login", loginLimiter);
+app.use("/api", generalLimiter);
 
 // ==========================
 // RUTAS
 // ==========================
-app.use("/api/auth",                authRoutes);
-app.use("/api/roles",               rolesRoutes);
-app.use("/api/privilegios",         privilegiosRoutes);
-app.use("/api/usuarios",            usuariosRoutes);
-app.use("/api/catalogos",           catalogosRoutes);
-app.use("/api/clientes",            clientesRoutes);
-app.use("/api/tarifas",             tarifasRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/roles", rolesRoutes);
+app.use("/api/privilegios", privilegiosRoutes);
+app.use("/api/usuarios", usuariosRoutes);
+app.use("/api/catalogos", catalogosRoutes);
+app.use("/api/clientes", clientesRoutes);
+app.use("/api/tarifas", tarifasRoutes);
 app.use("/api/catalogos-productos", catalogosProductosRoutes);
-app.use("/api/productos-plastico",  productosPlasticoRoutes);
+app.use("/api/productos-plastico", productosPlasticoRoutes);
 app.use("/api/catalogos-produccion", catalogosProduccionRoutes);
-app.use("/api/cotizaciones",        cotizacionesRoutes);
-app.use("/api/pedidos",             pedidosRoutes);
-app.use("/api/ventas",              ventasRoutes);
-app.use("/api/diseno",              disenoRoutes);
-app.use("/api",                     calcularPrecioRoutes);
-app.use("/api",                     suajesRoutes);
-app.use("/api/seguimiento",         seguimientoRoutes);
-app.use("/api/rodillos",            rodillosRoutes);
-app.use("/api/procesos",            procesosRoutes);
-app.use("/api/estado-cuenta",       estadoCuentaRoutes);
+app.use("/api/cotizaciones", cotizacionesRoutes);
+app.use("/api/pedidos", pedidosRoutes);
+app.use("/api/ventas", ventasRoutes);
+app.use("/api/diseno", disenoRoutes);
+app.use("/api", calcularPrecioRoutes);
+app.use("/api", suajesRoutes);
+app.use("/api/seguimiento", seguimientoRoutes);
+app.use("/api/rodillos", rodillosRoutes);
+app.use("/api/procesos", procesosRoutes);
+app.use("/api/estado-cuenta", estadoCuentaRoutes);
 app.use("/api/seguimiento/:idproduccion/bultos", bultosRoutes);
-app.use("/api/unidades",            unidadesRoutes);
-app.use("/api/paqueterias",         paqueteriaRoutes);
-app.use("/api/envios",              enviosRoutes);
-app.use("/api/bitacora",            bitacoraRoutes);
-app.use("/api/notas",               notasRoutes);
-app.use("/api/notas-remision",      notasRoutes);
-app.use("/api/carrito",             carritoRoutes);
-app.use("/api/archivos",            archivosRoutes);
-app.use("/api/formato-castores",    formatoCastoresRoutes);
+app.use("/api/unidades", unidadesRoutes);
+app.use("/api/paqueterias", paqueteriaRoutes);
+app.use("/api/envios", enviosRoutes);
+app.use("/api/bitacora", bitacoraRoutes);
+app.use("/api/notas", notasRoutes);
+app.use("/api/notas-remision", notasRoutes);
+app.use("/api/carrito", carritoRoutes);
+app.use("/api/archivos", archivosRoutes);
+app.use("/api/formato-castores", formatoCastoresRoutes);
 app.use("/api/formato-tres-guerras", formatoTresGuerrasRoutes);
 app.use("/api/orden-diseno", ordenDisenoRoutes);
 app.use("/api/codigos-postales", codigoPostalRouter);
@@ -128,9 +131,15 @@ app.use("/api/backup", backupRoutes);
 app.use("/api/historial", historialRoutes);
 app.use("/api/proveedores", proveedoresRoutes);
 app.use("/api/foil", foilRoutes);
-app.use("/api/catalogos-papel",  catalogosPapelRoutes);
-app.use("/api/productos-papel",  productoPapelRoutes);
-app.use("/api",      catTexturaRoutes);
+app.use("/api/catalogos-papel", catalogosPapelRoutes);
+app.use("/api/productos-papel", productoPapelRoutes);
+app.use("/api", catTexturaRoutes);
+app.use("/api/expo", expoRoutes);
+app.use("/api", procesosPapelRoutes);
+app.use("/api/catalogos-papel", catalogosPapelRoutes);
+app.use("/api/productos-papel", productosPapelRoutes);
+app.use("/api/pedidos", maquinariaPedidoPapelRoutes);
+
 
 
 

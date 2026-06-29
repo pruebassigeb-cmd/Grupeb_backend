@@ -1,5 +1,9 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
+import {
+  guardarMaquinariaSeleccionadaPapel,
+  validarMaquinariaSeleccionadaPapel,
+} from "../cotizaciones/cotizacionPapel.helper";
 
 function normalizarNombreEstado(nombre: string): string {
   if (!nombre) return "Pendiente";
@@ -21,6 +25,13 @@ async function resolverIdCaras(client: any, cantidad: number): Promise<number | 
     `SELECT idcaras FROM caras WHERE cantidad = $1 LIMIT 1`, [cantidad]
   );
   return rows[0]?.idcaras ?? null;
+}
+
+function esProductoPapel(prod: any): boolean {
+  return prod?.tipoCotizacion === "papel" ||
+    prod?.tipo_material === "papel" ||
+    prod?.idproducto_papel != null ||
+    prod?.producto_papel_idproducto_papel != null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -88,11 +99,23 @@ export const getPedidos = async (req: Request, res: Response) => {
           pp2.medida               AS papel_medida,
           gp2.precio_sugerido      AS papel_precio_sugerido,
           spp.id_asa,              asa2.nombre   AS asa_nombre,
+          spp.tamano_asa,
           spp.idcat_laminado,      lam2.nombre   AS laminado_nombre,
           spp.idfoil,              fo2.colorfoil AS foil_color, fo2.codigofoil AS foil_codigo,
           spp.idcat_textura,       tx2.nombre    AS textura_nombre,
           spp.uv,                  spp.alto_relieve,
+          spp.metodo_hojeado,      spp.lleva_armado,
+          COALESCE((
+            SELECT jsonb_object_agg(
+              spm.proceso,
+              jsonb_build_object('id', spm.idmaquina, 'nombre', spm.nombre_maquina)
+            )
+            FROM solicitud_producto_papel_maquinaria spm
+            WHERE spm.idsolicitud_producto_papel = spp.idsolicitud_producto_papel
+          ), '{}'::jsonb) AS maquinaria_seleccionada,
           spp.tintas_dentro_idtintas, spp.pantones_dentro, t2.cantidad AS tintas_dentro_cantidad,
+          spp.cargo_adicional_descripcion,
+          spp.cargo_adicional_precio,
 
           asz.tipo          AS suaje_tipo,
 
@@ -269,6 +292,7 @@ export const getPedidos = async (req: Request, res: Response) => {
 
               id_asa: row.id_asa ?? null,
               asa_nombre: row.asa_nombre ?? null,
+              tamano_asa: row.tamano_asa ?? null,
               idcat_laminado: row.idcat_laminado ?? null,
               laminado_nombre: row.laminado_nombre ?? null,
               idfoil: row.idfoil ?? null,
@@ -277,9 +301,18 @@ export const getPedidos = async (req: Request, res: Response) => {
               textura_nombre: row.textura_nombre ?? null,
               uv: row.uv ?? false,
               alto_relieve: row.alto_relieve ?? false,
+              metodo_hojeado: row.metodo_hojeado ?? null,
+              lleva_armado: row.lleva_armado ?? true,
+              maquinaria_seleccionada: row.maquinaria_seleccionada ?? {},
 
               observacion: row.observacion ?? null,
               descripcion: row.descripcion ?? null,
+              herramental_descripcion: row.herramental_descripcion ?? null,
+              herramental_precio: row.herramental_precio != null ? Number(row.herramental_precio) : null,
+              herramental_aprobado: row.herramental_aprobado ?? null,
+              herramental_id: row.id_herramental ?? null,
+              cargo_adicional_descripcion: row.cargo_adicional_descripcion ?? null,
+              cargo_adicional_precio: row.cargo_adicional_precio != null ? Number(row.cargo_adicional_precio) : null,
 
               detalles: [],
               subtotal: 0,
@@ -289,10 +322,11 @@ export const getPedidos = async (req: Request, res: Response) => {
             const tipoNombre = row.tipo_producto_nombre || "";
             const medida = row.cfg_medida || "";
             const material = (row.material_nombre || "").toLowerCase();
-            const nombreCompleto =
-              [tipoNombre, medida, material].filter(Boolean).join(" ") ||
-              `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
-
+const nombreCompleto =
+  (row.tipo_material === "expo" && row.descripcion)
+    ? row.descripcion
+    : [tipoNombre, medida, material].filter(Boolean).join(" ") ||
+      `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
             const medidas = {
               altura: row.cfg_altura ? String(row.cfg_altura) : "",
               ancho: row.cfg_ancho ? String(row.cfg_ancho) : "",
@@ -373,7 +407,9 @@ export const getPedidos = async (req: Request, res: Response) => {
 
     for (const noPedido in agrupados) {
       agrupados[noPedido].total = agrupados[noPedido].productos.reduce(
-        (sum: number, p: any) => sum + p.subtotal + (p.herramental_precio ?? 0), 0
+        (sum: number, p: any) =>
+          sum + p.subtotal + (p.herramental_precio ?? 0) + (p.cargo_adicional_precio ?? 0),
+        0
       );
     }
 
@@ -427,7 +463,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
 
       // ── Pegar esto al inicio del loop for (const prod of productos), ANTES del if (eliminado) ──
 
-      if (prod.tipo_material === "papel") {
+      if (esProductoPapel(prod)) {
         if (prod.eliminado) {
           await client.query(
             `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
@@ -477,6 +513,26 @@ export const actualizarPedido = async (req: Request, res: Response) => {
           continue;
         }
 
+        if (!["hojeado", "guillotina"].includes(prod.metodo_hojeado)) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `Selecciona Hojeado o Guillotina para el producto "${prod.nombre ?? prod.idsolicitud_producto}"`,
+          });
+        }
+        if (!prod.tintasId) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `El producto de papel "${prod.nombre ?? prod.idsolicitud_producto}" requiere tintas porque Impresión es obligatoria`,
+          });
+        }
+
+        const maquinariaSeleccionada =
+          await validarMaquinariaSeleccionadaPapel(
+            client,
+            Number(prod.idproducto_papel),
+            prod.maquinaria_seleccionada
+          );
+
         await client.query(
           `UPDATE solicitud_producto SET
        producto_papel_idproducto_papel = $1,
@@ -506,20 +562,31 @@ export const actualizarPedido = async (req: Request, res: Response) => {
           [prod.idsolicitud_producto]
         );
 
+        let idsolicitudProductoPapel: number;
         if (sppCheck.length > 0) {
+          idsolicitudProductoPapel =
+            Number(sppCheck[0].idsolicitud_producto_papel);
           await client.query(
             `UPDATE solicitud_producto_papel SET
          id_asa                 = $1,
-         idcat_laminado         = $2,
-         idfoil                 = $3,
-         idcat_textura          = $4,
-         uv                     = $5,
-         alto_relieve           = $6,
-         tintas_dentro_idtintas = $7,
-         pantones_dentro        = $8
-       WHERE idsolicitud_producto = $9`,
+         tamano_asa             = $2,
+         idcat_laminado         = $3,
+         idfoil                 = $4,
+         idcat_textura          = $5,
+         uv                     = $6,
+         alto_relieve           = $7,
+         tintas_dentro_idtintas = $8,
+         pantones_dentro        = $9,
+         cargo_adicional_descripcion = $10,
+         cargo_adicional_precio      = $11,
+         metodo_hojeado              = $12,
+         lleva_armado                = $13
+       WHERE idsolicitud_producto = $14`,
             [
               prod.id_asa ?? null,
+              prod.id_asa && typeof prod.tamano_asa === "string" && prod.tamano_asa.trim()
+                ? prod.tamano_asa.trim()
+                : null,
               prod.idcat_laminado ?? null,
               prod.idfoil ?? null,
               prod.idcat_textura ?? null,
@@ -527,18 +594,30 @@ export const actualizarPedido = async (req: Request, res: Response) => {
               prod.alto_relieve === true,
               prod.tintasDentroId ?? null,
               prod.pantonesDentro || null,
+              prod.cargo_adicional_descripcion || null,
+              prod.cargo_adicional_precio != null && Number(prod.cargo_adicional_precio) > 0
+                ? Number(prod.cargo_adicional_precio)
+                : null,
+              prod.metodo_hojeado,
+              prod.lleva_armado === true,
               prod.idsolicitud_producto,
             ]
           );
         } else {
-          await client.query(
+          const { rows: sppInsert } = await client.query(
             `INSERT INTO solicitud_producto_papel
-         (idsolicitud_producto, id_asa, idcat_laminado, idfoil, idcat_textura,
-          uv, alto_relieve, tintas_dentro_idtintas, pantones_dentro)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         (idsolicitud_producto, id_asa, tamano_asa, idcat_laminado, idfoil, idcat_textura,
+          uv, alto_relieve, tintas_dentro_idtintas, pantones_dentro,
+          cargo_adicional_descripcion, cargo_adicional_precio,
+          metodo_hojeado, lleva_armado)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       RETURNING idsolicitud_producto_papel`,
             [
               prod.idsolicitud_producto,
               prod.id_asa ?? null,
+              prod.id_asa && typeof prod.tamano_asa === "string" && prod.tamano_asa.trim()
+                ? prod.tamano_asa.trim()
+                : null,
               prod.idcat_laminado ?? null,
               prod.idfoil ?? null,
               prod.idcat_textura ?? null,
@@ -546,9 +625,23 @@ export const actualizarPedido = async (req: Request, res: Response) => {
               prod.alto_relieve === true,
               prod.tintasDentroId ?? null,
               prod.pantonesDentro || null,
+              prod.cargo_adicional_descripcion || null,
+              prod.cargo_adicional_precio != null && Number(prod.cargo_adicional_precio) > 0
+                ? Number(prod.cargo_adicional_precio)
+                : null,
+              prod.metodo_hojeado,
+              prod.lleva_armado === true,
             ]
           );
+          idsolicitudProductoPapel =
+            Number(sppInsert[0].idsolicitud_producto_papel);
         }
+
+        await guardarMaquinariaSeleccionadaPapel(
+          client,
+          idsolicitudProductoPapel,
+          maquinariaSeleccionada
+        );
 
         for (const det of (prod.detalles as any[])) {
           const { iddetalle, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad } = det;
@@ -867,17 +960,34 @@ export const actualizarPedido = async (req: Request, res: Response) => {
 
       const { rows: sumRows } = await client.query(
         `SELECT
-           COALESCE(SUM(sd.precio_total), 0)                          AS subtotal_prods,
-           COALESCE(SUM(CASE WHEN h.aprobado = true THEN h.herramental_precio ELSE 0 END), 0)
-                                                                       AS subtotal_herr
+           (
+             SELECT COALESCE(SUM(sd.precio_total), 0)
+             FROM solicitud_detalle sd
+             JOIN solicitud_producto sp ON sp.idsolicitud_producto = sd.solicitud_producto_id
+             WHERE sp.solicitud_idsolicitud = $1
+           ) AS subtotal_prods,
+           (
+             SELECT COALESCE(SUM(h.herramental_precio), 0)
+             FROM herramental h
+             JOIN solicitud_producto sp ON sp.idsolicitud_producto = h.idsolicitud_producto
+             WHERE sp.solicitud_idsolicitud = $1 AND h.aprobado = true
+           ) AS subtotal_herr,
+           (
+             SELECT COALESCE(SUM(spp.cargo_adicional_precio), 0)
+             FROM solicitud_producto_papel spp
+             JOIN solicitud_producto sp ON sp.idsolicitud_producto = spp.idsolicitud_producto
+             WHERE sp.solicitud_idsolicitud = $1
+           ) AS subtotal_cargo_adicional
          FROM solicitud_producto sp
-         LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id = sp.idsolicitud_producto
-         LEFT JOIN herramental h        ON h.idsolicitud_producto   = sp.idsolicitud_producto
-         WHERE sp.solicitud_idsolicitud = $1`,
+         WHERE sp.solicitud_idsolicitud = $1
+         LIMIT 1`,
         [solicitudId]
       );
 
-      const subtotalNuevo = Number(sumRows[0].subtotal_prods) + Number(sumRows[0].subtotal_herr);
+      const subtotalNuevo =
+        Number(sumRows[0].subtotal_prods) +
+        Number(sumRows[0].subtotal_herr) +
+        Number(sumRows[0].subtotal_cargo_adicional);
       const ivaNuevo = sinIva ? 0 : Math.round(subtotalNuevo * 0.16 * 100) / 100;
       const totalNuevo = Math.round((subtotalNuevo + ivaNuevo) * 100) / 100;
 
@@ -1370,11 +1480,23 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
           pp2.medida               AS papel_medida,
           gp2.precio_sugerido      AS papel_precio_sugerido,
           spp.id_asa,              asa2.nombre   AS asa_nombre,
+          spp.tamano_asa,
           spp.idcat_laminado,      lam2.nombre   AS laminado_nombre,
           spp.idfoil,              fo2.colorfoil AS foil_color, fo2.codigofoil AS foil_codigo,
           spp.idcat_textura,       tx2.nombre    AS textura_nombre,
           spp.uv,                  spp.alto_relieve,
+          spp.metodo_hojeado,      spp.lleva_armado,
+          COALESCE((
+            SELECT jsonb_object_agg(
+              spm.proceso,
+              jsonb_build_object('id', spm.idmaquina, 'nombre', spm.nombre_maquina)
+            )
+            FROM solicitud_producto_papel_maquinaria spm
+            WHERE spm.idsolicitud_producto_papel = spp.idsolicitud_producto_papel
+          ), '{}'::jsonb) AS maquinaria_seleccionada,
           spp.tintas_dentro_idtintas, spp.pantones_dentro, t2.cantidad AS tintas_dentro_cantidad,
+          spp.cargo_adicional_descripcion,
+          spp.cargo_adicional_precio,
 
           asz.tipo          AS suaje_tipo,
           ca.color          AS color_asa_nombre,
@@ -1532,6 +1654,7 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
 
               id_asa: row.id_asa ?? null,
               asa_nombre: row.asa_nombre ?? null,
+              tamano_asa: row.tamano_asa ?? null,
               idcat_laminado: row.idcat_laminado ?? null,
               laminado_nombre: row.laminado_nombre ?? null,
               idfoil: row.idfoil ?? null,
@@ -1540,9 +1663,17 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
               textura_nombre: row.textura_nombre ?? null,
               uv: row.uv ?? false,
               alto_relieve: row.alto_relieve ?? false,
+              metodo_hojeado: row.metodo_hojeado ?? null,
+              lleva_armado: row.lleva_armado ?? true,
+              maquinaria_seleccionada: row.maquinaria_seleccionada ?? {},
 
               observacion: row.observacion ?? null,
               descripcion: row.descripcion ?? null,
+              herramental_descripcion: row.herramental_descripcion ?? null,
+              herramental_precio: row.herramental_precio != null ? Number(row.herramental_precio) : null,
+              herramental_aprobado: row.herramental_aprobado ?? null,
+              cargo_adicional_descripcion: row.cargo_adicional_descripcion ?? null,
+              cargo_adicional_precio: row.cargo_adicional_precio != null ? Number(row.cargo_adicional_precio) : null,
 
               detalles: [],
               subtotal: 0,
@@ -1552,9 +1683,11 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
             const tipoNombre = row.tipo_producto_nombre || "";
             const medida = row.cfg_medida || "";
             const material = (row.material_nombre || "").toLowerCase();
-            const nombre = [tipoNombre, medida, material].filter(Boolean).join(" ")
-              || `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
-
+const nombre =
+  (row.tipo_material === "expo" && row.descripcion)
+    ? row.descripcion
+    : [tipoNombre, medida, material].filter(Boolean).join(" ") ||
+      `Producto #${row.configuracion_plastico_idconfiguracion_plastico}`;
             const materialUpper = (row.material_nombre || "").toUpperCase();
             const esBopp = materialUpper.includes("BOPP") ||
               materialUpper.includes("CELOFAN") ||
@@ -1625,7 +1758,9 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
 
     for (const noPedido in agrupados) {
       agrupados[noPedido].total = agrupados[noPedido].productos.reduce(
-        (sum: number, p: any) => sum + p.subtotal + (p.herramental_precio ?? 0), 0
+        (sum: number, p: any) =>
+          sum + p.subtotal + (p.herramental_precio ?? 0) + (p.cargo_adicional_precio ?? 0),
+        0
       );
     }
 

@@ -7,6 +7,10 @@ const ESTADO = {
   APROBADO:   3,
 } as const;
 
+// ════════════════════════════════════════════════════════════════════════
+// HELPERS — PLÁSTICO (sin cambios respecto al original)
+// ════════════════════════════════════════════════════════════════════════
+
 async function generarNoProduccion(client: any): Promise<string> {
   const anio = new Date().getFullYear().toString().slice(-2);
   const prefijo = `OP${anio}`;
@@ -228,9 +232,73 @@ async function prepararDatosOrden(client: any, idsolicitudProducto: number) {
   };
 }
 
-// ============================================================
+// ════════════════════════════════════════════════════════════════════════
+// HELPER NUEVO — PAPEL
+// ════════════════════════════════════════════════════════════════════════
+// Papel no tiene proceso de extrusión/merma propio todavía (eso se define
+// en la etapa de Seguimiento/Producción de papel). Por ahora, al aprobar
+// el diseño de un producto de papel, solo se necesita:
+//   1) Saber si tiene_material === 'papel' para NO intentar leer
+//      configuracion_plastico (que no existe para papel).
+//   2) Generar la orden_produccion con los campos de extrusión en null,
+//      usando como "cantidad" la ya aprobada en solicitud_detalle
+//      (el precio de papel ya viene fijo desde la cotización/pedido,
+//      sin recálculo de producción real).
+// ════════════════════════════════════════════════════════════════════════
+
+async function esProductoPapel(client: any, idsolicitudProducto: number): Promise<boolean> {
+  const { rows } = await client.query(
+    `SELECT tipo_material FROM solicitud_producto WHERE idsolicitud_producto = $1`,
+    [idsolicitudProducto]
+  );
+  return rows[0]?.tipo_material === "papel";
+}
+
+async function prepararDatosOrdenPapel(client: any, idsolicitudProducto: number) {
+  // Para papel, "cantidad" / "kilogramos" aprobados ya están fijos en
+  // solicitud_detalle (no hay merma ni extrusión que calcular). Se deja
+  // constancia de la cantidad aprobada en kilos/pzas según corresponda,
+  // y todos los campos exclusivos de plástico quedan en null.
+  const { rows } = await client.query(`
+    SELECT
+      COALESCE(sd.cantidad, 0) AS cantidad,
+      sd.kilogramos,
+      sd.modo_cantidad
+    FROM solicitud_detalle sd
+    WHERE sd.solicitud_producto_id = $1
+      AND sd.aprobado = true
+    LIMIT 1
+  `, [idsolicitudProducto]);
+
+  const detalle = rows[0] ?? null;
+
+  const modoKilo = detalle?.modo_cantidad === "kilo";
+  const cantidad = detalle ? Number(detalle.cantidad) : null;
+  const kilos    = modoKilo && detalle?.kilogramos != null
+    ? Number(Number(detalle.kilogramos).toFixed(4))
+    : null;
+
+  return {
+    // Campos exclusivos de extrusión de plástico — no aplican a papel
+    repeticion_extrusion: null,
+    repeticion_metro:     null,
+    metros:               null,
+    metros_merma:         null,
+    ancho_bobina:         null,
+    repeticion_kidder:    null,
+    repeticion_sicosa:    null,
+    // Cantidad/kilos aprobados — sin merma, ya que el precio de papel
+    // está fijo desde la cotización/pedido
+    kilos,
+    kilos_merma: null,
+    pzas:        cantidad,
+    pzas_merma:  null,
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════════
 // OBTENER DISEÑO POR no_pedido
-// ============================================================
+// ════════════════════════════════════════════════════════════════════════
 export const getDisenoByPedido = async (req: Request, res: Response) => {
   try {
     const { noPedido } = req.params;
@@ -260,6 +328,8 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
     const disenoId         = solicitud.iddiseno;
     const anticupoCubierto = Number(solicitud.abono) >= Number(solicitud.anticipo);
 
+    // ── Query de productos: AGREGAMOS columnas de papel con LEFT JOIN ──
+    // (no quitamos nada de plástico; sp.tipo_material decide qué nombre usar)
     const { rows: productos } = await pool.query(`
       SELECT
         dp.iddiseno_producto,
@@ -270,10 +340,20 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
         dp.fecha_aprobacion,
         dp.estado_administrativo_cat_idestado_administrativo_cat AS estado_id,
         est.nombre AS estado_nombre,
+
+        sp.tipo_material,
+        sp.descripcion,
+
+        -- Plástico
         cfg.medida  AS cfg_medida,
         tpp.material_plastico_producto AS tipo_producto_nombre,
         mp.tipo_material               AS material_nombre,
-        sp.descripcion,
+
+        -- Papel
+        sp.grupo_papel_descripcion     AS papel_grupo_descripcion,
+        tpp2.nombre                    AS papel_tipo_producto,
+        pp2.medida                     AS papel_medida,
+
         sd.cantidad,
         sd.kilogramos,
         sd.modo_cantidad,
@@ -294,12 +374,21 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
           ON est.idestado_administrativo_cat = dp.estado_administrativo_cat_idestado_administrativo_cat
       JOIN solicitud_producto sp
           ON sp.idsolicitud_producto = dp.solicitud_producto_idsolicitud_producto
-      JOIN configuracion_plastico cfg
+
+      -- ── Plástico (no existe la fila si el producto es de papel) ──
+      LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
           ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
       LEFT JOIN material_plastico mp
           ON mp.idmaterial_plastico = cfg.material_plastico_plastico_idmaterial_plastico
+
+      -- ── Papel (no existe la fila si el producto es de plástico) ──
+      LEFT JOIN producto_papel pp2
+          ON pp2.idproducto_papel = sp.producto_papel_idproducto_papel
+      LEFT JOIN cat_tipo_producto_papel tpp2
+          ON tpp2.idcat_tipo_producto_papel = pp2.idcat_tipo_producto_papel
+
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
           AND sd.aprobado = true
@@ -311,35 +400,45 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
       ORDER BY dp.iddiseno_producto
     `, [disenoId]);
 
-    const productosFormateados = productos.map((p: any) => ({
-      iddiseno_producto:    p.iddiseno_producto,
-      diseno_iddiseno:      p.diseno_iddiseno,
-      idsolicitud_producto: p.idsolicitud_producto,
-      nombre: [p.tipo_producto_nombre, p.cfg_medida, p.material_nombre]
-        .filter(Boolean).join(" ") || `Producto #${p.idsolicitud_producto}`,
-      estado_id:        p.estado_id,
-      estado:           p.estado_nombre,
-      observaciones:    p.observaciones,
-      fecha:            p.fecha,
-      fecha_aprobacion: p.fecha_aprobacion ?? null,
-      descripcion:      p.descripcion ?? null,
-      cantidad:         p.cantidad    ? Number(p.cantidad)    : null,
-      kilogramos:       p.kilogramos  ? Number(p.kilogramos)  : null,
-      modo_cantidad:    p.modo_cantidad || "unidad",
-      precio_total:     p.precio_total ? Number(p.precio_total) : null,
-      no_produccion:    p.no_produccion ?? null,
-      idproduccion:     p.idproduccion  ?? null,
-      orden_generada:   !!p.no_produccion,
-      kilos:        p.kilos        != null ? Number(p.kilos)        : null,
-      kilos_merma:  p.kilos_merma  != null ? Number(p.kilos_merma)  : null,
-      pzas:         p.pzas         != null ? Number(p.pzas)         : null,
-      pzas_merma:   p.pzas_merma   != null ? Number(p.pzas_merma)   : null,
-      metros:       p.metros       != null ? Number(p.metros)       : null,
-      metros_merma: p.metros_merma != null ? Number(p.metros_merma) : null,
-      idorden_diseno:      p.idorden_diseno      ?? null,
-      no_orden_diseno:     p.no_orden_diseno     ?? null,
-      orden_diseno_estado: p.orden_diseno_estado ?? null,
-    }));
+    const productosFormateados = productos.map((p: any) => {
+      const esPapel = p.tipo_material === "papel";
+
+      const nombre = esPapel
+        ? ([p.papel_tipo_producto, p.papel_medida].filter(Boolean).join(" ") ||
+           `Papel #${p.idsolicitud_producto}`)
+        : ([p.tipo_producto_nombre, p.cfg_medida, p.material_nombre].filter(Boolean).join(" ") ||
+           `Producto #${p.idsolicitud_producto}`);
+
+      return {
+        iddiseno_producto:    p.iddiseno_producto,
+        diseno_iddiseno:      p.diseno_iddiseno,
+        idsolicitud_producto: p.idsolicitud_producto,
+        tipo_material:        p.tipo_material ?? "plastico",
+        nombre,
+        estado_id:        p.estado_id,
+        estado:           p.estado_nombre,
+        observaciones:    p.observaciones,
+        fecha:            p.fecha,
+        fecha_aprobacion: p.fecha_aprobacion ?? null,
+        descripcion:      p.descripcion ?? null,
+        cantidad:         p.cantidad    ? Number(p.cantidad)    : null,
+        kilogramos:       p.kilogramos  ? Number(p.kilogramos)  : null,
+        modo_cantidad:    p.modo_cantidad || "unidad",
+        precio_total:     p.precio_total ? Number(p.precio_total) : null,
+        no_produccion:    p.no_produccion ?? null,
+        idproduccion:     p.idproduccion  ?? null,
+        orden_generada:   !!p.no_produccion,
+        kilos:        p.kilos        != null ? Number(p.kilos)        : null,
+        kilos_merma:  p.kilos_merma  != null ? Number(p.kilos_merma)  : null,
+        pzas:         p.pzas         != null ? Number(p.pzas)         : null,
+        pzas_merma:   p.pzas_merma   != null ? Number(p.pzas_merma)   : null,
+        metros:       p.metros       != null ? Number(p.metros)       : null,
+        metros_merma: p.metros_merma != null ? Number(p.metros_merma) : null,
+        idorden_diseno:      p.idorden_diseno      ?? null,
+        no_orden_diseno:     p.no_orden_diseno     ?? null,
+        orden_diseno_estado: p.orden_diseno_estado ?? null,
+      };
+    });
 
     const total     = productosFormateados.length;
     const aprobados = productosFormateados.filter((p: any) => p.estado_id === ESTADO.APROBADO).length;
@@ -379,9 +478,9 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
   }
 };
 
-// ============================================================
+// ════════════════════════════════════════════════════════════════════════
 // ACTUALIZAR ESTADO DE UN PRODUCTO EN DISEÑO
-// ============================================================
+// ════════════════════════════════════════════════════════════════════════
 export const actualizarEstadoProducto = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
@@ -476,8 +575,17 @@ export const actualizarEstadoProducto = async (req: Request, res: Response) => {
         );
 
         if (ordenExistente.length === 0) {
-          noProduccion     = await generarNoProduccion(client);
-          const datosOrden = await prepararDatosOrden(client, idsolicitudProducto);
+          noProduccion = await generarNoProduccion(client);
+
+          // ── DISCRIMINADOR PAPEL vs PLÁSTICO ──
+          // El folio (no_produccion / prefijo OP) es el mismo para ambos
+          // tipos de material, tal como se definió. La única diferencia
+          // es de dónde se obtienen los datos de la orden: papel no pasa
+          // por configuracion_plastico ni calcula merma/extrusión.
+          const esPapel    = await esProductoPapel(client, idsolicitudProducto);
+          const datosOrden = esPapel
+            ? await prepararDatosOrdenPapel(client, idsolicitudProducto)
+            : await prepararDatosOrden(client, idsolicitudProducto);
 
           await client.query(
             `INSERT INTO orden_produccion (
@@ -522,7 +630,11 @@ export const actualizarEstadoProducto = async (req: Request, res: Response) => {
           );
 
           ordenGenerada = true;
-          console.log(`✅ Orden ${noProduccion} creada con metros_merma incluido`);
+          console.log(
+            esPapel
+              ? `✅ Orden ${noProduccion} creada para PAPEL (sin datos de extrusión)`
+              : `✅ Orden ${noProduccion} creada con metros_merma incluido`
+          );
         } else {
           ordenGenerada = true;
         }
@@ -550,9 +662,9 @@ export const actualizarEstadoProducto = async (req: Request, res: Response) => {
   }
 };
 
-// ============================================================
+// ════════════════════════════════════════════════════════════════════════
 // VERIFICAR CONDICIONES PARA PRODUCCIÓN
-// ============================================================
+// ════════════════════════════════════════════════════════════════════════
 export const verificarCondicionesProduccion = async (req: Request, res: Response) => {
   try {
     const { noPedido } = req.params;

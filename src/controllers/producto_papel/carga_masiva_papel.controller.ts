@@ -16,7 +16,6 @@ import { leerExcelCargaMasiva, ProductoCrudo } from "./lecturaExcelCargaMasiva.h
 import {
   nuevoReporte,
   resolverCatalogoSimple,
-  resolverCatalogoMaquina,
   resolverCalibre,
   resolverPorMedida,
   resolverCorteDoble,
@@ -37,14 +36,19 @@ interface ResultadoFila {
   error?: string;
 }
 
-// Mapa de las 10 tablas de maquinaria — igual que MAQ_PIVOTS en tu controller original
+// Catálogos de maquinaria asociados al producto.
+// cat_textura se reserva para el tipo de acabado; la máquina usa
+// cat_texturizadora/maquinaria_texturizadora.
 const MAQ_TABLAS: Record<string, { tabla: string; pk: string; pivot: string; pivotCol: string }> = {
   maq_hojeado_guillotina: { tabla: "cat_hojeado_guillotina", pk: "idcat_hojeado_guillotina", pivot: "maquinaria_hojeado_guillotina", pivotCol: "idcat_hojeado_guillotina" },
   maq_impresora:          { tabla: "cat_impresora",          pk: "idcat_impresora",          pivot: "maquinaria_impresora",          pivotCol: "idcat_impresora" },
   maq_hs_ar:               { tabla: "cat_hs_ar",               pk: "idcat_hs_ar",               pivot: "maquinaria_hs_ar",               pivotCol: "idcat_hs_ar" },
   maq_suaje:               { tabla: "cat_suaje_maquina",       pk: "idcat_suaje_maquina",       pivot: "maquinaria_suaje_maquina",       pivotCol: "idcat_suaje_maquina" },
   maq_uv:                  { tabla: "cat_uv",                  pk: "idcat_uv",                  pivot: "maquinaria_uv",                  pivotCol: "idcat_uv" },
-  maq_textura:             { tabla: "cat_textura",              pk: "idcat_textura",             pivot: "maquinaria_textura",             pivotCol: "idcat_textura" },
+  maq_textura:             { tabla: "cat_texturizadora",        pk: "idcat_texturizadora",       pivot: "maquinaria_texturizadora",       pivotCol: "idcat_texturizadora" },
+  maq_texturizadora:       { tabla: "cat_texturizadora",        pk: "idcat_texturizadora",       pivot: "maquinaria_texturizadora",       pivotCol: "idcat_texturizadora" },
+  maq_laminado:            { tabla: "cat_laminado_maquina",     pk: "idcat_laminado_maquina",    pivot: "maquinaria_laminado",            pivotCol: "idcat_laminado_maquina" },
+  maq_empaque:             { tabla: "cat_empaque_maquina",      pk: "idcat_empaque_maquina",     pivot: "maquinaria_empaque",             pivotCol: "idcat_empaque_maquina" },
   maq_empalme:             { tabla: "cat_empalme",               pk: "idcat_empalme",             pivot: "maquinaria_empalme",             pivotCol: "idcat_empalme" },
   maq_armado:              { tabla: "cat_armado",                pk: "idcat_armado",              pivot: "maquinaria_armado",              pivotCol: "idcat_armado" },
   maq_asas_maquina:        { tabla: "cat_asas_maquina",          pk: "idcat_asas_maquina",        pivot: "maquinaria_asas_maquina",        pivotCol: "idcat_asas_maquina" },

@@ -13,6 +13,7 @@ import { descargarReporteCatalogos } from "../../controllers/producto_papel/repo
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 import { upload } from "../../config/multer"; // ← el mismo multer que ya usas para subir a S3
 
+
 const router = Router();
 
 router.use(

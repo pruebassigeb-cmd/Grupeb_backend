@@ -4,7 +4,7 @@ import { pool } from "../../config/db";
 // ─────────────────────────────────────────────
 // TIPOS
 // ─────────────────────────────────────────────
-type ProcesoOrigen = "bolseo" | "asa_flexible";
+type ProcesoOrigen = "bolseo" | "asa_flexible" | "empaque_papel";
 
 interface FkBulto {
   tipo: ProcesoOrigen;
@@ -36,6 +36,17 @@ const PROCESO = {
 // HELPER — resuelve qué FK usar
 // ─────────────────────────────────────────────
 async function resolverFkBulto(idproduccion: number): Promise<FkBulto | null> {
+  const { rows: empaqueRows } = await pool.query(
+    `SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = $1`,
+    [idproduccion]
+  );
+  if (empaqueRows.length > 0) {
+    return {
+      tipo: "empaque_papel",
+      id: Number(empaqueRows[0].idempaque_papel),
+    };
+  }
+
   const { rows: asaRows } = await pool.query(
     `SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1`,
     [idproduccion]
@@ -78,9 +89,11 @@ function validarEstadoOrden(ordenRow: any): string | null {
   const bultosFinalizados = Boolean(ordenRow.bultos_finalizado);
 
   const ordenTerminada    = estadoOrden === ESTADO_PROD.TERMINADO && procesoActual === null;
+  const esEmpaquePapel     = ordenRow.tipo_material === "papel";
   const esProcesosFinales =
     Number(procesoActual) === PROCESO.BOLSEO ||
-    Number(procesoActual) === PROCESO.ASA_FLEXIBLE;
+    Number(procesoActual) === PROCESO.ASA_FLEXIBLE ||
+    esEmpaquePapel;
 
   if (!ordenTerminada && !esProcesosFinales) {
     return "La orden debe estar en el último proceso de producción para registrar bultos";
@@ -100,9 +113,11 @@ async function calcularLimiteYEmpacado(
   modoOrden: "unidad" | "kilo"
 ): Promise<{ limiteDisponible: number | null; totalEmpacado: number }> {
   const tablaProceso = fk.tipo;
-  const campoFinal   = modoOrden === "kilo"
-    ? (tablaProceso === "bolseo" ? "kilos_bolseados"  : "kilos_finales")
-    : (tablaProceso === "bolseo" ? "piezas_bolseadas" : "pzas_finales");
+  const campoFinal = tablaProceso === "empaque_papel"
+    ? "bolsas_entregadas_final"
+    : modoOrden === "kilo"
+      ? (tablaProceso === "bolseo" ? "kilos_bolseados" : "kilos_finales")
+      : (tablaProceso === "bolseo" ? "piezas_bolseadas" : "pzas_finales");
 
   const { rows: procesoRows } = await pool.query(
     `SELECT estado_produccion_cat_idestado_produccion_cat AS estado, ${campoFinal} AS campo_final
@@ -133,7 +148,8 @@ async function calcularLimiteYEmpacado(
      FROM bultos b
      WHERE
        b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = $1)
-       OR b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1)`,
+       OR b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1)
+       OR b.empaque_papel_idempaque_papel IN (SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = $1)`,
     [idproduccion]
   );
   const totalEmpacado = Number(totalBultosRows[0]?.total ?? 0);
@@ -173,6 +189,7 @@ export const getBultos = async (req: Request, res: Response): Promise<Response> 
          CASE
            WHEN b.bolseo_idbolseo             IS NOT NULL THEN 'bolseo'
            WHEN b.asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
+           WHEN b.empaque_papel_idempaque_papel IS NOT NULL THEN 'empaque_papel'
          END AS proceso_origen
        FROM bultos b
        WHERE
@@ -182,6 +199,10 @@ export const getBultos = async (req: Request, res: Response): Promise<Response> 
          OR
          b.asa_flexible_idasa_flexible IN (
            SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1
+         )
+         OR
+         b.empaque_papel_idempaque_papel IN (
+           SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = $1
          )
        ORDER BY b.idbulto ASC`,
       [idproduccion]
@@ -230,8 +251,12 @@ export const agregarBulto = async (req: Request, res: Response): Promise<Respons
     const ancho             = req.body.ancho             != null ? Number(req.body.ancho)             : null;
 
     const { rows: ordenRows } = await pool.query(
-      `SELECT idestado_produccion_cat, proceso_actual, bultos_finalizado
-       FROM orden_produccion WHERE idproduccion = $1`,
+      `SELECT op.idestado_produccion_cat, op.proceso_actual,
+              op.bultos_finalizado, sp.tipo_material
+       FROM orden_produccion op
+       JOIN solicitud_producto sp
+         ON sp.idsolicitud_producto = op.idsolicitud_producto
+       WHERE op.idproduccion = $1`,
       [idproduccion]
     );
     if (ordenRows.length === 0) {
@@ -280,7 +305,12 @@ export const agregarBulto = async (req: Request, res: Response): Promise<Respons
       }
     }
 
-    const columnaFk = fk.tipo === "bolseo" ? "bolseo_idbolseo" : "asa_flexible_idasa_flexible";
+    const columnaFk =
+      fk.tipo === "bolseo"
+        ? "bolseo_idbolseo"
+        : fk.tipo === "asa_flexible"
+          ? "asa_flexible_idasa_flexible"
+          : "empaque_papel_idempaque_papel";
 
     const { rows: inserted } = await pool.query(
       `INSERT INTO bultos (${columnaFk}, cantidad_unidades, peso_producto, peso, alto, largo, ancho)
@@ -324,8 +354,12 @@ export const agregarBultosBatch = async (req: Request, res: Response): Promise<R
     const ancho             = req.body.ancho != null ? Number(req.body.ancho) : null;
 
     const { rows: ordenRows } = await pool.query(
-      `SELECT idestado_produccion_cat, proceso_actual, bultos_finalizado
-       FROM orden_produccion WHERE idproduccion = $1`,
+      `SELECT op.idestado_produccion_cat, op.proceso_actual,
+              op.bultos_finalizado, sp.tipo_material
+       FROM orden_produccion op
+       JOIN solicitud_producto sp
+         ON sp.idsolicitud_producto = op.idsolicitud_producto
+       WHERE op.idproduccion = $1`,
       [idproduccion]
     );
     if (ordenRows.length === 0) {
@@ -377,7 +411,12 @@ export const agregarBultosBatch = async (req: Request, res: Response): Promise<R
       }
     }
 
-    const columnaFk = fk.tipo === "bolseo" ? "bolseo_idbolseo" : "asa_flexible_idasa_flexible";
+    const columnaFk =
+      fk.tipo === "bolseo"
+        ? "bolseo_idbolseo"
+        : fk.tipo === "asa_flexible"
+          ? "asa_flexible_idasa_flexible"
+          : "empaque_papel_idempaque_papel";
 
     const client = await pool.connect();
     try {
@@ -457,6 +496,10 @@ export const eliminarBulto = async (req: Request, res: Response): Promise<Respon
            b.asa_flexible_idasa_flexible IN (
              SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $2
            )
+           OR
+           b.empaque_papel_idempaque_papel IN (
+             SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = $2
+           )
          )`,
       [idbulto, idproduccion]
     );
@@ -499,6 +542,10 @@ export const finalizarBultos = async (req: Request, res: Response): Promise<Resp
          OR
          b.asa_flexible_idasa_flexible IN (
            SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1
+         )
+         OR
+         b.empaque_papel_idempaque_papel IN (
+           SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = $1
          )`,
       [idproduccion]
     );
@@ -508,13 +555,16 @@ export const finalizarBultos = async (req: Request, res: Response): Promise<Resp
 
     const { rows: procesoFinalRows } = await pool.query(`
       SELECT
-        COALESCE(af.estado_produccion_cat_idestado_produccion_cat,
+        COALESCE(emp.estado_produccion_cat_idestado_produccion_cat,
+                 af.estado_produccion_cat_idestado_produccion_cat,
                  bol.estado_produccion_cat_idestado_produccion_cat) AS estado_final,
         CASE
+          WHEN emp.idempaque_papel IS NOT NULL THEN 'empaque_papel'
           WHEN af.idasa_flexible IS NOT NULL THEN 'asa_flexible'
           ELSE 'bolseo'
         END AS proceso_final
       FROM orden_produccion op
+      LEFT JOIN empaque_papel emp ON emp.orden_produccion_idproduccion = op.idproduccion
       LEFT JOIN asa_flexible af  ON af.orden_produccion_idproduccion  = op.idproduccion
       LEFT JOIN bolseo bol       ON bol.orden_produccion_idproduccion = op.idproduccion
       WHERE op.idproduccion = $1
@@ -523,7 +573,12 @@ export const finalizarBultos = async (req: Request, res: Response): Promise<Resp
 
     if (procesoFinalRows.length > 0) {
       const estadoFinal = Number(procesoFinalRows[0].estado_final);
-      const nombreFinal = procesoFinalRows[0].proceso_final === "asa_flexible" ? "Asa flexible" : "Bolseo";
+      const nombreFinal =
+        procesoFinalRows[0].proceso_final === "empaque_papel"
+          ? "Empaque de papel"
+          : procesoFinalRows[0].proceso_final === "asa_flexible"
+            ? "Asa flexible"
+            : "Bolseo";
       if (estadoFinal !== ESTADO_PROD.TERMINADO) {
         return res.status(400).json({
           error: `El proceso de ${nombreFinal} debe estar finalizado antes de poder cerrar los bultos.`,
@@ -615,6 +670,10 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
         b.asa_flexible_idasa_flexible IN (
           SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1
         )
+        OR
+        b.empaque_papel_idempaque_papel IN (
+          SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = $1
+        )
     `, [idproduccion]);
 
     const numeroEnvioParcial = esReimpresion
@@ -629,6 +688,7 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
         b.idbulto, b.cantidad_unidades, b.fecha_creacion,
         b.peso_producto, b.peso, b.alto, b.largo, b.ancho,
         CASE
+          WHEN b.empaque_papel_idempaque_papel IS NOT NULL THEN 'empaque_papel'
           WHEN b.asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
           ELSE 'bolseo'
         END AS proceso_origen
@@ -645,6 +705,10 @@ export const getBultosEtiqueta = async (req: Request, res: Response): Promise<Re
           OR
           b.asa_flexible_idasa_flexible IN (
             SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $1
+          )
+          OR
+          b.empaque_papel_idempaque_papel IN (
+            SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = $1
           )
         )
       ORDER BY b.idbulto ASC
@@ -741,6 +805,10 @@ export const marcarBultosParcialidad = async (req: Request, res: Response): Prom
           b.asa_flexible_idasa_flexible IN (
             SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $2
           )
+          OR
+          b.empaque_papel_idempaque_papel IN (
+            SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = $2
+          )
         )
     `, [idbultos, idproduccion]);
 
@@ -802,6 +870,10 @@ export const editarBulto = async (req: Request, res: Response): Promise<Response
            b.asa_flexible_idasa_flexible IN (
              SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = $2
            )
+           OR
+           b.empaque_papel_idempaque_papel IN (
+             SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = $2
+           )
          )`,
       [idbulto, idproduccion]
     );
@@ -824,7 +896,11 @@ export const editarBulto = async (req: Request, res: Response): Promise<Response
 
     const r = updated[0];
     const { rows: origenRows } = await pool.query(
-      `SELECT CASE WHEN asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible' ELSE 'bolseo' END AS proceso_origen
+      `SELECT CASE
+         WHEN empaque_papel_idempaque_papel IS NOT NULL THEN 'empaque_papel'
+         WHEN asa_flexible_idasa_flexible IS NOT NULL THEN 'asa_flexible'
+         ELSE 'bolseo'
+       END AS proceso_origen
        FROM bultos WHERE idbulto = $1`,
       [idbulto]
     );
