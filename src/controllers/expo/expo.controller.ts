@@ -47,8 +47,8 @@ async function crearVentaYDiseno(
   client: any, solicitudId: number, folioPedido: string,
   subtotal: number, sinIva = false
 ): Promise<void> {
-  const iva      = sinIva ? 0 : Number((subtotal * 0.16).toFixed(2));
-  const total    = Number((subtotal + iva).toFixed(2));
+  const iva = sinIva ? 0 : Number((subtotal * 0.16).toFixed(2));
+  const total = Number((subtotal + iva).toFixed(2));
   const anticipo = Number((total * 0.50).toFixed(2));
   const { rows: vr } = await client.query(
     `INSERT INTO ventas (solicitud_idsolicitud,estado_administrativo_cat_idestado_administrativo_cat,
@@ -120,9 +120,12 @@ export const getCatalogoSistema = async (req: Request, res: Response) => {
       LEFT JOIN cat_tipo_producto_papel ctp ON ctp.idcat_tipo_producto_papel=pp.idcat_tipo_producto_papel
       WHERE pp.activo=true ORDER BY ctp.nombre,pp.medida`);
     const { rows: coloresAsa } = await pool.query(
-      `SELECT id_color AS id, INITCAP(color) AS nombre FROM color_asa ORDER BY color`
+      `SELECT id_color AS id, INITCAP(color) AS nombre FROM color_asa ORDER BY id_color`
     );
-    return res.json({ plastico, papel, coloresAsa });
+    const { rows: suajesPlast } = await pool.query(
+      `SELECT idsuaje AS id, tipo FROM asa_suaje WHERE idproductos = 1 ORDER BY idsuaje`
+    );
+    return res.json({ plastico, papel, coloresAsa, suajesPlast });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 };
 
@@ -138,16 +141,15 @@ export const crearProductoCatalogo = async (req: Request, res: Response) => {
     } = req.body;
 
     if (!nombre?.trim()) return res.status(400).json({ error: "El nombre es requerido" });
-    if (!["papel","plastico","carton"].includes(categoria))
+    if (!["papel", "plastico", "carton"].includes(categoria))
       return res.status(400).json({ error: `Categoría inválida: "${categoria}"` });
 
     const bool = (v: any) => v === true || v === "true";
-    const num  = (v: any) => (v != null && v !== "") ? Number(v) : null;
+    const num = (v: any) => (v != null && v !== "") ? Number(v) : null;
 
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-
       const { rows } = await client.query(`
         INSERT INTO catalogo_expo (nombre,categoria,medida,material,calibre,tintas,
           laminacion,tipo_laminado,hs,tipo_hs,ar,textura,tipo_textura,uv,asa,tipo_asa,otro,
@@ -156,15 +158,14 @@ export const crearProductoCatalogo = async (req: Request, res: Response) => {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
                 $23,$24,$25,$26,$27,$28,$29,$30)
         RETURNING *`,
-        [nombre.trim(),categoria,medida||null,material||null,calibre||null,tintas||null,
-         bool(laminacion),tipo_laminado||null,bool(hs),tipo_hs||null,
-         bool(ar),bool(textura),tipo_textura||null,bool(uv),bool(asa),tipo_asa||null,otro||null,
-         num(precio_500),num(precio_1000),num(precio_3000),imagen_url||null,tipo_producto||null,
-         num(altura),num(ancho),num(fuelle),num(fuelle_fondo),
-         num(fuelle_lateral_iz),num(fuelle_lateral_de),num(refuerzo),
-         origen||"expo"]
+        [nombre.trim(), categoria, medida || null, material || null, calibre || null, tintas || null,
+        bool(laminacion), tipo_laminado || null, bool(hs), tipo_hs || null,
+        bool(ar), bool(textura), tipo_textura || null, bool(uv), bool(asa), tipo_asa || null, otro || null,
+        num(precio_500), num(precio_1000), num(precio_3000), imagen_url || null, tipo_producto || null,
+        num(altura), num(ancho), num(fuelle), num(fuelle_fondo),
+        num(fuelle_lateral_iz), num(fuelle_lateral_de), num(refuerzo),
+        origen || "expo"]
       );
-
       const prod = rows[0];
       const fks = await resolverFKsProductoExpo(client, {
         categoria: prod.categoria, nombre: prod.nombre,
@@ -173,18 +174,14 @@ export const crearProductoCatalogo = async (req: Request, res: Response) => {
         fuelle_fondo: prod.fuelle_fondo, fuelle_lateral_iz: prod.fuelle_lateral_iz,
         fuelle_lateral_de: prod.fuelle_lateral_de, refuerzo: prod.refuerzo,
       });
-
       if (fks.idproducto_papel || fks.idconfiguracion_plastico) {
         await client.query(`
-          UPDATE catalogo_expo SET
-            idproducto_papel = $1,
-            idconfiguracion_plastico = $2
-          WHERE idcatalogo_expo = $3
-        `, [fks.idproducto_papel, fks.idconfiguracion_plastico, prod.idcatalogo_expo]);
+          UPDATE catalogo_expo SET idproducto_papel=$1, idconfiguracion_plastico=$2
+          WHERE idcatalogo_expo=$3`,
+          [fks.idproducto_papel, fks.idconfiguracion_plastico, prod.idcatalogo_expo]);
         prod.idproducto_papel = fks.idproducto_papel;
         prod.idconfiguracion_plastico = fks.idconfiguracion_plastico;
       }
-
       await client.query("COMMIT");
       return res.status(201).json({ message: "Producto agregado", producto: prod });
     } catch (e: any) {
@@ -207,12 +204,11 @@ export const actualizarProductoCatalogo = async (req: Request, res: Response) =>
     } = req.body;
 
     const bool = (v: any) => v === true || v === "true";
-    const num  = (v: any) => (v != null && v !== "") ? Number(v) : null;
+    const num = (v: any) => (v != null && v !== "") ? Number(v) : null;
 
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-
       const { rows, rowCount } = await client.query(`
         UPDATE catalogo_expo SET
           nombre=$1,categoria=$2,medida=$3,material=$4,calibre=$5,tintas=$6,
@@ -223,19 +219,18 @@ export const actualizarProductoCatalogo = async (req: Request, res: Response) =>
           fuelle_lateral_iz=$27,fuelle_lateral_de=$28,refuerzo=$29,origen=$30,
           idproducto_papel=NULL, idconfiguracion_plastico=NULL
         WHERE idcatalogo_expo=$31 AND activo=true RETURNING *`,
-        [nombre?.trim(),categoria,medida||null,material||null,calibre||null,tintas||null,
-         bool(laminacion),tipo_laminado||null,bool(hs),tipo_hs||null,
-         bool(ar),bool(textura),tipo_textura||null,bool(uv),bool(asa),tipo_asa||null,otro||null,
-         num(precio_500),num(precio_1000),num(precio_3000),imagen_url||null,tipo_producto||null,
-         num(altura),num(ancho),num(fuelle),num(fuelle_fondo),
-         num(fuelle_lateral_iz),num(fuelle_lateral_de),num(refuerzo),
-         origen||"expo", id]
+        [nombre?.trim(), categoria, medida || null, material || null, calibre || null, tintas || null,
+        bool(laminacion), tipo_laminado || null, bool(hs), tipo_hs || null,
+        bool(ar), bool(textura), tipo_textura || null, bool(uv), bool(asa), tipo_asa || null, otro || null,
+        num(precio_500), num(precio_1000), num(precio_3000), imagen_url || null, tipo_producto || null,
+        num(altura), num(ancho), num(fuelle), num(fuelle_fondo),
+        num(fuelle_lateral_iz), num(fuelle_lateral_de), num(refuerzo),
+        origen || "expo", id]
       );
       if ((rowCount ?? 0) === 0) {
         await client.query("ROLLBACK");
         return res.status(404).json({ error: "Producto no encontrado" });
       }
-
       const prod = rows[0];
       const fks = await resolverFKsProductoExpo(client, {
         categoria: prod.categoria, nombre: prod.nombre,
@@ -244,18 +239,14 @@ export const actualizarProductoCatalogo = async (req: Request, res: Response) =>
         fuelle_fondo: prod.fuelle_fondo, fuelle_lateral_iz: prod.fuelle_lateral_iz,
         fuelle_lateral_de: prod.fuelle_lateral_de, refuerzo: prod.refuerzo,
       });
-
       if (fks.idproducto_papel || fks.idconfiguracion_plastico) {
         await client.query(`
-          UPDATE catalogo_expo SET
-            idproducto_papel = $1,
-            idconfiguracion_plastico = $2
-          WHERE idcatalogo_expo = $3
-        `, [fks.idproducto_papel, fks.idconfiguracion_plastico, prod.idcatalogo_expo]);
+          UPDATE catalogo_expo SET idproducto_papel=$1, idconfiguracion_plastico=$2
+          WHERE idcatalogo_expo=$3`,
+          [fks.idproducto_papel, fks.idconfiguracion_plastico, prod.idcatalogo_expo]);
         prod.idproducto_papel = fks.idproducto_papel;
         prod.idconfiguracion_plastico = fks.idconfiguracion_plastico;
       }
-
       await client.query("COMMIT");
       return res.json({ message: "Producto actualizado", producto: prod });
     } catch (e: any) {
@@ -292,22 +283,24 @@ export const crearClienteExpo = async (req: Request, res: Response) => {
         intereses_expo,observaciones_expo,fecha,identificar)
       VALUES ($1,$2,$3,$4,true,$5,$6,$7,CURRENT_TIMESTAMP,$8)
       RETURNING idclientes,atencion,celular,correo,impresion,identificar`,
-      [nombre.trim(), celular||null, correo||null, impresion||null,
-       clase||null, intereses?.length ? intereses : null, observaciones||null, identificar]
+      [nombre.trim(), celular || null, correo || null, impresion || null,
+      clase || null, intereses?.length ? intereses : null, observaciones || null, identificar]
     );
     const idclientes = rows[0].idclientes;
     if (ciudad || estado) {
       await client.query(
         `INSERT INTO domicilio (clientes_idclientes,poblacion,estado) VALUES ($1,$2,$3)`,
-        [idclientes, ciudad||null, estado||null]
+        [idclientes, ciudad || null, estado || null]
       );
     }
     await client.query("COMMIT");
     console.log(`✅ [EXPO] Cliente id=${idclientes} identificar=${identificar}`);
     return res.status(201).json({
       message: "Prospecto registrado",
-      cliente: { id: idclientes, identificar, nombre: rows[0].atencion,
-        celular: rows[0].celular, correo: rows[0].correo, impresion: rows[0].impresion },
+      cliente: {
+        id: idclientes, identificar, nombre: rows[0].atencion,
+        celular: rows[0].celular, correo: rows[0].correo, impresion: rows[0].impresion
+      },
     });
   } catch (e: any) {
     await client.query("ROLLBACK");
@@ -341,8 +334,8 @@ export const actualizarClienteExpo = async (req: Request, res: Response) => {
       UPDATE clientes SET atencion=$1,celular=$2,correo=$3,impresion=$4,
         clasificacion_expo=$5,intereses_expo=$6,observaciones_expo=$7
       WHERE idclientes=$8 AND origen_expo=true`,
-      [nombre?.trim()||null, celular||null, correo||null, impresion||null,
-       clase||null, intereses?.length ? intereses : null, observaciones||null, id]
+      [nombre?.trim() || null, celular || null, correo || null, impresion || null,
+      clase || null, intereses?.length ? intereses : null, observaciones || null, id]
     );
     const { rowCount } = await client.query(
       `SELECT 1 FROM domicilio WHERE clientes_idclientes=$1`, [id]
@@ -350,12 +343,12 @@ export const actualizarClienteExpo = async (req: Request, res: Response) => {
     if ((rowCount ?? 0) > 0) {
       await client.query(
         `UPDATE domicilio SET poblacion=$1,estado=$2 WHERE clientes_idclientes=$3`,
-        [ciudad||null, estado||null, id]
+        [ciudad || null, estado || null, id]
       );
     } else if (ciudad || estado) {
       await client.query(
         `INSERT INTO domicilio (clientes_idclientes,poblacion,estado) VALUES ($1,$2,$3)`,
-        [id, ciudad||null, estado||null]
+        [id, ciudad || null, estado || null]
       );
     }
     await client.query("COMMIT");
@@ -420,26 +413,42 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
       RETURNING idsolicitud,no_cotizacion`,
       [clienteId, ESTADO.PENDIENTE, folioCotizacion]
     );
-    const solicitudId  = solRows[0].idsolicitud;
+    const solicitudId = solRows[0].idsolicitud;
     const noCotizacion = solRows[0].no_cotizacion;
     console.log(`✅ [EXPO] Solicitud ${noCotizacion} id=${solicitudId}`);
+
+    // Comentarios generales de la cotización — se guardan en observacion de cada producto
+    const obsGeneral = comentarios?.trim() || null;
 
     let subtotalTotal = 0;
 
     for (const prod of productos) {
+      console.log("[EXPO] tipoCotizacion:", prod.tipoCotizacion, "nombre:", prod.nombre);
 
-      // ── PAPEL ─────────────────────────────────────────────────────────────
+
+      // ── PAPEL SIGEB (sistema) ──────────────────────────────────────────────
       if (prod.tipoCotizacion === "papel" || prod.tipo_material === "papel") {
-
         let idgrupo_papel = prod.idgrupo_papel ?? null;
         if (!idgrupo_papel && prod.idproducto_papel) {
           const { rows: grupos } = await client.query(
             `SELECT idgrupo_papel FROM grupo_papel
-             WHERE idproducto_papel=$1
-             ORDER BY idgrupo_papel ASC LIMIT 1`,
+     WHERE idproducto_papel=$1 ORDER BY idgrupo_papel ASC LIMIT 1`,
             [prod.idproducto_papel]
           );
           idgrupo_papel = grupos[0]?.idgrupo_papel ?? null;
+        }
+
+        // Resolver grupo_descripcion si no viene del frontend
+        let grupo_descripcion = prod.grupo_descripcion ?? null;
+        if (!grupo_descripcion && idgrupo_papel) {
+          const { rows: gdRows } = await client.query(`
+    SELECT string_agg(CONCAT(ctp.nombre, ' ', cc.nombre), ' + ') AS desc
+    FROM detalle_material_papel dmp
+    LEFT JOIN cat_tipo_papel ctp ON ctp.idcat_tipo_papel = dmp.idcat_tipo_papel
+    LEFT JOIN cat_calibre cc ON cc.idcat_calibre = dmp.idcat_calibre
+    WHERE dmp.idgrupo_papel = $1`, [idgrupo_papel]
+          );
+          grupo_descripcion = gdRows[0]?.desc ?? null;
         }
 
         let metodo_hojeado: "hojeado" | "guillotina" = "hojeado";
@@ -463,49 +472,48 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
         }
 
         const papelPayload: ProductoPapelPayload = {
-          tipoCotizacion:              "papel",
-          idproducto_papel:            prod.idproducto_papel,
-          nombre:                      prod.nombre ?? "",
+          tipoCotizacion: "papel",
+          idproducto_papel: prod.idproducto_papel,
+          nombre: prod.nombre ?? "",
           idgrupo_papel,
-          grupo_descripcion:           prod.grupo_descripcion           ?? null,
+          grupo_descripcion: grupo_descripcion,
           tintasId,
-          pantones:                    prod.pantones                    ?? null,
-          tintasDentroId:              prod.tintasDentroId              ?? null,
-          pantonesDentro:              prod.pantonesDentro              ?? null,
-          carasId:                     prod.carasId                     ?? null,
-          id_asa:                      prod.id_asa                      ?? null,
-          idcat_laminado:              prod.idcat_laminado              ?? null,
-          idfoil:                      prod.idfoil                      ?? null,
-          idcat_textura:               prod.idcat_textura               ?? null,
-          uv:                          prod.uv                          ?? false,
-          alto_relieve:                prod.alto_relieve                ?? false,
-          observacion:                 prod.observacion                 ?? null,
-          descripcion:                 prod.descripcion                 ?? null,
-          cantidades:                  prod.cantidades,
-          precios:                     prod.precios,
-          herramental_descripcion:     prod.herramental_descripcion     ?? null,
-          herramental_precio:          prod.herramental_precio          ?? null,
+          pantones: prod.pantones ?? null,
+          tintasDentroId: prod.tintasDentroId ?? null,
+          pantonesDentro: prod.pantonesDentro ?? null,
+          carasId: prod.carasId ?? null,
+          id_asa: prod.id_asa ?? null,
+          idcat_laminado: prod.idcat_laminado ?? null,
+          idfoil: prod.idfoil ?? null,
+          idcat_textura: prod.idcat_textura ?? null,
+          uv: prod.uv ?? false,
+          alto_relieve: prod.alto_relieve ?? false,
+          observacion: prod.observacion || obsGeneral,   // ← comentarios generales
+          descripcion: prod.descripcion ?? null,
+          cantidades: prod.cantidades,
+          precios: prod.precios,
+          herramental_descripcion: null,
+          herramental_precio: null,
           cargo_adicional_descripcion: null,
-          cargo_adicional_precio:      null,
+          cargo_adicional_precio: null,
           metodo_hojeado,
-          lleva_armado:                prod.lleva_armado ?? false,
+          lleva_armado: prod.lleva_armado ?? false,
         };
 
         subtotalTotal += await insertarProductoPapel(client, solicitudId, papelPayload, "cotizacion");
         continue;
       }
 
-      // ── PAPEL EXPO PROPIO (categoria papel/carton del catálogo expo) ────────
+      // ── PAPEL EXPO PROPIO (categoría papel/cartón del catálogo expo) ────────
       if (prod.tipoCotizacion === "expo_papel") {
         const {
           nombre: epNombre = null, tintas_cantidad: epTintas,
           tipoLaminado = null, tipoHs = null, tipoTextura = null, tipoAsa: epTipoAsa = null,
-          uv: epUv = false, ar: epAr = false, hs: epHs = false,
+          uv: epUv = false, ar: epAr = false,
           cantidades: epCants, precios: epPrecios,
-          observacion: epObs = null, categoria: epCat = "papel",
+          observacion: epObs = null,
         } = prod;
 
-        // Resolver tintas
         let epTintasId: number | null = null;
         if (epTintas != null) {
           const num = parseInt(String(epTintas), 10);
@@ -517,13 +525,12 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
           }
         }
 
-        // Resolver o crear producto_papel usando resolverFKsProductoExpo
         const { rows: catExpoRows } = await client.query(`
-          SELECT * FROM catalogo_expo WHERE LOWER(nombre) = LOWER($1) AND activo=true LIMIT 1
-        `, [epNombre || ""]);
+          SELECT * FROM catalogo_expo WHERE LOWER(nombre) = LOWER($1) AND activo=true LIMIT 1`,
+          [epNombre || ""]
+        );
 
         let epIdproductoPapel: number | null = null;
-
         if (catExpoRows.length > 0) {
           const catE = catExpoRows[0];
           if (catE.idproducto_papel) {
@@ -554,7 +561,7 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
               (solicitud_idsolicitud, tintas_idtintas, descripcion, observacion, tipo_material)
             VALUES ($1,$2,$3,$4,'expo')
             RETURNING idsolicitud_producto`,
-            [solicitudId, epTintasId, epNombre || null, epObs || null]
+            [solicitudId, epTintasId, epNombre || null, epObs || obsGeneral || null]  // ← comentarios generales
           );
           const spGenId = spGenRows[0].idsolicitud_producto;
           for (let i = 0; i < 3; i++) {
@@ -572,9 +579,6 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
           continue;
         }
 
-        // ── FIX: Resolver foil buscando primero en colorfoil y luego por código
-        // Si tipoHs = "Dorado 223", busca "%dorado 223%" en colorfoil (puede fallar)
-        // y como fallback busca la última palabra "223" en codigofoil
         let epIdAsa: number | null = null;
         if (epTipoAsa) {
           const { rows: asaR } = await client.query(
@@ -593,23 +597,16 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
           epIdLaminado = lamR[0]?.idcat_laminado ?? null;
         }
 
-        // ── FIX FOIL: busca por frase completa en colorfoil,
-        //    y si no matchea, usa la última palabra como código
         let epIdFoil: number | null = null;
         if (tipoHs) {
           const termino = tipoHs.toLowerCase().trim();
           const palabras = termino.split(/\s+/);
-          const ultimaPalabra = palabras[palabras.length - 1]; // posible código: "223"
-
+          const ultimaPalab = palabras[palabras.length - 1];
           const { rows: foilR } = await client.query(
-            `SELECT idfoil FROM foil
-             WHERE LOWER(colorfoil) LIKE $1
-                OR LOWER(codigofoil) LIKE $2
-             LIMIT 1`,
-            [`%${termino}%`, `%${ultimaPalabra}%`]
+            `SELECT idfoil FROM foil WHERE LOWER(colorfoil) LIKE $1 OR LOWER(codigofoil) LIKE $2 LIMIT 1`,
+            [`%${termino}%`, `%${ultimaPalab}%`]
           );
           epIdFoil = foilR[0]?.idfoil ?? null;
-          console.log(`[EXPO] Foil "${tipoHs}" -> termino="${termino}" codigo="${ultimaPalabra}" idfoil=${epIdFoil}`);
         }
 
         let epIdTextura: number | null = null;
@@ -621,14 +618,12 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
           epIdTextura = texR[0]?.idcat_textura ?? null;
         }
 
-        // Obtener idgrupo_papel
         const { rows: gpRows } = await client.query(
           `SELECT idgrupo_papel FROM grupo_papel WHERE idproducto_papel=$1 ORDER BY idgrupo_papel ASC LIMIT 1`,
           [epIdproductoPapel]
         );
         const epIdgrupo = gpRows[0]?.idgrupo_papel ?? null;
 
-        // Resolver grupo_descripcion
         let epGrupoDesc: string | null = null;
         if (epIdgrupo) {
           const { rows: gdRows } = await client.query(`
@@ -636,32 +631,42 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
             FROM detalle_material_papel dmp
             LEFT JOIN cat_tipo_papel ctp ON ctp.idcat_tipo_papel = dmp.idcat_tipo_papel
             LEFT JOIN cat_calibre cc ON cc.idcat_calibre = dmp.idcat_calibre
-            WHERE dmp.idgrupo_papel = $1
-          `, [epIdgrupo]);
+            WHERE dmp.idgrupo_papel = $1`, [epIdgrupo]
+          );
           epGrupoDesc = gdRows[0]?.desc ?? null;
         }
 
+        console.log("[EXPO] epGrupoDesc:", epGrupoDesc);
+        console.log("[EXPO] catExpoRows:", catExpoRows.length, catExpoRows[0]?.material, catExpoRows[0]?.calibre);
+
+        // ← NUEVO: fallback desde catálogo expo si no hay grupo_descripcion
+        if (!epGrupoDesc && catExpoRows.length > 0) {
+          const catE = catExpoRows[0];
+          const partes = [catE.material, catE.calibre].filter(Boolean);
+          if (partes.length > 0) epGrupoDesc = partes.join(" ");
+        }
+
         const epPayload: ProductoPapelPayload = {
-          tipoCotizacion:  "papel",
+          tipoCotizacion: "papel",
           idproducto_papel: epIdproductoPapel,
-          nombre:           epNombre ?? "",
-          idgrupo_papel:    epIdgrupo,
+          nombre: epNombre ?? "",
+          idgrupo_papel: epIdgrupo,
           grupo_descripcion: epGrupoDesc,
-          tintasId:         epTintasId,
-          pantones:         null,
-          tintasDentroId:   null,
-          pantonesDentro:   null,
-          carasId:          null,
-          id_asa:           epIdAsa,
-          idcat_laminado:   epIdLaminado,
-          idfoil:           epIdFoil,
-          idcat_textura:    epIdTextura,
-          uv:               epUv === true,
-          alto_relieve:     epAr === true,
-          observacion:      epObs ?? null,
-          descripcion:      epNombre ?? null,
-          cantidades:       epCants ?? [0, 0, 0],
-          precios:          epPrecios ?? [0, 0, 0],
+          tintasId: epTintasId,
+          pantones: null,
+          tintasDentroId: null,
+          pantonesDentro: null,
+          carasId: null,
+          id_asa: epIdAsa,
+          idcat_laminado: epIdLaminado,
+          idfoil: epIdFoil,
+          idcat_textura: epIdTextura,
+          uv: epUv === true,
+          alto_relieve: epAr === true,
+          observacion: epObs || obsGeneral || null,  // ← comentarios generales
+          descripcion: epNombre ?? null,
+          cantidades: epCants ?? [0, 0, 0],
+          precios: epPrecios ?? [0, 0, 0],
           herramental_descripcion: null,
           herramental_precio: null,
           cargo_adicional_descripcion: null,
@@ -674,89 +679,82 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
         continue;
       }
 
-      // ── PLÁSTICO / EXPO ───────────────────────────────────────────────────
+      // ── PLÁSTICO (sistema o expo) — igual a SIGEB normal ─────────────────
       const {
-        configuracion_plastico_id, idproducto_papel: _skip, tintas_cantidad,
-        nombre: prodNombre = null, observacion = null, cantidades, precios,
-        id_laminado = null, idfoil = null, id_textura = null, id_asa = null,
-        uv = false, ar = false,
-        tipoAsa = null,
-        // ── FIX: pigmento del plástico ──────────────────────────────────────
-        pigmento = null,
+        configuracion_plastico_id,
+        tintas_cantidad,
+        nombre: prodNombre = null,
+        observacion: prodObs = null,
+        cantidades,
+        precios,
+        idsuaje: prodIdsuaje = null,
+        id_color: prodIdColor = null,
+        pigmento: prodPigmento = null,
       } = prod;
 
-      const tipoMaterialExpo = configuracion_plastico_id ? "plastico" : "expo";
+      const tipoMaterial = configuracion_plastico_id ? "plastico" : "expo";
 
       let tintasId: number | null = null;
       if (tintas_cantidad != null) {
-        const num = parseInt(String(tintas_cantidad), 10);
-        if (!isNaN(num)) {
+        const tNum = parseInt(String(tintas_cantidad), 10);
+        if (!isNaN(tNum)) {
           const { rows: tr } = await client.query(
-            `SELECT idtintas FROM tintas WHERE cantidad=$1 LIMIT 1`, [num]
+            `SELECT idtintas FROM tintas WHERE cantidad=$1 LIMIT 1`, [tNum]
           );
           tintasId = tr[0]?.idtintas ?? null;
         }
       }
 
-      // Resolver asa: color del asa en color_asa (idsuaje siempre 1 = asa flexible para expo)
-      let idsuaje: number | null = null;
-      let idColor: number | null = null;
-      if (tipoAsa) {
-        idsuaje = 1;
-        const { rows: colorRows } = await client.query(
-          `SELECT id_color FROM color_asa WHERE LOWER(color) = LOWER($1) LIMIT 1`,
-          [tipoAsa]
-        );
-        idColor = colorRows[0]?.id_color ?? null;
-        console.log(`[EXPO] Asa "${tipoAsa}" -> idsuaje=${idsuaje} id_color=${idColor}`);
-      }
+      const idsuaje = prodIdsuaje != null ? Number(prodIdsuaje) : null;
+      const idColor = prodIdColor != null ? Number(prodIdColor) : null;
+      console.log(`[EXPO] Plástico cfg_id=${configuracion_plastico_id} idsuaje=${idsuaje} id_color=${idColor}`);
 
-      // ── FIX: agrega pigmentos al INSERT ──────────────────────────────────
       const { rows: spRows } = await client.query(`
-        INSERT INTO solicitud_producto
-          (solicitud_idsolicitud,configuracion_plastico_idconfiguracion_plastico,
-           producto_papel_idproducto_papel,tintas_idtintas,descripcion,observacion,
-           tipo_material,idsuaje,id_color,pigmentos)
-        VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9)
+        INSERT INTO solicitud_producto (
+          solicitud_idsolicitud,
+          configuracion_plastico_idconfiguracion_plastico,
+          producto_papel_idproducto_papel,
+          tintas_idtintas,
+          descripcion,
+          observacion,
+          tipo_material,
+          idsuaje,
+          id_color,
+          pigmentos
+        ) VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9)
         RETURNING idsolicitud_producto`,
-        [solicitudId, configuracion_plastico_id ?? null, tintasId,
-         prodNombre || null, observacion || null, tipoMaterialExpo, idsuaje, idColor,
-         pigmento || null]
+        [
+          solicitudId,
+          configuracion_plastico_id ?? null,
+          tintasId,
+          prodNombre || null,
+          prodObs || obsGeneral || null,   // ← comentarios generales
+          tipoMaterial,
+          idsuaje,
+          idColor,
+          prodPigmento || null,
+        ]
       );
       const spId = spRows[0].idsolicitud_producto;
 
-      await client.query(`
-        INSERT INTO solicitud_producto_papel
-          (idsolicitud_producto,id_asa,idcat_laminado,idfoil,idcat_textura,uv,alto_relieve)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
-        ON CONFLICT (idsolicitud_producto) DO UPDATE SET
-          id_asa=EXCLUDED.id_asa, idcat_laminado=EXCLUDED.idcat_laminado,
-          idfoil=EXCLUDED.idfoil, idcat_textura=EXCLUDED.idcat_textura,
-          uv=EXCLUDED.uv, alto_relieve=EXCLUDED.alto_relieve`,
-        [spId,
-         id_asa      != null ? Number(id_asa)      : null,
-         id_laminado != null ? Number(id_laminado) : null,
-         idfoil      != null ? Number(idfoil)      : null,
-         id_textura  != null ? Number(id_textura)  : null,
-         uv === true, ar === true]
-      );
+      const cantArr: number[] = Array.isArray(cantidades) ? cantidades : [0, 0, 0];
+      const preArr: number[] = Array.isArray(precios) ? precios : [0, 0, 0];
 
-      const cantArr: number[] = Array.isArray(cantidades) ? cantidades : [500, 1000, 3000];
-      const preArr:  number[] = Array.isArray(precios)    ? precios    : [0, 0, 0];
       for (let i = 0; i < cantArr.length; i++) {
-        const cant   = Number(cantArr[i]);
+        const cant = Number(cantArr[i]);
         const precio = Number(preArr[i]);
         if (cant <= 0 || precio <= 0) continue;
         const precioTotal = Math.round(cant * precio * 100) / 100;
         await client.query(`
           INSERT INTO solicitud_detalle
-            (solicitud_producto_id,cantidad,precio_total,precio_unitario,aprobado,modo_cantidad)
+            (solicitud_producto_id, cantidad, precio_total, precio_unitario, aprobado, modo_cantidad)
           VALUES ($1,$2,$3,$4,NULL,'unidad')`,
           [spId, cant, precioTotal, precio]
         );
         subtotalTotal += precioTotal;
       }
-      console.log(`✅ [EXPO] sp_id=${spId} tipo=${tipoMaterialExpo} pigmento=${pigmento} subtotal acum=${subtotalTotal}`);
+
+      console.log(`✅ [EXPO] sp_id=${spId} tipo=${tipoMaterial} idsuaje=${idsuaje} id_color=${idColor} subtotal_acum=${subtotalTotal}`);
     }
 
     await client.query("COMMIT");
@@ -766,11 +764,14 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
       no_cotizacion: noCotizacion,
       idsolicitud: solicitudId,
     });
+
   } catch (e: any) {
     await client.query("ROLLBACK");
     console.error("❌ [EXPO] CREATE COT:", e.message, e.stack);
     return res.status(500).json({ error: "Error al guardar cotización expo", detalle: e.message });
-  } finally { client.release(); }
+  } finally {
+    client.release();
+  }
 };
 
 export const getCotizacionesExpo = async (req: Request, res: Response) => {
@@ -786,6 +787,11 @@ export const getCotizacionesExpo = async (req: Request, res: Response) => {
         sp.configuracion_plastico_idconfiguracion_plastico,
         sp.producto_papel_idproducto_papel,
         sp.pigmentos,
+        sp.grupo_papel_descripcion,
+sp.grupo_papel_idgrupo_papel,
+        sp.idsuaje, sp.id_color,
+        asz.tipo AS suaje_tipo,
+        ca.color AS color_asa_nombre,
         t.cantidad AS tintas_cantidad,
         cfg.medida AS cfg_medida,
         tpp.material_plastico_producto AS tipo_producto_nombre,
@@ -793,16 +799,18 @@ export const getCotizacionesExpo = async (req: Request, res: Response) => {
         cal.calibre AS calibre_numero, cal.calibre_bopp,
         ctp.nombre AS papel_tipo_producto,
         pp.medida AS papel_medida, pp.descripcion_papel AS papel_descripcion,
-        spp.id_asa,        asa.nombre   AS asa_nombre,
-        spp.idcat_laminado, lam.nombre  AS laminado_nombre,
-        spp.idfoil,        fo.colorfoil AS foil_color, fo.codigofoil AS foil_codigo,
-        spp.idcat_textura, tex.nombre   AS textura_nombre,
+        spp.id_asa, asa.nombre AS asa_nombre,
+        spp.idcat_laminado, lam.nombre AS laminado_nombre,
+        spp.idfoil, fo.colorfoil AS foil_color, fo.codigofoil AS foil_codigo,
+        spp.idcat_textura, tex.nombre AS textura_nombre,
         spp.uv, spp.alto_relieve,
         sd.idsolicitud_detalle, sd.cantidad, sd.precio_total, sd.precio_unitario, sd.aprobado
       FROM solicitud s
       LEFT JOIN clientes cli ON cli.idclientes=s.clientes_idclientes
       LEFT JOIN domicilio dom ON dom.clientes_idclientes=cli.idclientes
       LEFT JOIN solicitud_producto sp ON sp.solicitud_idsolicitud=s.idsolicitud
+      LEFT JOIN asa_suaje asz ON asz.idsuaje=sp.idsuaje
+      LEFT JOIN color_asa ca ON ca.id_color=sp.id_color
       LEFT JOIN tintas t ON t.idtintas=sp.tintas_idtintas
       LEFT JOIN configuracion_plastico cfg ON cfg.idconfiguracion_plastico=sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp ON tpp.idtipo_producto_plastico=cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
@@ -815,6 +823,7 @@ export const getCotizacionesExpo = async (req: Request, res: Response) => {
       LEFT JOIN cat_laminado lam ON lam.idcat_laminado=spp.idcat_laminado
       LEFT JOIN foil fo ON fo.idfoil=spp.idfoil
       LEFT JOIN cat_textura tex ON tex.idcat_textura=spp.idcat_textura
+      LEFT JOIN grupo_papel gp ON gp.idgrupo_papel=sp.grupo_papel_idgrupo_papel
       LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id=sp.idsolicitud_producto
       WHERE s.origen_expo=true
       ORDER BY s.fecha DESC, sp.idsolicitud_producto, sd.idsolicitud_detalle`);
@@ -847,7 +856,7 @@ export const getCotizacionesExpo = async (req: Request, res: Response) => {
               : `Papel #${row.producto_papel_idproducto_papel}`;
           } else if (row.cfg_medida) {
             nombre = [row.tipo_producto_nombre, row.cfg_medida,
-              (row.material_nombre || "").toLowerCase()].filter(Boolean).join(" ");
+            (row.material_nombre || "").toLowerCase()].filter(Boolean).join(" ");
           } else { nombre = "Producto expo"; }
         }
         const foilNombre = row.foil_color
@@ -861,9 +870,12 @@ export const getCotizacionesExpo = async (req: Request, res: Response) => {
           tintas: row.tintas_cantidad ?? null,
           descripcion: row.descripcion || null, observacion: row.observacion || null,
           pigmentos: row.pigmentos || null,
+          idsuaje: row.idsuaje ?? null, suaje_tipo: row.suaje_tipo ?? null,
+          id_color: row.id_color ?? null, color_asa_nombre: row.color_asa_nombre ?? null,
           id_asa: row.id_asa ?? null, asa_nombre: row.asa_nombre ?? null,
           idcat_laminado: row.idcat_laminado ?? null, laminado_nombre: row.laminado_nombre ?? null,
           idfoil: row.idfoil ?? null, foil_nombre: foilNombre,
+          grupo_descripcion: row.grupo_papel_descripcion ?? null,
           idcat_textura: row.idcat_textura ?? null, textura_nombre: row.textura_nombre ?? null,
           uv: row.uv ?? false, alto_relieve: row.alto_relieve ?? false,
           detalles: [],
@@ -873,10 +885,10 @@ export const getCotizacionesExpo = async (req: Request, res: Response) => {
       if (row.idsolicitud_detalle) {
         prod.detalles.push({
           idsolicitud_detalle: row.idsolicitud_detalle,
-          cantidad:        Number(row.cantidad),
-          precio_total:    Number(row.precio_total),
+          cantidad: Number(row.cantidad),
+          precio_total: Number(row.precio_total),
           precio_unitario: row.precio_unitario != null ? Number(row.precio_unitario) : null,
-          aprobado:        row.aprobado,
+          aprobado: row.aprobado,
         });
       }
     }
@@ -914,30 +926,19 @@ function normalizarMaterial(material: string | null): string {
 async function resolverFKsProductoExpo(
   client: any,
   cat: {
-    categoria: string;
-    nombre: string;
-    material: string | null;
-    calibre: string | null;
-    tipo_producto: string | null;
-    altura: number | null;
-    ancho: number | null;
-    fuelle: number | null;
-    fuelle_fondo: number | null;
-    fuelle_lateral_iz: number | null;
-    fuelle_lateral_de: number | null;
-    refuerzo: number | null;
+    categoria: string; nombre: string; material: string | null; calibre: string | null;
+    tipo_producto: string | null; altura: number | null; ancho: number | null;
+    fuelle: number | null; fuelle_fondo: number | null; fuelle_lateral_iz: number | null;
+    fuelle_lateral_de: number | null; refuerzo: number | null;
   }
 ): Promise<{ idproducto_papel: number | null; idconfiguracion_plastico: number | null }> {
 
-  // ── PLÁSTICO ──────────────────────────────────────────────────────────────
   if (cat.categoria === "plastico") {
     if (!cat.material || !cat.calibre || !cat.tipo_producto) return { idproducto_papel: null, idconfiguracion_plastico: null };
-
     const materialNorm = normalizarMaterial(cat.material);
     const esBopp = materialNorm === "BOPP";
     const calibreNum = parseFloat(cat.calibre) || 0;
     if (!calibreNum) return { idproducto_papel: null, idconfiguracion_plastico: null };
-
     const { rows: matRows } = await client.query(
       `SELECT idmaterial_plastico, valor FROM material_plastico WHERE LOWER(tipo_material) = LOWER($1) LIMIT 1`,
       [materialNorm]
@@ -945,32 +946,27 @@ async function resolverFKsProductoExpo(
     if (!matRows.length) return { idproducto_papel: null, idconfiguracion_plastico: null };
     const materialId = matRows[0].idmaterial_plastico;
     const factorMaterial = parseFloat(matRows[0].valor) || 0;
-
     const { rows: tipoRows } = await client.query(
       `SELECT idtipo_producto_plastico FROM tipo_producto_plastico WHERE LOWER(material_plastico_producto) LIKE $1 LIMIT 1`,
       [`%${cat.tipo_producto.toLowerCase()}%`]
     );
     if (!tipoRows.length) return { idproducto_papel: null, idconfiguracion_plastico: null };
     const tipoId = tipoRows[0].idtipo_producto_plastico;
-
     const calibreCol = esBopp ? "calibre_bopp" : "calibre";
     const { rows: calRows } = await client.query(
       `SELECT idcalibre FROM calibre WHERE ${calibreCol} = $1 LIMIT 1`, [calibreNum]
     );
     if (!calRows.length) return { idproducto_papel: null, idconfiguracion_plastico: null };
     const calibreId = calRows[0].idcalibre;
-
-    const altura      = Number(cat.altura)            || 0;
-    const ancho       = Number(cat.ancho)             || 0;
+    const altura = Number(cat.altura) || 0;
+    const ancho = Number(cat.ancho) || 0;
     const fuelleFondo = Number(cat.fuelle_fondo || cat.fuelle) || 0;
-    const fuelleLat1  = Number(cat.fuelle_lateral_iz) || 0;
-    const fuelleLat2  = Number(cat.fuelle_lateral_de) || 0;
-    const refuerzo    = Number(cat.refuerzo)          || 0;
+    const fuelleLat1 = Number(cat.fuelle_lateral_iz) || 0;
+    const fuelleLat2 = Number(cat.fuelle_lateral_de) || 0;
+    const refuerzo = Number(cat.refuerzo) || 0;
     if (!altura || !ancho) return { idproducto_papel: null, idconfiguracion_plastico: null };
-
     const porKilo = calcularPorKiloExpo(altura, ancho, fuelleFondo, fuelleLat1, fuelleLat2, refuerzo, calibreNum, factorMaterial);
     if (!porKilo) return { idproducto_papel: null, idconfiguracion_plastico: null };
-
     const partes: string[] = [String(altura)];
     if (fuelleFondo > 0) partes.push(String(fuelleFondo));
     if (refuerzo > 0) partes.push(String(refuerzo));
@@ -978,19 +974,16 @@ async function resolverFKsProductoExpo(
     if (fuelleLat1 > 0) partesDer.push(String(fuelleLat1));
     if (fuelleLat2 > 0 && fuelleLat2 !== fuelleLat1) partesDer.push(String(fuelleLat2));
     const medida = `${partes.join("+")}x${partesDer.join("+")}`;
-
     const { rows: cfgRows } = await client.query(`
       INSERT INTO configuracion_plastico (
         tipo_producto_plastico_plastico_idtipo_producto_plastico,
         material_plastico_plastico_idmaterial_plastico,
-        calibre_idcalibre,
-        altura, ancho, fuelle_fondo, fuelle_latiz, fuelle_latde, refuerzo,
-        medida, por_kilo
+        calibre_idcalibre, altura, ancho, fuelle_fondo, fuelle_latiz, fuelle_latde,
+        refuerzo, medida, por_kilo
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-      ON CONFLICT DO NOTHING
-      RETURNING idconfiguracion_plastico
-    `, [tipoId, materialId, calibreId, altura, ancho, fuelleFondo, fuelleLat1, fuelleLat2, refuerzo, medida, porKilo]);
-
+      ON CONFLICT DO NOTHING RETURNING idconfiguracion_plastico`,
+      [tipoId, materialId, calibreId, altura, ancho, fuelleFondo, fuelleLat1, fuelleLat2, refuerzo, medida, porKilo]
+    );
     let configId: number;
     if (cfgRows.length > 0) {
       configId = cfgRows[0].idconfiguracion_plastico;
@@ -999,39 +992,31 @@ async function resolverFKsProductoExpo(
         SELECT idconfiguracion_plastico FROM configuracion_plastico
         WHERE tipo_producto_plastico_plastico_idtipo_producto_plastico=$1
           AND material_plastico_plastico_idmaterial_plastico=$2
-          AND calibre_idcalibre=$3
-          AND altura=$4 AND ancho=$5
+          AND calibre_idcalibre=$3 AND altura=$4 AND ancho=$5
           AND fuelle_fondo=$6 AND fuelle_latiz=$7 AND fuelle_latde=$8 AND refuerzo=$9
-        LIMIT 1
-      `, [tipoId, materialId, calibreId, altura, ancho, fuelleFondo, fuelleLat1, fuelleLat2, refuerzo]);
+        LIMIT 1`,
+        [tipoId, materialId, calibreId, altura, ancho, fuelleFondo, fuelleLat1, fuelleLat2, refuerzo]
+      );
       if (!ex.length) return { idproducto_papel: null, idconfiguracion_plastico: null };
       configId = ex[0].idconfiguracion_plastico;
     }
-    console.log(`[EXPO FK] plastico cfg_id=${configId} para "${cat.nombre}"`);
     return { idproducto_papel: null, idconfiguracion_plastico: configId };
   }
 
-  // ── PAPEL / CARTÓN ────────────────────────────────────────────────────────
   if (cat.categoria === "papel" || cat.categoria === "carton") {
     const idproductos = cat.categoria === "carton" ? 3 : 2;
-
     const tipoStr = (cat.tipo_producto || "").toLowerCase();
     const { rows: tpRows } = await client.query(
       `SELECT idcat_tipo_producto_papel FROM cat_tipo_producto_papel WHERE LOWER(nombre) LIKE $1 LIMIT 1`,
       [`%${tipoStr}%`]
     );
-    if (!tpRows.length) {
-      console.log(`[EXPO FK] No se encontró cat_tipo_producto_papel para "${cat.tipo_producto}"`);
-      return { idproducto_papel: null, idconfiguracion_plastico: null };
-    }
+    if (!tpRows.length) return { idproducto_papel: null, idconfiguracion_plastico: null };
     const idcatTipoProductoPapel = tpRows[0].idcat_tipo_producto_papel;
-
     const { rows: tmatRows } = await client.query(
       `SELECT idcat_tipo_papel FROM cat_tipo_papel WHERE LOWER(nombre) = LOWER($1) LIMIT 1`,
       [cat.material || ""]
     );
     const idcatTipoPapel = tmatRows[0]?.idcat_tipo_papel ?? null;
-
     let idcatCalibre: number | null = null;
     if (cat.calibre) {
       const { rows: calRows } = await client.query(
@@ -1040,52 +1025,41 @@ async function resolverFKsProductoExpo(
       );
       idcatCalibre = calRows[0]?.idcat_calibre ?? null;
     }
-
     const altura = Number(cat.altura) || null;
-    const ancho  = Number(cat.ancho)  || null;
+    const ancho = Number(cat.ancho) || null;
     const fuelle = Number(cat.fuelle || cat.fuelle_fondo) || null;
     const medida = [altura, fuelle, ancho].filter(Boolean).length >= 2
-      ? `${altura || ""}${fuelle ? "+" + fuelle : ""}x${ancho || ""}`
-      : null;
-
+      ? `${altura || ""}${fuelle ? "+" + fuelle : ""}x${ancho || ""}` : null;
     const { rows: ppExist } = await client.query(`
       SELECT pp.idproducto_papel FROM producto_papel pp
-      WHERE pp.idproductos = $1
-        AND pp.idcat_tipo_producto_papel = $2
-        AND (pp.ancho = $3 OR ($3 IS NULL AND pp.ancho IS NULL))
-        AND (pp.altura = $4 OR ($4 IS NULL AND pp.altura IS NULL))
-        AND (pp.fuelle = $5 OR ($5 IS NULL AND pp.fuelle IS NULL))
-      LIMIT 1
-    `, [idproductos, idcatTipoProductoPapel, ancho, altura, fuelle]);
-
+      WHERE pp.idproductos=$1 AND pp.idcat_tipo_producto_papel=$2
+        AND (pp.ancho=$3 OR ($3 IS NULL AND pp.ancho IS NULL))
+        AND (pp.altura=$4 OR ($4 IS NULL AND pp.altura IS NULL))
+        AND (pp.fuelle=$5 OR ($5 IS NULL AND pp.fuelle IS NULL))
+      LIMIT 1`, [idproductos, idcatTipoProductoPapel, ancho, altura, fuelle]
+    );
     let idproductoPapel: number;
     if (ppExist.length > 0) {
       idproductoPapel = ppExist[0].idproducto_papel;
-      console.log(`[EXPO FK] papel existente idproducto_papel=${idproductoPapel} para "${cat.nombre}"`);
     } else {
       const { rows: ppRows } = await client.query(`
         INSERT INTO producto_papel (idproductos, idcat_tipo_producto_papel, ancho, fuelle, altura, medida, descripcion_papel, activo)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, true)
-        RETURNING idproducto_papel
-      `, [idproductos, idcatTipoProductoPapel, ancho, fuelle, altura, medida, cat.nombre]);
+        VALUES ($1,$2,$3,$4,$5,$6,$7,true) RETURNING idproducto_papel`,
+        [idproductos, idcatTipoProductoPapel, ancho, fuelle, altura, medida, cat.nombre]
+      );
       idproductoPapel = ppRows[0].idproducto_papel;
-
       const { rows: gpRows } = await client.query(`
         INSERT INTO grupo_papel (idproducto_papel, precio_sugerido, orden)
-        VALUES ($1, NULL, 1)
-        RETURNING idgrupo_papel
-      `, [idproductoPapel]);
+        VALUES ($1,NULL,1) RETURNING idgrupo_papel`, [idproductoPapel]
+      );
       const idgrupoPapel = gpRows[0].idgrupo_papel;
-
       if (idcatTipoPapel && idcatCalibre) {
         await client.query(`
           INSERT INTO detalle_material_papel (idgrupo_papel, idcat_tipo_papel, idcat_calibre, orden)
-          VALUES ($1, $2, $3, 1)
-        `, [idgrupoPapel, idcatTipoPapel, idcatCalibre]);
+          VALUES ($1,$2,$3,1)`, [idgrupoPapel, idcatTipoPapel, idcatCalibre]
+        );
       }
-      console.log(`[EXPO FK] papel NUEVO idproducto_papel=${idproductoPapel} grupo=${idgrupoPapel} para "${cat.nombre}"`);
     }
-
     return { idproducto_papel: idproductoPapel, idconfiguracion_plastico: null };
   }
 
@@ -1093,78 +1067,55 @@ async function resolverFKsProductoExpo(
 }
 
 async function convertirProductoExpoASistema(
-  client: any,
-  idsolicitudProducto: number,
-  nombre: string
+  client: any, idsolicitudProducto: number, nombre: string
 ): Promise<string | null> {
   const { rows: spRows } = await client.query(`
     SELECT sp.configuracion_plastico_idconfiguracion_plastico AS cfg_id,
            sp.tipo_material, sp.descripcion
-    FROM solicitud_producto sp
-    WHERE sp.idsolicitud_producto = $1
-  `, [idsolicitudProducto]);
-
+    FROM solicitud_producto sp WHERE sp.idsolicitud_producto=$1`, [idsolicitudProducto]
+  );
   if (!spRows.length) return null;
   const sp = spRows[0];
   if (sp.cfg_id != null) return null;
   if (sp.tipo_material === "papel") return null;
   if (sp.tipo_material !== "expo") return null;
-
   const nombreBuscar = (sp.descripcion || nombre || "").trim();
   if (!nombreBuscar) return `Producto expo sin nombre. Revisar en SIGEB.`;
-
   const { rows: catRows } = await client.query(`
     SELECT ce.categoria, ce.material, ce.calibre, ce.tipo_producto,
            ce.altura, ce.ancho, ce.fuelle, ce.fuelle_fondo,
            ce.fuelle_lateral_iz, ce.fuelle_lateral_de, ce.refuerzo,
-           ce.idproducto_papel, ce.idconfiguracion_plastico,
-           ce.nombre
+           ce.idproducto_papel, ce.idconfiguracion_plastico, ce.nombre
     FROM catalogo_expo ce
-    WHERE LOWER(ce.nombre) = LOWER($1) AND ce.activo = true
-    LIMIT 1
-  `, [nombreBuscar]);
-
-  if (!catRows.length) {
-    console.log(`[EXPO] "${nombreBuscar}" no en catalogo_expo, queda como expo`);
-    return null;
-  }
-
+    WHERE LOWER(ce.nombre) = LOWER($1) AND ce.activo=true LIMIT 1`, [nombreBuscar]
+  );
+  if (!catRows.length) return null;
   const cat = catRows[0];
-
   if (cat.idconfiguracion_plastico) {
     await client.query(`
       UPDATE solicitud_producto
-      SET configuracion_plastico_idconfiguracion_plastico = $1,
-          tipo_material = 'plastico'
-      WHERE idsolicitud_producto = $2
-    `, [cat.idconfiguracion_plastico, idsolicitudProducto]);
-    console.log(`[EXPO->PLASTICO] sp_id=${idsolicitudProducto} cfg_id=${cat.idconfiguracion_plastico} (desde cache)`);
+      SET configuracion_plastico_idconfiguracion_plastico=$1, tipo_material='plastico'
+      WHERE idsolicitud_producto=$2`, [cat.idconfiguracion_plastico, idsolicitudProducto]
+    );
     return null;
   }
-
   if (cat.idproducto_papel) {
     const { rows: sppCheck } = await client.query(
-      `SELECT 1 FROM solicitud_producto_papel WHERE idsolicitud_producto = $1`,
-      [idsolicitudProducto]
+      `SELECT 1 FROM solicitud_producto_papel WHERE idsolicitud_producto=$1`, [idsolicitudProducto]
     );
     if (!sppCheck.length) {
       await client.query(`
-        INSERT INTO solicitud_producto_papel
-          (idsolicitud_producto, uv, alto_relieve, lleva_armado)
-        VALUES ($1, false, false, true)
-        ON CONFLICT (idsolicitud_producto) DO NOTHING
-      `, [idsolicitudProducto]);
+        INSERT INTO solicitud_producto_papel (idsolicitud_producto, uv, alto_relieve, lleva_armado)
+        VALUES ($1,false,false,true) ON CONFLICT (idsolicitud_producto) DO NOTHING`, [idsolicitudProducto]
+      );
     }
     await client.query(`
       UPDATE solicitud_producto
-      SET tipo_material = 'papel',
-          producto_papel_idproducto_papel = $1
-      WHERE idsolicitud_producto = $2
-    `, [cat.idproducto_papel, idsolicitudProducto]);
-    console.log(`[EXPO->PAPEL] sp_id=${idsolicitudProducto} idproducto_papel=${cat.idproducto_papel} (desde cache)`);
+      SET tipo_material='papel', producto_papel_idproducto_papel=$1
+      WHERE idsolicitud_producto=$2`, [cat.idproducto_papel, idsolicitudProducto]
+    );
     return null;
   }
-
   const fks = await resolverFKsProductoExpo(client, {
     categoria: cat.categoria, nombre: cat.nombre,
     material: cat.material, calibre: cat.calibre, tipo_producto: cat.tipo_producto,
@@ -1172,53 +1123,41 @@ async function convertirProductoExpoASistema(
     fuelle_fondo: cat.fuelle_fondo, fuelle_lateral_iz: cat.fuelle_lateral_iz,
     fuelle_lateral_de: cat.fuelle_lateral_de, refuerzo: cat.refuerzo,
   });
-
   if (fks.idconfiguracion_plastico) {
     await client.query(
-      `UPDATE catalogo_expo SET idconfiguracion_plastico = $1 WHERE LOWER(nombre) = LOWER($2)`,
+      `UPDATE catalogo_expo SET idconfiguracion_plastico=$1 WHERE LOWER(nombre)=LOWER($2)`,
       [fks.idconfiguracion_plastico, nombreBuscar]
     );
     await client.query(`
       UPDATE solicitud_producto
-      SET configuracion_plastico_idconfiguracion_plastico = $1,
-          tipo_material = 'plastico'
-      WHERE idsolicitud_producto = $2
-    `, [fks.idconfiguracion_plastico, idsolicitudProducto]);
-    console.log(`[EXPO->PLASTICO] sp_id=${idsolicitudProducto} cfg_id=${fks.idconfiguracion_plastico} (resuelto al vuelo)`);
+      SET configuracion_plastico_idconfiguracion_plastico=$1, tipo_material='plastico'
+      WHERE idsolicitud_producto=$2`, [fks.idconfiguracion_plastico, idsolicitudProducto]
+    );
     return null;
   }
-
   if (fks.idproducto_papel) {
     await client.query(
-      `UPDATE catalogo_expo SET idproducto_papel = $1 WHERE LOWER(nombre) = LOWER($2)`,
+      `UPDATE catalogo_expo SET idproducto_papel=$1 WHERE LOWER(nombre)=LOWER($2)`,
       [fks.idproducto_papel, nombreBuscar]
     );
     const { rows: sppCheck } = await client.query(
-      `SELECT 1 FROM solicitud_producto_papel WHERE idsolicitud_producto = $1`,
-      [idsolicitudProducto]
+      `SELECT 1 FROM solicitud_producto_papel WHERE idsolicitud_producto=$1`, [idsolicitudProducto]
     );
     if (!sppCheck.length) {
       await client.query(`
-        INSERT INTO solicitud_producto_papel
-          (idsolicitud_producto, uv, alto_relieve, lleva_armado)
-        VALUES ($1, false, false, true)
-        ON CONFLICT (idsolicitud_producto) DO NOTHING
-      `, [idsolicitudProducto]);
+        INSERT INTO solicitud_producto_papel (idsolicitud_producto, uv, alto_relieve, lleva_armado)
+        VALUES ($1,false,false,true) ON CONFLICT (idsolicitud_producto) DO NOTHING`, [idsolicitudProducto]
+      );
     }
     await client.query(`
       UPDATE solicitud_producto
-      SET tipo_material = 'papel',
-          producto_papel_idproducto_papel = $1
-      WHERE idsolicitud_producto = $2
-    `, [fks.idproducto_papel, idsolicitudProducto]);
-    console.log(`[EXPO->PAPEL] sp_id=${idsolicitudProducto} idproducto_papel=${fks.idproducto_papel} (resuelto al vuelo)`);
+      SET tipo_material='papel', producto_papel_idproducto_papel=$1
+      WHERE idsolicitud_producto=$2`, [fks.idproducto_papel, idsolicitudProducto]
+    );
     return null;
   }
-
-  console.warn(`[EXPO] "${nombreBuscar}" no pudo convertirse (cat=${cat.categoria}), queda como expo`);
   return null;
 }
-
 
 export const aprobarCotizacionExpo = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -1226,9 +1165,7 @@ export const aprobarCotizacionExpo = async (req: Request, res: Response) => {
     const { folio } = req.params;
     const { itemsAprobados } = req.body;
     if (!itemsAprobados?.length) return res.status(400).json({ error: "Selecciona al menos un producto" });
-
     await client.query("BEGIN");
-
     const { rows: solRows } = await client.query(
       `SELECT idsolicitud,estado,no_pedido,sin_iva FROM solicitud
        WHERE no_cotizacion=$1 AND origen_expo=true`, [folio]
@@ -1242,15 +1179,13 @@ export const aprobarCotizacionExpo = async (req: Request, res: Response) => {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Ya fue convertida a pedido" });
     }
-
     const folioPedido = await obtenerSiguienteFolioPedido(client);
-
     await client.query(`
       UPDATE solicitud_detalle SET aprobado=false
       WHERE solicitud_producto_id IN (
         SELECT idsolicitud_producto FROM solicitud_producto WHERE solicitud_idsolicitud=$1
-      )`, [sol.idsolicitud]);
-
+      )`, [sol.idsolicitud]
+    );
     const detalleIds = itemsAprobados
       .map((i: any) => i.idsolicitud_detalle)
       .filter((id: any) => id && id > 0);
@@ -1260,72 +1195,51 @@ export const aprobarCotizacionExpo = async (req: Request, res: Response) => {
         [detalleIds]
       );
     }
-
     await client.query(`
       DELETE FROM solicitud_detalle
       WHERE solicitud_producto_id IN (
         SELECT idsolicitud_producto FROM solicitud_producto WHERE solicitud_idsolicitud=$1
-      ) AND (aprobado IS NULL OR aprobado=false)`, [sol.idsolicitud]);
-
+      ) AND (aprobado IS NULL OR aprobado=false)`, [sol.idsolicitud]
+    );
     const { rows: expoProds } = await client.query(`
-      SELECT sp.idsolicitud_producto,
-             COALESCE(sp.descripcion, 'Producto expo') AS nombre_prod
+      SELECT sp.idsolicitud_producto, COALESCE(sp.descripcion,'Producto expo') AS nombre_prod
       FROM solicitud_producto sp
-      WHERE sp.solicitud_idsolicitud = $1
-        AND sp.tipo_material = 'expo'
+      WHERE sp.solicitud_idsolicitud=$1 AND sp.tipo_material='expo'
         AND sp.configuracion_plastico_idconfiguracion_plastico IS NULL
         AND EXISTS (
           SELECT 1 FROM solicitud_detalle sd
-          WHERE sd.solicitud_producto_id = sp.idsolicitud_producto
-            AND sd.aprobado = true
-        )
-    `, [sol.idsolicitud]);
-
+          WHERE sd.solicitud_producto_id=sp.idsolicitud_producto AND sd.aprobado=true
+        )`, [sol.idsolicitud]
+    );
     const advertencias: string[] = [];
     for (const prod of expoProds) {
-      const advertencia = await convertirProductoExpoASistema(
-        client,
-        prod.idsolicitud_producto,
-        prod.nombre_prod
-      );
-      if (advertencia) {
-        advertencias.push(advertencia);
-        console.warn(`⚠️ [EXPO→SISTEMA] ${advertencia}`);
-      }
+      const adv = await convertirProductoExpoASistema(client, prod.idsolicitud_producto, prod.nombre_prod);
+      if (adv) advertencias.push(adv);
     }
-
     await client.query(`
       UPDATE solicitud SET estado='pedido', no_pedido=$1, fecha_aprobacion=NOW(),
         estado_administrativo_cat_idestado_administrativo_cat=$2
       WHERE idsolicitud=$3`,
       [folioPedido, ESTADO.APROBADO, sol.idsolicitud]
     );
-
     const { rows: stRows } = await client.query(`
-      SELECT COALESCE(SUM(sd.precio_total), 0) AS subtotal
+      SELECT COALESCE(SUM(sd.precio_total),0) AS subtotal
       FROM solicitud_producto sp
-      LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id = sp.idsolicitud_producto
-      WHERE sp.solicitud_idsolicitud = $1`, [sol.idsolicitud]);
-
+      LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id=sp.idsolicitud_producto
+      WHERE sp.solicitud_idsolicitud=$1`, [sol.idsolicitud]
+    );
     await crearVentaYDiseno(client, sol.idsolicitud, folioPedido, Number(stRows[0].subtotal), sol.sin_iva);
-
     await client.query("COMMIT");
-    console.log(`✅ [EXPO] ${folio} → ${folioPedido} | conv=${expoProds.length - advertencias.length}/${expoProds.length} | advert=${advertencias.length}`);
-
     return res.json({
       message: "Cotización aprobada y convertida a pedido",
-      no_pedido: folioPedido,
-      no_cotizacion: folio,
+      no_pedido: folioPedido, no_cotizacion: folio,
       advertencias: advertencias.length > 0 ? advertencias : undefined,
     });
-
   } catch (e: any) {
     await client.query("ROLLBACK");
     console.error("❌ [EXPO] APROBAR:", e.message);
     return res.status(500).json({ error: e.message });
-  } finally {
-    client.release();
-  }
+  } finally { client.release(); }
 };
 
 export const eliminarCotizacionExpo = async (req: Request, res: Response) => {

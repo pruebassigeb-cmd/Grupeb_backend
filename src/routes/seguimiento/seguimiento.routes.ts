@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { getSeguimiento } from "../../controllers/seguimiento/seguimiento.controller";
-import { getOrdenProduccion } from "../../controllers/seguimiento/getOrdenProduccion.controller";
+import { getSeguimiento, getOrdenProduccion,
+ } from "../../controllers/seguimiento/seguimiento.controller";
+//import { getOrdenProduccion } from "../../controllers/seguimiento/getOrdenProduccion.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 
 const router = Router();

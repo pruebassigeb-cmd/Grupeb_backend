@@ -282,6 +282,13 @@ export const crearCotizacion = async (req: Request, res: Response) => {
 
     for (const producto of productos) {
       // ── PAPEL ──
+      console.log("🧵 PAPEL RECIBIDO:", {
+  nombre: producto.nombre,
+  id_asa: producto.id_asa,
+  tamano_asa: producto.tamano_asa,
+  id_color: producto.id_color,
+  color_asa_nombre: producto.color_asa_nombre,
+});
       if (esProductoPapel(producto)) {
         subtotalTotal += await insertarProductoPapel(
           client,

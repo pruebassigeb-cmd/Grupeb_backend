@@ -34,6 +34,12 @@ function esProductoPapel(prod: any): boolean {
     prod?.producto_papel_idproducto_papel != null;
 }
 
+const normalizarId = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // GET /pedidos — con JOINs de papel igual que getCotizaciones
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -533,6 +539,14 @@ export const actualizarPedido = async (req: Request, res: Response) => {
             prod.maquinaria_seleccionada
           );
 
+        const idColorParaGuardar = prod.id_asa
+          ? normalizarId(prod.id_color)
+          : null;
+
+        console.log(
+          `🎨 actualizarPedido papel sp=${prod.idsolicitud_producto} | id_asa=${prod.id_asa} | id_color recibido=${prod.id_color} | id_color a guardar=${idColorParaGuardar}`
+        );
+
         await client.query(
           `UPDATE solicitud_producto SET
        producto_papel_idproducto_papel = $1,
@@ -542,8 +556,9 @@ export const actualizarPedido = async (req: Request, res: Response) => {
        caras_idcaras                   = $5,
        pantones                        = $6,
        observacion                     = $7,
-       descripcion                     = $8
-     WHERE idsolicitud_producto = $9`,
+       descripcion                     = $8,
+       id_color                        = $9
+     WHERE idsolicitud_producto = $10`,
           [
             prod.idproducto_papel,
             prod.idgrupo_papel ?? null,
@@ -553,6 +568,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
             prod.pantones || null,
             prod.observacion || null,
             prod.descripcion || null,
+            idColorParaGuardar,
             prod.idsolicitud_producto,
           ]
         );

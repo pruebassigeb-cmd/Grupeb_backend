@@ -67,6 +67,9 @@ export interface ProductoPapelPayload {
   carasId: number | null;
   id_asa: number | null;
   tamano_asa?: string | null;
+  id_color?: number | null;
+  color_asa_nombre?: string | null;
+  asa_color?: string | null;
   idcat_laminado: number | null;
   idfoil: number | null;
   idcat_textura: number | null;
@@ -87,6 +90,12 @@ export interface ProductoPapelPayload {
 
 const limpiar = (v: unknown): string | null =>
   typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+
+const normalizarId = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
 
 async function resolverCarasAutomaticasPapel(
   client: any,
@@ -266,6 +275,12 @@ export async function insertarProductoPapel(
     );
   }
 
+  const idColorAsa = prod.id_asa ? normalizarId(prod.id_color) : null;
+
+  console.log(
+    `📎 insertarProductoPapel: idsolicitud_producto a insertar | id_asa=${prod.id_asa} | id_color recibido=${prod.id_color} | id_color guardado=${idColorAsa}`
+  );
+
   const { rows: spRows } = await client.query(
     `INSERT INTO solicitud_producto (
        solicitud_idsolicitud,
@@ -277,8 +292,9 @@ export async function insertarProductoPapel(
        caras_idcaras,
        pantones,
        observacion,
-       descripcion
-     ) VALUES ($1, 'papel', $2, $3, $4, $5, $6, $7, $8, $9)
+       descripcion,
+       id_color
+     ) VALUES ($1, 'papel', $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING idsolicitud_producto`,
     [
       solicitudId,
@@ -290,6 +306,7 @@ export async function insertarProductoPapel(
       limpiar(prod.pantones),
       limpiar(prod.observacion),
       limpiar(prod.descripcion),
+      idColorAsa,
     ],
   );
 

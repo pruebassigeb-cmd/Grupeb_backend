@@ -1,5 +1,28 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
+import { getPresignedUrl } from "../../config/multer";
+
+// ── Descarga imagen desde S3 y la retorna como data URL base64 ──
+async function publicIdToBase64(publicId: string): Promise<string | null> {
+  try {
+    const url = await getPresignedUrl(publicId);
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      console.warn(`⚠️ publicIdToBase64: fetch failed ${response.status} para ${publicId}`);
+      return null;
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const mime = response.headers.get("content-type") || "image/png";
+
+    return `data:${mime};base64,${buffer.toString("base64")}`;
+  } catch (e: any) {
+    console.error("❌ publicIdToBase64 error:", e.message);
+    return null;
+  }
+}
 
 const toNumberOrNull = (value: unknown): number | null => {
   if (value === null || value === undefined || value === "") return null;
@@ -789,7 +812,11 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         op.pzas_merma,
 
         ext.kilos_extruir,
-        ext.metros_extruir
+        ext.metros_extruir,
+
+        -- Render/Master de la revisión final para plástico (base64 para PDF/jsPDF sin CORS)
+        ar.public_id AS render_public_id,
+        am.public_id AS master_public_id
 
       FROM solicitud_producto sp
       LEFT JOIN orden_produccion op
@@ -821,6 +848,17 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           AND sd.aprobado = true
       LEFT JOIN extrusion ext
           ON ext.orden_produccion_idproduccion = op.idproduccion
+      LEFT JOIN orden_diseno od_img
+          ON od_img.solicitud_producto_id = sp.idsolicitud_producto
+      LEFT JOIN revision_diseno rd_final
+          ON rd_final.orden_diseno_id = od_img.idorden_diseno
+          AND rd_final.es_version_final = true
+      LEFT JOIN archivos ar
+          ON ar.revision_diseno_id = rd_final.idrevision
+          AND ar.categoria = 'render'
+      LEFT JOIN archivos am
+          ON am.revision_diseno_id = rd_final.idrevision
+          AND am.categoria = 'master'
       WHERE sp.solicitud_idsolicitud = $1
         AND sp.tipo_material <> 'papel'
       ORDER BY sp.idsolicitud_producto
@@ -887,6 +925,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         END AS foil_nombre,
         ctx.nombre AS textura_nombre,
         cta.nombre AS asa_nombre,
+        sp.id_color,
         ca.color AS color_asa_nombre,
         COALESCE(spp.tamano_asa, pp.tamano_asa_default) AS asa_medida,
 
@@ -1025,7 +1064,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       ORDER BY sp.idsolicitud_producto
     `, [pedido.idsolicitud]);
 
-    const productosPlasticoFormateados = productos.map((r: any) => {
+    const productosPlasticoFormateados = await Promise.all(productos.map(async (r: any) => {
       const materialUpper = (r.material || "").toUpperCase();
       const esBopp = materialUpper.includes("BOPP") ||
         materialUpper.includes("CELOFAN") ||
@@ -1040,6 +1079,11 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       const fuelleFondo = r.fuelle_fondo != null ? String(r.fuelle_fondo) : "";
       const fuelleLat = r.fuelle_lat_iz != null ? String(r.fuelle_lat_iz) : "";
       const refuerzo = r.refuerzo != null ? String(r.refuerzo) : "";
+
+      const [url_render, url_master] = await Promise.all([
+        r.render_public_id ? publicIdToBase64(r.render_public_id) : Promise.resolve(null),
+        r.master_public_id ? publicIdToBase64(r.master_public_id) : Promise.resolve(null),
+      ]);
 
       return {
         idsolicitud_producto: r.idsolicitud_producto,
@@ -1100,9 +1144,11 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         kilos_extruir: r.kilos_extruir ? Number(r.kilos_extruir) : null,
         metros_extruir: r.metros_extruir ? Number(r.metros_extruir) : null,
         es_parcialidad: Boolean(r.es_parcialidad ?? false),
+        url_render,
+        url_master,
         tipo_material: "plastico",
       };
-    });
+    }));
 
     const productosPapelFormateados = productosPapel.map((r: any) => {
       const pliegosCalculados = calcularPliegosPorRendimiento(r.cantidad, r.rendimiento);
@@ -1199,6 +1245,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         asa_nombre: r.asa_nombre || null,
         asa_tipo: r.asa_nombre || null,
         asa: r.asa_nombre || null,
+        id_color: r.id_color ?? null,
         color_asa_nombre: r.color_asa_nombre || null,
         asa_color: r.color_asa_nombre || null,
         asa_medida: r.asa_medida || null,
