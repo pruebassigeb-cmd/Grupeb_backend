@@ -40,11 +40,14 @@ const FUENTES: FuenteCatalogo[] = [
   { nombreLista: "MaqHsAr", query: `SELECT nombre AS valor FROM cat_hs_ar WHERE activo = true ORDER BY nombre` },
   { nombreLista: "MaqSuaje", query: `SELECT nombre AS valor FROM cat_suaje_maquina WHERE activo = true ORDER BY nombre` },
   { nombreLista: "MaqUv", query: `SELECT nombre AS valor FROM cat_uv WHERE activo = true ORDER BY nombre` },
-  { nombreLista: "MaqTextura", query: `SELECT nombre AS valor FROM cat_textura WHERE activo = true ORDER BY nombre` },
   { nombreLista: "MaqEmpalme", query: `SELECT nombre AS valor FROM cat_empalme WHERE activo = true ORDER BY nombre` },
   { nombreLista: "MaqArmado", query: `SELECT nombre AS valor FROM cat_armado WHERE activo = true ORDER BY nombre` },
   { nombreLista: "MaqAsasMaquina", query: `SELECT nombre AS valor FROM cat_asas_maquina WHERE activo = true ORDER BY nombre` },
   { nombreLista: "MaqDesbarbe", query: `SELECT nombre AS valor FROM cat_desbarbe WHERE activo = true ORDER BY nombre` },
+  // ── Agregadas: el frontend ahora tiene 12 categorías de maquinaria, no 10 ──
+  { nombreLista: "MaqLaminadoMaquina", query: `SELECT nombre AS valor FROM cat_laminado_maquina WHERE activo = true ORDER BY nombre` },
+  { nombreLista: "MaqTexturizadora", query: `SELECT nombre AS valor FROM cat_texturizadora WHERE activo = true ORDER BY nombre` },
+  { nombreLista: "MaqEmpaqueMaquina", query: `SELECT nombre AS valor FROM cat_empaque_maquina WHERE activo = true ORDER BY nombre` },
   { nombreLista: "TipoPapel", query: `SELECT nombre AS valor FROM cat_tipo_papel WHERE activo = true ORDER BY nombre` },
 ];
 

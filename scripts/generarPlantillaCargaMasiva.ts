@@ -71,8 +71,6 @@ const FUENTES: FuenteCatalogo[] = [
     query: `SELECT nombre AS valor FROM cat_suaje_maquina WHERE activo = true ORDER BY nombre` },
   { hoja: "Productos", columna: "maq_uv", nombreLista: "MaqUv",
     query: `SELECT nombre AS valor FROM cat_uv WHERE activo = true ORDER BY nombre` },
-  { hoja: "Productos", columna: "maq_textura", nombreLista: "MaqTextura",
-    query: `SELECT nombre AS valor FROM cat_textura WHERE activo = true ORDER BY nombre` },
   { hoja: "Productos", columna: "maq_empalme", nombreLista: "MaqEmpalme",
     query: `SELECT nombre AS valor FROM cat_empalme WHERE activo = true ORDER BY nombre` },
   { hoja: "Productos", columna: "maq_armado", nombreLista: "MaqArmado",
@@ -81,6 +79,13 @@ const FUENTES: FuenteCatalogo[] = [
     query: `SELECT nombre AS valor FROM cat_asas_maquina WHERE activo = true ORDER BY nombre` },
   { hoja: "Productos", columna: "maq_desbarbe", nombreLista: "MaqDesbarbe",
     query: `SELECT nombre AS valor FROM cat_desbarbe WHERE activo = true ORDER BY nombre` },
+  // ── Agregadas: el frontend ahora tiene 12 categorías de maquinaria, no 10 ──
+  { hoja: "Productos", columna: "maq_laminado_maquina", nombreLista: "MaqLaminadoMaquina",
+    query: `SELECT nombre AS valor FROM cat_laminado_maquina WHERE activo = true ORDER BY nombre` },
+  { hoja: "Productos", columna: "maq_texturizadora", nombreLista: "MaqTexturizadora",
+    query: `SELECT nombre AS valor FROM cat_texturizadora WHERE activo = true ORDER BY nombre` },
+  { hoja: "Productos", columna: "maq_empaque_maquina", nombreLista: "MaqEmpaqueMaquina",
+    query: `SELECT nombre AS valor FROM cat_empaque_maquina WHERE activo = true ORDER BY nombre` },
 
   // Hoja OpcionesPapel
   { hoja: "OpcionesPapel", columna: "tipo_papel", nombreLista: "TipoPapel",
@@ -122,8 +127,9 @@ const COLS_PRODUCTOS: [string, any, number][] = [
   ["tintas_frente", FILL_OPT, 14], ["tintas_dentro", FILL_OPT, 14],
   ["maq_hojeado_guillotina", FILL_MULTI, 22], ["maq_impresora", FILL_MULTI, 18],
   ["maq_hs_ar", FILL_MULTI, 16], ["maq_suaje", FILL_MULTI, 16], ["maq_uv", FILL_MULTI, 14],
-  ["maq_textura", FILL_MULTI, 16], ["maq_empalme", FILL_MULTI, 16], ["maq_armado", FILL_MULTI, 16],
+  ["maq_empalme", FILL_MULTI, 16], ["maq_armado", FILL_MULTI, 16],
   ["maq_asas_maquina", FILL_MULTI, 18], ["maq_desbarbe", FILL_MULTI, 16],
+  ["maq_laminado_maquina", FILL_MULTI, 20], ["maq_texturizadora", FILL_MULTI, 20], ["maq_empaque_maquina", FILL_MULTI, 20],
 ];
 
 const COLS_OPCIONES: [string, any, number][] = [

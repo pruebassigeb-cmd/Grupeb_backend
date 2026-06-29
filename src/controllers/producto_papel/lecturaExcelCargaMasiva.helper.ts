@@ -75,11 +75,13 @@ export interface ProductoCrudo {
   maq_hs_ar: string | null;
   maq_suaje: string | null;
   maq_uv: string | null;
-  maq_textura: string | null;
   maq_empalme: string | null;
   maq_armado: string | null;
   maq_asas_maquina: string | null;
   maq_desbarbe: string | null;
+  maq_laminado_maquina: string | null;
+  maq_texturizadora: string | null;
+  maq_empaque_maquina: string | null;
 
   opciones: OpcionPapelCruda[];
 }
@@ -257,11 +259,13 @@ export function leerExcelCargaMasiva(buffer: Buffer): {
       maq_hs_ar: str(row.maq_hs_ar),
       maq_suaje: str(row.maq_suaje),
       maq_uv: str(row.maq_uv),
-      maq_textura: str(row.maq_textura),
       maq_empalme: str(row.maq_empalme),
       maq_armado: str(row.maq_armado),
       maq_asas_maquina: str(row.maq_asas_maquina),
       maq_desbarbe: str(row.maq_desbarbe),
+      maq_laminado_maquina: str(row.maq_laminado_maquina),
+      maq_texturizadora: str(row.maq_texturizadora),
+      maq_empaque_maquina: str(row.maq_empaque_maquina),
 
       opciones: opcionesPorProducto[producto_id] ?? [],
     });

@@ -1,0 +1,263 @@
+{
+  "SiNo": [
+    "SI",
+    "NO"
+  ],
+  "UnidadCalibre": [
+    "pts",
+    "gms",
+    "ect"
+  ],
+  "TipoProducto": [
+    "Bolsa de Nieve",
+    "Bolsa de papel",
+    "Bolsas",
+    "Caja plegadiza",
+    "Caja rígida",
+    "Caja troquelada",
+    "Cajas",
+    "Carpetas",
+    "Chupapi",
+    "Circulo",
+    "Etiquetas",
+    "Folders",
+    "Formas continuas",
+    "Papelería",
+    "prueba",
+    "Prueba",
+    "Sobre con typo intencional Sobree",
+    "Sobre de papel",
+    "Sobres"
+  ],
+  "Matrix": [
+    "0.3 x 0.8",
+    "0.4 x 1.0",
+    "0.4 x 1.2",
+    "0.4 x 1.3",
+    "0.4 x 1.4",
+    "0.5 x 1.5",
+    "0.5 x 1.6",
+    "0.5 x 1.7",
+    "0.5 x 1.9",
+    "0.5 x 2.0",
+    "0.5 x 2.2",
+    "0.6 x 2.4",
+    "0.6 x 2.7",
+    "0.7 x 2.3",
+    "0.8 x 2.5",
+    "0.8 x 2.7",
+    "0.8 x 3.0",
+    "0.8 x 3.2",
+    "000",
+    "1.0 x 3.0",
+    "1.0 x 3.2",
+    "1.0 x 3.5",
+    "1.0 x 4.0",
+    "1.2 x 4.5",
+    "12"
+  ],
+  "TipoPegado": [
+    "4 Esquinas",
+    "6 Esquinas",
+    "AA",
+    "Empalmadora",
+    "Esquina",
+    "Fondo automático",
+    "Fuelle",
+    "Lineal",
+    "Manual",
+    "oli",
+    "Pegado de fondo",
+    "Pegado de solapa",
+    "Pegado lateral",
+    "Pegadoo rarooo",
+    "Pistolita de silicon",
+    "prueba",
+    "resina"
+  ],
+  "Pegamento": [
+    "AAA",
+    "Blanco 200",
+    "Blanco 262",
+    "Blanco 393",
+    "Cinta DC",
+    "Dextrina",
+    "Goma engomada",
+    "Hot Melt",
+    "jelow",
+    "Pegamento hot melt",
+    "Pegamento inventado XYZ",
+    "Pegamento totalmente nuevo 9000",
+    "PVA",
+    "Resistol amarillo",
+    "Resistol blanco"
+  ],
+  "RefuerzoMaterial": [
+    "10pts",
+    "12pts",
+    "14pts",
+    "150gms",
+    "16pts",
+    "18pts",
+    "200gms",
+    "20pts",
+    "250gms",
+    "300gms",
+    "350gms",
+    "Cartón",
+    "Cartón corrugado",
+    "fibra",
+    "Madera prensada"
+  ],
+  "RefuerzoMedidas": [
+    "10x10 cm",
+    "12x12 cm",
+    "15x15 cm",
+    "1X2 cm",
+    "5x5 cm",
+    "5x8",
+    "8x8 cm",
+    "9x9",
+    "prueba"
+  ],
+  "Empaque": [
+    "12",
+    "bolsa",
+    "Bulto de polietileno",
+    "Caja 15x15x15",
+    "Caja de 1000 pzs",
+    "Caja de cartón",
+    "Caja EB 61x40x60",
+    "Caja rarísima ñoño",
+    "Otro",
+    "Paquetes",
+    "Tarima"
+  ],
+  "TipoAsa": [
+    "Asa de cordón",
+    "Asa de listón",
+    "Cordel",
+    "Cordel AA",
+    "Entorchado",
+    "Especial",
+    "hhjhjj",
+    "Listón popotillo",
+    "Liston satanizado",
+    "Listón satinado",
+    "Maikol Joldan",
+    "prueba",
+    "pruebitas"
+  ],
+  "Laminado": [
+    "A mano",
+    "Anti-scratch",
+    "Brillante",
+    "Holográfico",
+    "Mate",
+    "Piel de tarantula",
+    "Soft touch"
+  ],
+  "MaqHojeadoGuillotina": [
+    "Guillotina 1",
+    "Guillotina KBA",
+    "Guillotina Seybold",
+    "Hojeadora 1400",
+    "maquina de prueba 3",
+    "Maquina prueba",
+    "Maquine",
+    "prentreno",
+    "sipriena",
+    "Toño"
+  ],
+  "MaqImpresora": [
+    "En la fok",
+    "Heidelberg MO",
+    "Heidelberg SM",
+    "Impresora Offset 1",
+    "KBA",
+    "Marra",
+    "prueba"
+  ],
+  "MaqHsAr": [
+    "Blueline",
+    "CH 125x150",
+    "Cilíndrica 45x67.5",
+    "Cilíndrica 58x62",
+    "Cilíndrica 70x90",
+    "HS-1",
+    "HS 97x130",
+    "NYA",
+    "pr",
+    "Thomson 100x140",
+    "Thomson 90x125"
+  ],
+  "MaqSuaje": [
+    "Blueline",
+    "CH 125x150",
+    "Cilíndrica 45x67.5",
+    "Cilíndrica 58x62",
+    "Cilíndrica 70x90",
+    "HS 97x130",
+    "Suaje 1",
+    "Thomson 100x140",
+    "Thomson 90x125"
+  ],
+  "MaqUv": [
+    "UV 145x150",
+    "UV Mate"
+  ],
+  "MaqEmpalme": [
+    "Caja rígida",
+    "EBP 1450",
+    "Empalme 1"
+  ],
+  "MaqArmado": [
+    "AA",
+    "Armado manual",
+    "El gato",
+    "Manual",
+    "Maquila",
+    "Pegadora 1300"
+  ],
+  "MaqAsasMaquina": [
+    "Asas automáticas",
+    "Cordel ch",
+    "Cordel Rius",
+    "Entorchadora 1",
+    "Entorchadora 2",
+    "Entorchadora 3"
+  ],
+  "MaqDesbarbe": [
+    "Automático",
+    "Desbarbe 1",
+    "Manual",
+    "Simsa"
+  ],
+  "MaqLaminadoMaquina": [
+    "Laminadora"
+  ],
+  "MaqTexturizadora": [
+    "texturizadora"
+  ],
+  "MaqEmpaqueMaquina": [
+    "Empaquetadora Machin"
+  ],
+  "TipoPapel": [
+    "Bond",
+    "Cartón Corrugado",
+    "Cartulina",
+    "Cartulina Couché",
+    "Cartulina Sulfatada",
+    "Couché",
+    "Duplex",
+    "koreano",
+    "Kraft",
+    "Manila",
+    "Multicapa",
+    "Opalina",
+    "Papel Reciclado Especial XYZ",
+    "Periódico",
+    "Prueba",
+    "Triplex"
+  ]
+}
