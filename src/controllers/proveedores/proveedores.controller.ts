@@ -24,7 +24,9 @@ export const getTiposInsumo = async (_req: Request, res: Response) => {
 // PROVEEDORES — CRUD
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// GET /proveedores
+// ═══════════════════════════════════════════════════════════════════════════════
+// GET /proveedores  (lista con total_productos)
+// ═══════════════════════════════════════════════════════════════════════════════
 export const getProveedores = async (req: Request, res: Response) => {
   try {
     const { q, activo } = req.query;
@@ -44,13 +46,23 @@ export const getProveedores = async (req: Request, res: Response) => {
         p.regimen_fiscal_idregimen_fiscal,
         rf.codigo           AS regimen_fiscal_codigo,
         rf.tipo_regimen     AS regimen_fiscal_nombre,
-        COUNT(pp.idproveedor_producto)::int AS total_productos,
+        COALESCE(ins.total, 0) + COALESCE(fo.total, 0) AS total_productos,
         pf.condicion_compra,
         pf.dias_credito
       FROM proveedor p
       LEFT JOIN regimen_fiscal rf ON rf.idregimen_fiscal = p.regimen_fiscal_idregimen_fiscal
-      LEFT JOIN proveedor_producto pp
-        ON pp.proveedor_idproveedor = p.idproveedor AND pp.activo = true
+      LEFT JOIN (
+        SELECT proveedor_idproveedor, COUNT(*)::int AS total
+        FROM insumo_proveedor
+        WHERE activo = true
+        GROUP BY proveedor_idproveedor
+      ) ins ON ins.proveedor_idproveedor = p.idproveedor
+      LEFT JOIN (
+        SELECT proveedor_idproveedor, COUNT(*)::int AS total
+        FROM foil_proveedor
+        WHERE activo = true
+        GROUP BY proveedor_idproveedor
+      ) fo ON fo.proveedor_idproveedor = p.idproveedor
       LEFT JOIN LATERAL (
         SELECT condicion_compra, dias_credito
         FROM proveedor_facturacion
@@ -79,7 +91,7 @@ export const getProveedores = async (req: Request, res: Response) => {
     }
 
     if (where.length) query += ` WHERE ${where.join(" AND ")}`;
-    query += ` GROUP BY p.idproveedor, rf.codigo, rf.tipo_regimen, pf.condicion_compra, pf.dias_credito ORDER BY p.nombre`;
+    query += ` ORDER BY p.nombre`;
 
     const { rows } = await pool.query(query, params);
     return res.json(rows);
@@ -89,7 +101,9 @@ export const getProveedores = async (req: Request, res: Response) => {
   }
 };
 
-// GET /proveedores/:id
+// ═══════════════════════════════════════════════════════════════════════════════
+// GET /proveedores/:id  (detalle + lista de sus productos)
+// ═══════════════════════════════════════════════════════════════════════════════
 export const getProveedorById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -113,25 +127,26 @@ export const getProveedorById = async (req: Request, res: Response) => {
 
     const { rows: prodRows } = await pool.query(
       `SELECT
-  pp.idproveedor_producto,
-  pp.nombre,
-  pp.codigo,
-  pp.precio,
-  pp.notas,
-  pp.activo,
-  pp.clave_producto,
-  pp.minimo_compra,
-  pp.unidad,
-  pp.producto_sat_idproducto_sat,
-  ps.clave  AS producto_sat_clave,
-  ps.pdft   AS producto_sat_nombre,
-  ti.idtipo_insumo,
-  ti.nombre AS tipo_insumo_nombre
-FROM proveedor_producto pp
-JOIN tipo_insumo ti ON ti.idtipo_insumo = pp.tipo_insumo_id
-LEFT JOIN producto_sat ps ON ps.idproducto_sat = pp.producto_sat_idproducto_sat
-WHERE pp.proveedor_idproveedor = $1
-ORDER BY ti.nombre, pp.nombre`,
+         ip.idinsumo_proveedor AS idproveedor_producto,
+         i.nombre,
+         ip.codigo,
+         ip.precio,
+         ip.notas,
+         ip.activo,
+         i.clave_producto,
+         ip.minimo_compra,
+         i.unidad,
+         i.producto_sat_idproducto_sat,
+         ps.clave  AS producto_sat_clave,
+         ps.pdft   AS producto_sat_nombre,
+         ti.idtipo_insumo,
+         ti.nombre AS tipo_insumo_nombre
+       FROM insumo_proveedor ip
+       JOIN insumo i       ON i.idinsumo = ip.insumo_idinsumo
+       JOIN tipo_insumo ti ON ti.idtipo_insumo = i.tipo_insumo_id
+       LEFT JOIN producto_sat ps ON ps.idproducto_sat = i.producto_sat_idproducto_sat
+       WHERE ip.proveedor_idproveedor = $1
+       ORDER BY ti.nombre, i.nombre`,
       [id]
     );
 
@@ -249,9 +264,8 @@ export const eliminarProveedor = async (req: Request, res: Response) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PRODUCTOS DEL PROVEEDOR — CRUD
+// GET /proveedores/:id/productos  (lista de productos de ESE proveedor)
 // ═══════════════════════════════════════════════════════════════════════════════
-
 export const getProductosProveedor = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -259,35 +273,36 @@ export const getProductosProveedor = async (req: Request, res: Response) => {
 
     let query = `
       SELECT
-        pp.idproveedor_producto,
-        pp.nombre,
-        pp.codigo,
-        pp.precio,
-        pp.notas,
-        pp.activo,
-        pp.clave_producto,
-        pp.minimo_compra,
-        pp.unidad,
-        pp.producto_sat_idproducto_sat,
+        ip.idinsumo_proveedor AS idproveedor_producto,
+        i.nombre,
+        ip.codigo,
+        ip.precio,
+        ip.notas,
+        ip.activo,
+        i.clave_producto,
+        ip.minimo_compra,
+        i.unidad,
+        i.producto_sat_idproducto_sat,
         ps.clave  AS producto_sat_clave,
         ps.pdft   AS producto_sat_nombre,
         ti.idtipo_insumo,
         ti.nombre AS tipo_insumo_nombre,
-        p.nombre  AS proveedor_nombre
-      FROM proveedor_producto pp
-      JOIN tipo_insumo ti ON ti.idtipo_insumo = pp.tipo_insumo_id
-      JOIN proveedor   p  ON p.idproveedor    = pp.proveedor_idproveedor
-      LEFT JOIN producto_sat ps ON ps.idproducto_sat = pp.producto_sat_idproducto_sat
-      WHERE pp.proveedor_idproveedor = $1 AND pp.activo = true
+        pv.nombre AS proveedor_nombre
+      FROM insumo_proveedor ip
+      JOIN insumo i       ON i.idinsumo = ip.insumo_idinsumo
+      JOIN tipo_insumo ti ON ti.idtipo_insumo = i.tipo_insumo_id
+      JOIN proveedor pv   ON pv.idproveedor   = ip.proveedor_idproveedor
+      LEFT JOIN producto_sat ps ON ps.idproducto_sat = i.producto_sat_idproducto_sat
+      WHERE ip.proveedor_idproveedor = $1 AND ip.activo = true
     `;
     const params: any[] = [id];
 
     if (tipo) {
       params.push(tipo);
-      query += ` AND pp.tipo_insumo_id = $${params.length}`;
+      query += ` AND i.tipo_insumo_id = $${params.length}`;
     }
 
-    query += ` ORDER BY ti.nombre, pp.nombre`;
+    query += ` ORDER BY ti.nombre, i.nombre`;
 
     const { rows } = await pool.query(query, params);
     return res.json(rows);
@@ -297,44 +312,59 @@ export const getProductosProveedor = async (req: Request, res: Response) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// GET /proveedores/insumos  (búsqueda global — AGRUPADA por insumo)
+// ═══════════════════════════════════════════════════════════════════════════════
 export const buscarInsumos = async (req: Request, res: Response) => {
   try {
     const { tipo, q } = req.query;
 
     let query = `
       SELECT
-        pp.idproveedor_producto,
-        pp.nombre,
-        pp.codigo,
-        pp.precio,
-        pp.clave_producto,
-        pp.minimo_compra,
-        pp.unidad,
-        pp.producto_sat_idproducto_sat,
-        ps.clave  AS producto_sat_clave,
-        ps.pdft   AS producto_sat_nombre,
+        i.idinsumo,
+        i.nombre,
+        i.clave_producto,
+        i.unidad,
+        ti.idtipo_insumo,
         ti.nombre AS tipo_insumo_nombre,
-        p.nombre  AS proveedor_nombre,
-        p.idproveedor
-      FROM proveedor_producto pp
-      JOIN tipo_insumo ti ON ti.idtipo_insumo = pp.tipo_insumo_id
-      JOIN proveedor   p  ON p.idproveedor    = pp.proveedor_idproveedor
-      LEFT JOIN producto_sat ps ON ps.idproducto_sat = pp.producto_sat_idproducto_sat
-      WHERE pp.activo = true AND p.activo = true
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'idinsumo_proveedor', ip.idinsumo_proveedor,
+              'idproveedor', pv.idproveedor,
+              'proveedor_nombre', pv.nombre,
+              'codigo', ip.codigo,
+              'precio', ip.precio
+            )
+            ORDER BY pv.nombre
+          ) FILTER (WHERE ip.idinsumo_proveedor IS NOT NULL),
+          '[]'
+        ) AS proveedores
+      FROM insumo i
+      JOIN tipo_insumo ti ON ti.idtipo_insumo = i.tipo_insumo_id
+      LEFT JOIN insumo_proveedor ip
+        ON ip.insumo_idinsumo = i.idinsumo AND ip.activo = true
+      LEFT JOIN proveedor pv
+        ON pv.idproveedor = ip.proveedor_idproveedor AND pv.activo = true
+      WHERE i.activo = true
     `;
     const params: any[] = [];
 
     if (tipo) {
       params.push(tipo);
-      query += ` AND pp.tipo_insumo_id = $${params.length}`;
+      query += ` AND i.tipo_insumo_id = $${params.length}`;
     }
 
     if (q) {
       params.push(`%${q}%`);
-      query += ` AND (pp.nombre ILIKE $${params.length} OR pp.codigo ILIKE $${params.length})`;
+      query += ` AND (i.nombre ILIKE $${params.length} OR ip.codigo ILIKE $${params.length})`;
     }
 
-    query += ` ORDER BY pp.nombre LIMIT 50`;
+    query += `
+      GROUP BY i.idinsumo, i.nombre, i.clave_producto, i.unidad, ti.idtipo_insumo, ti.nombre
+      ORDER BY i.nombre
+      LIMIT 50
+    `;
 
     const { rows } = await pool.query(query, params);
     return res.json(rows);
@@ -344,9 +374,13 @@ export const buscarInsumos = async (req: Request, res: Response) => {
   }
 };
 
-// POST /proveedores/:id/productos
+// ═══════════════════════════════════════════════════════════════════════════════
+// POST /proveedores/:id/productos  (agregar insumo a ESE proveedor)
+// ═══════════════════════════════════════════════════════════════════════════════
 export const crearProductoProveedor = async (req: Request, res: Response) => {
+  const client = await pool.connect();
   try {
+    await client.query("BEGIN");
     const { id } = req.params;
     const {
       tipo_insumo_id, nombre, codigo, precio, notas,
@@ -354,105 +388,179 @@ export const crearProductoProveedor = async (req: Request, res: Response) => {
       producto_sat_idproducto_sat
     } = req.body;
 
-    if (!tipo_insumo_id || !nombre?.trim())
+    if (!tipo_insumo_id || !nombre?.trim()) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ error: "tipo_insumo_id y nombre son requeridos" });
+    }
 
-    const { rows: prov } = await pool.query(
+    const { rows: prov } = await client.query(
       `SELECT idproveedor FROM proveedor WHERE idproveedor = $1 AND activo = true`, [id]
     );
-    if (prov.length === 0)
+    if (prov.length === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Proveedor no encontrado" });
+    }
 
-    const { rows } = await pool.query(
-      `INSERT INTO proveedor_producto
-         (proveedor_idproveedor, tipo_insumo_id, nombre, codigo, precio, notas,
-          clave_producto, minimo_compra, unidad, producto_sat_idproducto_sat)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    // Busca o crea la identidad del insumo (compartida entre proveedores)
+    const { rows: insumoExiste } = await client.query(
+      `SELECT idinsumo FROM insumo
+       WHERE tipo_insumo_id = $1 AND LOWER(TRIM(nombre)) = LOWER(TRIM($2))`,
+      [tipo_insumo_id, nombre.trim()]
+    );
+
+    let idinsumo: number;
+    if (insumoExiste.length > 0) {
+      idinsumo = insumoExiste[0].idinsumo;
+      await client.query(
+        `UPDATE insumo SET
+           clave_producto = COALESCE($1, clave_producto),
+           unidad = COALESCE($2, unidad),
+           producto_sat_idproducto_sat = COALESCE($3, producto_sat_idproducto_sat)
+         WHERE idinsumo = $4`,
+        [clave_producto?.trim() || null, unidad || null, producto_sat_idproducto_sat || null, idinsumo]
+      );
+    } else {
+      const { rows: nuevoInsumo } = await client.query(
+        `INSERT INTO insumo (tipo_insumo_id, nombre, clave_producto, unidad, producto_sat_idproducto_sat)
+         VALUES ($1,$2,$3,$4,$5)
+         RETURNING idinsumo`,
+        [tipo_insumo_id, nombre.trim(), clave_producto?.trim() || null, unidad || null, producto_sat_idproducto_sat || null]
+      );
+      idinsumo = nuevoInsumo[0].idinsumo;
+    }
+
+    const { rows: yaExiste } = await client.query(
+      `SELECT idinsumo_proveedor FROM insumo_proveedor
+       WHERE insumo_idinsumo = $1 AND proveedor_idproveedor = $2`,
+      [idinsumo, id]
+    );
+    if (yaExiste.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Este proveedor ya tiene registrado este insumo" });
+    }
+
+    const { rows } = await client.query(
+      `INSERT INTO insumo_proveedor
+         (insumo_idinsumo, proveedor_idproveedor, codigo, precio, notas, minimo_compra)
+       VALUES ($1,$2,$3,$4,$5,$6)
        RETURNING *`,
       [
-        id, tipo_insumo_id, nombre.trim(),
+        idinsumo, id,
         codigo?.trim() || null,
         precio != null ? Number(precio) : null,
         notas?.trim() || null,
-        clave_producto?.trim() || null,
         minimo_compra != null ? Number(minimo_compra) : null,
-        unidad || null,
-        producto_sat_idproducto_sat || null,
       ]
     );
 
-    console.log(`✅ Producto creado: ${rows[0].idproveedor_producto} — ${rows[0].nombre}`);
-    return res.status(201).json({ message: "Producto creado", producto: rows[0] });
+    await client.query("COMMIT");
+    console.log(`✅ Producto creado: ${rows[0].idinsumo_proveedor} — ${nombre.trim()}`);
+    return res.status(201).json({
+      message: "Producto creado",
+      producto: { ...rows[0], nombre: nombre.trim(), idproveedor_producto: rows[0].idinsumo_proveedor },
+    });
   } catch (error: any) {
+    await client.query("ROLLBACK");
     console.error("❌ CREAR PRODUCTO PROVEEDOR ERROR:", error.message);
     return res.status(500).json({ error: "Error al crear producto" });
+  } finally {
+    client.release();
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
 // PUT /proveedores/:id/productos/:idProducto
+// ═══════════════════════════════════════════════════════════════════════════════
 export const actualizarProductoProveedor = async (req: Request, res: Response) => {
+  const client = await pool.connect();
   try {
-    const { idProducto } = req.params;
+    await client.query("BEGIN");
+    const { idProducto } = req.params; // = idinsumo_proveedor
     const {
       tipo_insumo_id, nombre, codigo, precio, notas, activo,
       clave_producto, minimo_compra, unidad,
       producto_sat_idproducto_sat
     } = req.body;
 
-    if (!tipo_insumo_id || !nombre?.trim())
+    if (!tipo_insumo_id || !nombre?.trim()) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ error: "tipo_insumo_id y nombre son requeridos" });
+    }
 
-    const { rowCount, rows } = await pool.query(
-      `UPDATE proveedor_producto SET
-         tipo_insumo_id              = $1,
-         nombre                      = $2,
-         codigo                      = $3,
-         precio                      = $4,
-         notas                       = $5,
-         activo                      = $6,
-         clave_producto              = $7,
-         minimo_compra               = $8,
-         unidad                      = $9,
-         producto_sat_idproducto_sat = $10
-       WHERE idproveedor_producto = $11
-       RETURNING *`,
+    const { rows: ipRows } = await client.query(
+      `SELECT insumo_idinsumo FROM insumo_proveedor WHERE idinsumo_proveedor = $1`,
+      [idProducto]
+    );
+    if (ipRows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+    const idinsumo = ipRows[0].insumo_idinsumo;
+
+    // NOTA: esto actualiza la identidad del insumo, que es COMPARTIDA.
+    // Si el insumo tiene otros proveedores, también verán este cambio de nombre.
+    await client.query(
+      `UPDATE insumo SET
+         tipo_insumo_id = $1,
+         nombre = $2,
+         clave_producto = $3,
+         unidad = $4,
+         producto_sat_idproducto_sat = $5
+       WHERE idinsumo = $6`,
       [
         tipo_insumo_id, nombre.trim(),
+        clave_producto?.trim() || null,
+        unidad || null,
+        producto_sat_idproducto_sat || null,
+        idinsumo,
+      ]
+    );
+
+    const { rows } = await client.query(
+      `UPDATE insumo_proveedor SET
+         codigo = $1,
+         precio = $2,
+         notas = $3,
+         activo = $4,
+         minimo_compra = $5
+       WHERE idinsumo_proveedor = $6
+       RETURNING *`,
+      [
         codigo?.trim() || null,
         precio != null ? Number(precio) : null,
         notas?.trim() || null,
         activo !== undefined ? activo : true,
-        clave_producto?.trim() || null,
         minimo_compra != null ? Number(minimo_compra) : null,
-        unidad || null,
-        producto_sat_idproducto_sat || null,
         idProducto,
       ]
     );
 
-    if (rowCount === 0)
-      return res.status(404).json({ error: "Producto no encontrado" });
-
-    return res.json({ message: "Producto actualizado", producto: rows[0] });
+    await client.query("COMMIT");
+    return res.json({
+      message: "Producto actualizado",
+      producto: { ...rows[0], nombre: nombre.trim(), idproveedor_producto: rows[0].idinsumo_proveedor },
+    });
   } catch (error: any) {
+    await client.query("ROLLBACK");
     console.error("❌ ACTUALIZAR PRODUCTO PROVEEDOR ERROR:", error.message);
     return res.status(500).json({ error: "Error al actualizar producto" });
+  } finally {
+    client.release();
   }
 };
 
-// DELETE /proveedores/:id/productos/:idProducto  →  soft delete
+// ═══════════════════════════════════════════════════════════════════════════════
+// DELETE /proveedores/:id/productos/:idProducto → desactiva SOLO ese proveedor
+// ═══════════════════════════════════════════════════════════════════════════════
 export const eliminarProductoProveedor = async (req: Request, res: Response) => {
   try {
-    const { idProducto } = req.params;
-
+    const { idProducto } = req.params; // = idinsumo_proveedor
     const { rowCount } = await pool.query(
-      `UPDATE proveedor_producto SET activo = false WHERE idproveedor_producto = $1`,
+      `UPDATE insumo_proveedor SET activo = false WHERE idinsumo_proveedor = $1`,
       [idProducto]
     );
-
     if (rowCount === 0)
       return res.status(404).json({ error: "Producto no encontrado" });
-
     return res.json({ message: "Producto desactivado" });
   } catch (error: any) {
     console.error("❌ ELIMINAR PRODUCTO PROVEEDOR ERROR:", error.message);
@@ -461,30 +569,31 @@ export const eliminarProductoProveedor = async (req: Request, res: Response) => 
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// POST /proveedores/insumos/registrar-rapido
+// POST /proveedores/insumos/registrar-rapido  ← ahora acepta varios proveedores
 // ═══════════════════════════════════════════════════════════════════════════════
 export const registrarInsumoRapido = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    const { tipo_insumo_id, nombre, codigo, proveedor_idproveedor } = req.body;
+    await client.query("BEGIN");
+    const { tipo_insumo_id, nombre, codigo, proveedores_ids } = req.body;
 
-    if (!tipo_insumo_id || !nombre?.trim())
+    if (!tipo_insumo_id || !nombre?.trim()) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ error: "tipo_insumo_id y nombre son requeridos" });
+    }
+
+    const idsProveedores: number[] = Array.isArray(proveedores_ids)
+      ? proveedores_ids.map(Number).filter((n) => !Number.isNaN(n))
+      : [];
 
     const { rows: existentes } = await client.query(
-      `SELECT idproveedor_producto, nombre, codigo, proveedor_idproveedor
-       FROM proveedor_producto
-       WHERE tipo_insumo_id = $1
-         AND LOWER(TRIM(nombre)) = LOWER(TRIM($2))
-         AND activo = true
-         ${proveedor_idproveedor ? "AND proveedor_idproveedor = $3" : ""}
+      `SELECT idinsumo, nombre FROM insumo
+       WHERE tipo_insumo_id = $1 AND LOWER(TRIM(nombre)) = LOWER(TRIM($2))
        LIMIT 1`,
-      proveedor_idproveedor
-        ? [tipo_insumo_id, nombre.trim(), proveedor_idproveedor]
-        : [tipo_insumo_id, nombre.trim()]
+      [tipo_insumo_id, nombre.trim()]
     );
-
     if (existentes.length > 0) {
+      await client.query("ROLLBACK");
       return res.status(409).json({
         error: "Ya existe un insumo con ese nombre para este tipo.",
         existente: existentes[0],
@@ -493,15 +602,17 @@ export const registrarInsumoRapido = async (req: Request, res: Response) => {
 
     if (codigo?.trim()) {
       const { rows: existentesCodigo } = await client.query(
-        `SELECT idproveedor_producto, nombre, codigo
-         FROM proveedor_producto
-         WHERE tipo_insumo_id = $1
-           AND LOWER(TRIM(codigo)) = LOWER(TRIM($2))
-           AND activo = true
+        `SELECT i.idinsumo, i.nombre, ip.codigo
+         FROM insumo_proveedor ip
+         JOIN insumo i ON i.idinsumo = ip.insumo_idinsumo
+         WHERE i.tipo_insumo_id = $1
+           AND LOWER(TRIM(ip.codigo)) = LOWER(TRIM($2))
+           AND ip.activo = true
          LIMIT 1`,
         [tipo_insumo_id, codigo.trim()]
       );
       if (existentesCodigo.length > 0) {
+        await client.query("ROLLBACK");
         return res.status(409).json({
           error: `Ya existe un insumo con el código "${codigo.trim()}".`,
           existente: existentesCodigo[0],
@@ -509,27 +620,55 @@ export const registrarInsumoRapido = async (req: Request, res: Response) => {
       }
     }
 
-    const { rows } = await client.query(
-      `INSERT INTO proveedor_producto
-         (proveedor_idproveedor, tipo_insumo_id, nombre, codigo, activo)
-       VALUES ($1, $2, $3, $4, true)
+    const { rows: nuevoInsumo } = await client.query(
+      `INSERT INTO insumo (tipo_insumo_id, nombre, activo)
+       VALUES ($1, $2, true)
        RETURNING *`,
-      [proveedor_idproveedor || null, tipo_insumo_id, nombre.trim(), codigo?.trim() || null]
+      [tipo_insumo_id, nombre.trim()]
     );
+    const insumo = nuevoInsumo[0];
 
-    let resultado = { ...rows[0], proveedor_nombre: null as string | null };
-
-    if (proveedor_idproveedor) {
-      const { rows: prov } = await client.query(
-        `SELECT nombre FROM proveedor WHERE idproveedor = $1`, [proveedor_idproveedor]
+    const proveedoresCreados: any[] = [];
+    if (idsProveedores.length > 0) {
+      const { rows: provRows } = await client.query(
+        `SELECT idproveedor, nombre FROM proveedor
+         WHERE idproveedor = ANY($1::int[]) AND activo = true`,
+        [idsProveedores]
       );
-      resultado.proveedor_nombre = prov[0]?.nombre ?? null;
+      for (const prov of provRows) {
+        const { rows: ipRows } = await client.query(
+          `INSERT INTO insumo_proveedor (insumo_idinsumo, proveedor_idproveedor, codigo, activo)
+           VALUES ($1, $2, $3, true)
+           ON CONFLICT (insumo_idinsumo, proveedor_idproveedor) DO NOTHING
+           RETURNING *`,
+          [insumo.idinsumo, prov.idproveedor, codigo?.trim() || null]
+        );
+        if (ipRows.length > 0) {
+          proveedoresCreados.push({
+            idinsumo_proveedor: ipRows[0].idinsumo_proveedor,
+            idproveedor: prov.idproveedor,
+            proveedor_nombre: prov.nombre,
+            codigo: ipRows[0].codigo,
+            precio: ipRows[0].precio,
+          });
+        }
+      }
     }
 
-    console.log(`✅ Insumo rápido creado: ${resultado.idproveedor_producto} — ${resultado.nombre}`);
+    await client.query("COMMIT");
+
+    const resultado = {
+      idinsumo: insumo.idinsumo,
+      nombre: insumo.nombre,
+      idtipo_insumo: tipo_insumo_id,
+      proveedores: proveedoresCreados,
+    };
+
+    console.log(`✅ Insumo rápido creado: ${insumo.idinsumo} — ${insumo.nombre} (${proveedoresCreados.length} proveedor/es)`);
     return res.status(201).json({ message: "Insumo registrado", producto: resultado });
 
   } catch (error: any) {
+    await client.query("ROLLBACK");
     console.error("❌ REGISTRAR INSUMO RÁPIDO ERROR:", error.message);
     return res.status(500).json({ error: "Error al registrar insumo", detalle: error.message });
   } finally {
@@ -792,73 +931,75 @@ export const guardarProveedorCompleto = async (req: Request, res: Response) => {
   }
 };
 
-// POST /proveedores/:id/foil
+// ═══════════════════════════════════════════════════════════════════════════════
+// POST /proveedores/:id/foil  ← ahora acepta varios proveedores
+// ═══════════════════════════════════════════════════════════════════════════════
 export const crearFoil = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    const { id } = req.params; // idproveedor
-    const { colorfoil, codigofoil, presentaciones } = req.body;
-    // presentaciones: string[]  ej: ["Rollo 500m", "Hoja A4"]
+    const { id } = req.params; // idproveedor "principal" (compatibilidad con la ruta actual)
+    const { colorfoil, codigofoil, presentaciones, proveedores_ids } = req.body;
+    // proveedores_ids: number[] opcional — si no viene, usa solo :id
 
-    if (!colorfoil?.trim())
+    if (!colorfoil?.trim()) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ error: "colorfoil es requerido" });
+    }
 
-    // 1. Verificar proveedor
-    const { rows: prov } = await client.query(
-      `SELECT nombre FROM proveedor WHERE idproveedor = $1 AND activo = true`, [id]
+    const idsProveedores: number[] = Array.isArray(proveedores_ids) && proveedores_ids.length > 0
+      ? proveedores_ids.map(Number)
+      : [Number(id)];
+
+    const { rows: provRows } = await client.query(
+      `SELECT idproveedor, nombre FROM proveedor WHERE idproveedor = ANY($1::int[]) AND activo = true`,
+      [idsProveedores]
     );
-    if (!prov.length)
+    if (provRows.length === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Proveedor no encontrado" });
+    }
 
-    // 2. Obtener idtipo_insumo de Foil dinámicamente
-    const { rows: tipo } = await client.query(
-      `SELECT idtipo_insumo FROM tipo_insumo WHERE LOWER(nombre) = 'foil' AND activo = true LIMIT 1`
-    );
-    if (!tipo.length)
-      return res.status(400).json({ error: "Tipo de insumo 'Foil' no está registrado en catálogo" });
-
-    // 3. Generar clave automática
     const clavefoil = [
-      prov[0].nombre.substring(0, 2).toUpperCase(),
+      provRows[0].nombre.substring(0, 2).toUpperCase(),
       colorfoil.trim().substring(0, 3).toUpperCase(),
       codigofoil?.trim() ?? "",
     ].join("");
 
-    // 4. Insert en proveedor_producto (registro base del insumo)
-    const { rows: pp } = await client.query(
-      `INSERT INTO proveedor_producto
-         (proveedor_idproveedor, tipo_insumo_id, nombre, codigo, activo)
-       VALUES ($1, $2, $3, $4, true)
-       RETURNING idproveedor_producto`,
-      [id, tipo[0].idtipo_insumo, colorfoil.trim(), codigofoil?.trim() || null]
-    );
-
-    // 5. Insert en foil (detalle específico)
     const { rows: foilRows } = await client.query(
-      `INSERT INTO foil (idproveedor_producto, colorfoil, codigofoil, clavefoil)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO foil (colorfoil, codigofoil, clavefoil)
+       VALUES ($1, $2, $3)
        RETURNING idfoil`,
-      [pp[0].idproveedor_producto, colorfoil.trim(), codigofoil?.trim() || null, clavefoil]
+      [colorfoil.trim(), codigofoil?.trim() || null, clavefoil]
     );
+    const idfoil = foilRows[0].idfoil;
 
-    // 6. Insert presentaciones
+    for (const prov of provRows) {
+      await client.query(
+        `INSERT INTO foil_proveedor (idfoil, proveedor_idproveedor, codigo)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (idfoil, proveedor_idproveedor) DO NOTHING`,
+        [idfoil, prov.idproveedor, codigofoil?.trim() || null]
+      );
+    }
+
     for (const p of (presentaciones ?? [])) {
       if (!p?.trim()) continue;
       await client.query(
         `INSERT INTO foil_presentacion (idfoil, presentacion) VALUES ($1, $2)`,
-        [foilRows[0].idfoil, p.trim()]
+        [idfoil, p.trim()]
       );
     }
 
     await client.query("COMMIT");
 
-    console.log(`✅ Foil creado: ${foilRows[0].idfoil} — ${clavefoil}`);
+    console.log(`✅ Foil creado: ${idfoil} — ${clavefoil}`);
     return res.status(201).json({
       message: "Foil registrado",
-      idfoil: foilRows[0].idfoil,
+      idfoil,
       clavefoil,
+      proveedores: provRows.map((p) => p.idproveedor),
     });
 
   } catch (error: any) {

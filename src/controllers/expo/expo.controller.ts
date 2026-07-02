@@ -115,7 +115,11 @@ export const getCatalogoSistema = async (req: Request, res: Response) => {
         (SELECT ctp2.nombre FROM detalle_material_papel dmp
          JOIN cat_tipo_papel ctp2 ON ctp2.idcat_tipo_papel=dmp.idcat_tipo_papel
          WHERE dmp.idgrupo_papel IN (SELECT gp.idgrupo_papel FROM grupo_papel gp WHERE gp.idproducto_papel=pp.idproducto_papel)
-         LIMIT 1) AS primer_material
+         LIMIT 1) AS primer_material,
+        (SELECT cc.nombre FROM detalle_material_papel dmp
+         JOIN cat_calibre cc ON cc.idcat_calibre=dmp.idcat_calibre
+         WHERE dmp.idgrupo_papel IN (SELECT gp.idgrupo_papel FROM grupo_papel gp WHERE gp.idproducto_papel=pp.idproducto_papel)
+         LIMIT 1) AS primer_calibre
       FROM producto_papel pp
       LEFT JOIN cat_tipo_producto_papel ctp ON ctp.idcat_tipo_producto_papel=pp.idcat_tipo_producto_papel
       WHERE pp.activo=true ORDER BY ctp.nombre,pp.medida`);
@@ -804,7 +808,9 @@ sp.grupo_papel_idgrupo_papel,
         spp.idfoil, fo.colorfoil AS foil_color, fo.codigofoil AS foil_codigo,
         spp.idcat_textura, tex.nombre AS textura_nombre,
         spp.uv, spp.alto_relieve,
-        sd.idsolicitud_detalle, sd.cantidad, sd.precio_total, sd.precio_unitario, sd.aprobado
+        sd.idsolicitud_detalle, sd.cantidad, sd.precio_total, sd.precio_unitario, sd.aprobado,
+        ce_exp.medida AS expo_medida, ce_exp.material AS expo_material, ce_exp.calibre AS expo_calibre,
+        ce_exp.tipo_producto AS expo_tipo_producto
       FROM solicitud s
       LEFT JOIN clientes cli ON cli.idclientes=s.clientes_idclientes
       LEFT JOIN domicilio dom ON dom.clientes_idclientes=cli.idclientes
@@ -824,6 +830,15 @@ sp.grupo_papel_idgrupo_papel,
       LEFT JOIN foil fo ON fo.idfoil=spp.idfoil
       LEFT JOIN cat_textura tex ON tex.idcat_textura=spp.idcat_textura
       LEFT JOIN grupo_papel gp ON gp.idgrupo_papel=sp.grupo_papel_idgrupo_papel
+      LEFT JOIN LATERAL (
+        SELECT ce.medida, ce.material, ce.calibre, ce.tipo_producto
+        FROM catalogo_expo ce
+        WHERE sp.tipo_material = 'expo'
+          AND ce.activo = true
+          AND LOWER(ce.nombre) = LOWER(sp.descripcion)
+        ORDER BY ce.idcatalogo_expo DESC
+        LIMIT 1
+      ) ce_exp ON true
       LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id=sp.idsolicitud_producto
       WHERE s.origen_expo=true
       ORDER BY s.fecha DESC, sp.idsolicitud_producto, sd.idsolicitud_detalle`);
@@ -864,9 +879,12 @@ sp.grupo_papel_idgrupo_papel,
         prod = {
           idsolicitud_producto: row.idsolicitud_producto,
           tipo_material: row.tipo_material, nombre,
-          medida: row.tipo_material === "papel" ? row.papel_medida : (row.cfg_medida || null),
-          material: row.material_nombre || null,
-          calibre: row.calibre_numero ? String(row.calibre_numero) : null,
+          medida: row.tipo_material === "papel" ? row.papel_medida : (row.cfg_medida || row.expo_medida || null),
+          material: row.material_nombre || row.expo_material || null,
+          calibre: row.calibre_numero ? String(row.calibre_numero) : (row.expo_calibre || null),
+          tipo_producto: row.tipo_material === "papel"
+            ? (row.papel_tipo_producto ?? null)
+            : (row.tipo_producto_nombre || row.expo_tipo_producto || null),
           tintas: row.tintas_cantidad ?? null,
           descripcion: row.descripcion || null, observacion: row.observacion || null,
           pigmentos: row.pigmentos || null,

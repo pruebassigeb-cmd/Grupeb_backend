@@ -488,6 +488,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           s.estado          AS tipo_documento,
           s.fecha,
           s.sin_iva,
+          s.origen_expo,
           s.clientes_idclientes,
           s.estado_administrativo_cat_idestado_administrativo_cat,
 
@@ -582,7 +583,13 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           h.id_herramental,
           h.herramental_descripcion,
           h.herramental_precio,
-          h.aprobado        AS herramental_aprobado
+          h.aprobado        AS herramental_aprobado,
+
+          -- ── Datos de catálogo expo (productos aún no convertidos al sistema) ──
+          ce_exp.medida        AS expo_medida,
+          ce_exp.material      AS expo_material,
+          ce_exp.calibre       AS expo_calibre,
+          ce_exp.tipo_producto AS expo_tipo_producto
 
       FROM solicitud s
       LEFT JOIN clientes cli
@@ -634,6 +641,20 @@ export const getCotizaciones = async (req: Request, res: Response) => {
       LEFT JOIN tintas t2
           ON t2.idtintas = spp.tintas_dentro_idtintas
 
+      -- ── Datos del catálogo expo para productos tipo_material='expo' ──
+      -- (plásticos del catálogo expo o del tablero que aún no se convierten
+      --  a configuracion_plastico; el match es por nombre, igual que la
+      --  conversión al aprobar)
+      LEFT JOIN LATERAL (
+        SELECT ce.medida, ce.material, ce.calibre, ce.tipo_producto
+        FROM catalogo_expo ce
+        WHERE sp.tipo_material = 'expo'
+          AND ce.activo = true
+          AND LOWER(ce.nombre) = LOWER(sp.descripcion)
+        ORDER BY ce.idcatalogo_expo DESC
+        LIMIT 1
+      ) ce_exp ON true
+
       LEFT JOIN solicitud_detalle sd
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
       LEFT JOIN herramental h
@@ -664,6 +685,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           tipo_documento: row.tipo_documento ?? "cotizacion",
           fecha: row.fecha,
           sin_iva: row.sin_iva ?? false,
+          origen_expo: row.origen_expo === true,
           estado_id: row.estado_administrativo_cat_idestado_administrativo_cat,
           estado: normalizarNombreEstado(row.estado_nombre || ""),
           cliente_id: row.clientes_idclientes,
@@ -698,6 +720,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
             producto = construirProductoPapel(row);
           } else if (row.tipo_material === "expo") {
             // ── Producto EXPO (no convertido al sistema) ──
+            // Medida, material, calibre y tipo se resuelven desde catalogo_expo
+            // vía el LATERAL ce_exp (match por nombre en sp.descripcion).
             producto = {
               idsolicitud: row.idsolicitud,
               idsolicitud_producto: row.idsolicitud_producto,
@@ -705,21 +729,29 @@ export const getCotizaciones = async (req: Request, res: Response) => {
               tipoCotizacion: "expo",
               tipo_material: "expo",
               nombre: row.descripcion || "Producto expo",
-              medida: null,
-              material: null,
-              calibre: null,
-              medidasFormateadas: "",
+              tipo_producto: row.expo_tipo_producto ?? null,
+              medida: row.expo_medida ?? null,
+              material: row.expo_material || "",
+              calibre: row.expo_calibre || "",
+              medidasFormateadas: row.expo_medida || "",
               medidas: {},
               tintas: row.tintas_cantidad ?? null,
               caras: null,
-              pigmentos: null,
-              pantones: null,
+              idsuaje: row.idsuaje ?? null,
+              asa_suaje: row.suaje_tipo ?? null,
+              pigmentos: row.pigmentos || null,
+              pantones: row.pantones
+                ? row.pantones
+                    .split(",")
+                    .map((p: string) => p.trim())
+                    .filter(Boolean)
+                : null,
               observacion: row.observacion ?? null,
               descripcion: row.descripcion ?? null,
               perforacion: false,
               por_kilo: null,
-              id_color: null,
-              color_asa_nombre: null,
+              id_color: row.id_color ?? null,
+              color_asa_nombre: row.color_asa_nombre ?? null,
               id_medidatro: null,
               medida_troquel: null,
               herramental_descripcion: null,

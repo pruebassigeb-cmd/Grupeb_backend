@@ -2,7 +2,60 @@ import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GET /proveedores/:id/foil
+// GET /foil  — listado global (usado por FoilPanel), AGRUPADO por foil con
+// todos sus proveedores anidados en `.proveedores`.
+// ═══════════════════════════════════════════════════════════════════════════
+export const getFoils = async (_req: Request, res: Response) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        f.idfoil,
+        f.colorfoil,
+        f.codigofoil,
+        f.clavefoil,
+        f.activo,
+        f.created_at,
+        COALESCE(prov_agg.proveedores, '[]') AS proveedores,
+        COALESCE(pres_agg.presentaciones, '[]') AS presentaciones
+      FROM foil f
+      LEFT JOIN LATERAL (
+        SELECT JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'idfoil_proveedor', fp.idfoil_proveedor,
+            'idproveedor', pv.idproveedor,
+            'proveedor_nombre', pv.nombre,
+            'codigo', fp.codigo,
+            'precio', fp.precio,
+            'notas', fp.notas,
+            'minimo_compra', fp.minimo_compra,
+            'unidad', fp.unidad
+          ) ORDER BY pv.nombre
+        ) AS proveedores
+        FROM foil_proveedor fp
+        JOIN proveedor pv ON pv.idproveedor = fp.proveedor_idproveedor AND pv.activo = true
+        WHERE fp.idfoil = f.idfoil AND fp.activo = true
+      ) prov_agg ON true
+      LEFT JOIN LATERAL (
+        SELECT JSON_AGG(
+          JSON_BUILD_OBJECT('idfoil_presentacion', fpres.idfoil_presentacion, 'presentacion', fpres.presentacion)
+          ORDER BY fpres.idfoil_presentacion
+        ) AS presentaciones
+        FROM foil_presentacion fpres
+        WHERE fpres.idfoil = f.idfoil AND fpres.activo = true
+      ) pres_agg ON true
+      WHERE f.activo = true
+      ORDER BY f.colorfoil
+    `);
+    return res.json(rows);
+  } catch (error: any) {
+    console.error("❌ GET FOILS ERROR:", error.message);
+    return res.status(500).json({ error: "Error al obtener foils" });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /proveedores/:id/foil  — foils que vende ESE proveedor (flat, un
+// renglón por relación foil-proveedor, igual forma que antes).
 // ═══════════════════════════════════════════════════════════════════════════
 export const getFoilByProveedor = async (req: Request, res: Response) => {
   try {
@@ -16,23 +69,24 @@ export const getFoilByProveedor = async (req: Request, res: Response) => {
         f.clavefoil,
         f.activo,
         f.created_at,
-        pp.idproveedor_producto,
-        pp.precio,
-        pp.notas,
-        COALESCE(
-          JSON_AGG(
-            JSON_BUILD_OBJECT('idfoil_presentacion', fp.idfoil_presentacion, 'presentacion', fp.presentacion)
-            ORDER BY fp.idfoil_presentacion
-          ) FILTER (WHERE fp.idfoil_presentacion IS NOT NULL),
-          '[]'
-        ) AS presentaciones
+        fp.idfoil_proveedor,
+        fp.codigo,
+        fp.precio,
+        fp.notas,
+        fp.minimo_compra,
+        fp.unidad,
+        COALESCE(pres_agg.presentaciones, '[]') AS presentaciones
       FROM foil f
-      JOIN proveedor_producto pp ON pp.idproveedor_producto = f.idproveedor_producto
-      LEFT JOIN foil_presentacion fp ON fp.idfoil = f.idfoil AND fp.activo = true
-      WHERE pp.proveedor_idproveedor = $1
-        AND f.activo = true
-        AND pp.activo = true
-      GROUP BY f.idfoil, pp.idproveedor_producto, pp.precio, pp.notas
+      JOIN foil_proveedor fp ON fp.idfoil = f.idfoil AND fp.activo = true
+      LEFT JOIN LATERAL (
+        SELECT JSON_AGG(
+          JSON_BUILD_OBJECT('idfoil_presentacion', fpres.idfoil_presentacion, 'presentacion', fpres.presentacion)
+          ORDER BY fpres.idfoil_presentacion
+        ) AS presentaciones
+        FROM foil_presentacion fpres
+        WHERE fpres.idfoil = f.idfoil AND fpres.activo = true
+      ) pres_agg ON true
+      WHERE fp.proveedor_idproveedor = $1 AND f.activo = true
       ORDER BY f.idfoil DESC
     `, [id]);
 
@@ -44,7 +98,7 @@ export const getFoilByProveedor = async (req: Request, res: Response) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GET /proveedores/:id/foil/:idFoil
+// GET /foil/:idFoil  — un foil, con TODOS sus proveedores anidados.
 // ═══════════════════════════════════════════════════════════════════════════
 export const getFoilById = async (req: Request, res: Response) => {
   try {
@@ -58,16 +112,25 @@ export const getFoilById = async (req: Request, res: Response) => {
         f.clavefoil,
         f.activo,
         f.created_at,
-        pp.idproveedor_producto,
-        pp.precio,
-        pp.notas,
-        pp.minimo_compra,
-        pp.unidad,
-        p.idproveedor,
-        p.nombre AS proveedor_nombre
+        COALESCE(prov_agg.proveedores, '[]') AS proveedores
       FROM foil f
-      JOIN proveedor_producto pp ON pp.idproveedor_producto = f.idproveedor_producto
-      JOIN proveedor p ON p.idproveedor = pp.proveedor_idproveedor
+      LEFT JOIN LATERAL (
+        SELECT JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'idfoil_proveedor', fp.idfoil_proveedor,
+            'idproveedor', pv.idproveedor,
+            'proveedor_nombre', pv.nombre,
+            'codigo', fp.codigo,
+            'precio', fp.precio,
+            'notas', fp.notas,
+            'minimo_compra', fp.minimo_compra,
+            'unidad', fp.unidad
+          ) ORDER BY pv.nombre
+        ) AS proveedores
+        FROM foil_proveedor fp
+        JOIN proveedor pv ON pv.idproveedor = fp.proveedor_idproveedor AND pv.activo = true
+        WHERE fp.idfoil = f.idfoil AND fp.activo = true
+      ) prov_agg ON true
       WHERE f.idfoil = $1 AND f.activo = true
     `, [idFoil]);
 
@@ -93,89 +156,12 @@ export const getFoilById = async (req: Request, res: Response) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// POST /proveedores/:id/foil
-// ═══════════════════════════════════════════════════════════════════════════
-export const crearFoil = async (req: Request, res: Response) => {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    const { id } = req.params;
-    const { colorfoil, codigofoil, precio, notas, minimo_compra, unidad, presentaciones } = req.body;
-
-    if (!colorfoil?.trim())
-      return res.status(400).json({ error: "colorfoil es requerido" });
-
-    const { rows: prov } = await client.query(
-      `SELECT nombre FROM proveedor WHERE idproveedor = $1 AND activo = true`, [id]
-    );
-    if (!prov.length)
-      return res.status(404).json({ error: "Proveedor no encontrado" });
-
-    const { rows: tipo } = await client.query(
-      `SELECT idtipo_insumo FROM tipo_insumo WHERE LOWER(nombre) = 'foil' AND activo = true LIMIT 1`
-    );
-    if (!tipo.length)
-      return res.status(400).json({ error: "Tipo de insumo 'Foil' no está registrado en catálogo" });
-
-    const clavefoil = [
-      prov[0].nombre.substring(0, 2).toUpperCase(),
-      colorfoil.trim().substring(0, 3).toUpperCase(),
-      codigofoil?.trim() ?? "",
-    ].join("");
-
-    // 1. Insert base en proveedor_producto
-    const { rows: pp } = await client.query(`
-      INSERT INTO proveedor_producto
-        (proveedor_idproveedor, tipo_insumo_id, nombre, codigo, precio, notas, minimo_compra, unidad, activo)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
-      RETURNING idproveedor_producto
-    `, [
-      id,
-      tipo[0].idtipo_insumo,
-      colorfoil.trim(),
-      codigofoil?.trim() || null,
-      precio != null ? Number(precio) : null,
-      notas?.trim() || null,
-      minimo_compra != null ? Number(minimo_compra) : null,
-      unidad || null,
-    ]);
-
-    // 2. Insert detalle foil
-    const { rows: foilRows } = await client.query(`
-      INSERT INTO foil (idproveedor_producto, colorfoil, codigofoil, clavefoil)
-      VALUES ($1, $2, $3, $4)
-      RETURNING idfoil
-    `, [pp[0].idproveedor_producto, colorfoil.trim(), codigofoil?.trim() || null, clavefoil]);
-
-    // 3. Insert presentaciones
-    for (const p of (presentaciones ?? [])) {
-      if (!p?.trim()) continue;
-      await client.query(
-        `INSERT INTO foil_presentacion (idfoil, presentacion) VALUES ($1, $2)`,
-        [foilRows[0].idfoil, p.trim()]
-      );
-    }
-
-    await client.query("COMMIT");
-    console.log(`✅ Foil creado: ${foilRows[0].idfoil} — ${clavefoil}`);
-    return res.status(201).json({
-      message: "Foil registrado",
-      idfoil: foilRows[0].idfoil,
-      clavefoil,
-    });
-
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    console.error("❌ CREAR FOIL ERROR:", error.message);
-    return res.status(500).json({ error: "Error al registrar foil", detalle: error.message });
-  } finally {
-    client.release();
-  }
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
 // PUT /proveedores/:id/foil/:idFoil
+//
+// :id = proveedor "desde el cual" editas. El body puede traer
+// `proveedores_ids: number[]` para reemplazar el conjunto completo de
+// proveedores ligados a este foil; si no viene, solo se actualiza la
+// identidad del foil (colorfoil/codigofoil/clavefoil) y la relación de :id.
 // ═══════════════════════════════════════════════════════════════════════════
 export const actualizarFoil = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -183,57 +169,77 @@ export const actualizarFoil = async (req: Request, res: Response) => {
     await client.query("BEGIN");
 
     const { id, idFoil } = req.params;
-    const { colorfoil, codigofoil, precio, notas, minimo_compra, unidad, presentaciones } = req.body;
+    const { colorfoil, codigofoil, precio, notas, minimo_compra, unidad, presentaciones, proveedores_ids } = req.body;
 
-    if (!colorfoil?.trim())
+    if (!colorfoil?.trim()) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ error: "colorfoil es requerido" });
+    }
 
-    // Verificar que el foil pertenece al proveedor
+    // Verificar que el foil está ligado al proveedor desde el que editas
     const { rows: check } = await client.query(`
-      SELECT f.idfoil, pp.idproveedor_producto, p.nombre AS proveedor_nombre
+      SELECT f.idfoil, pv.nombre AS proveedor_nombre
       FROM foil f
-      JOIN proveedor_producto pp ON pp.idproveedor_producto = f.idproveedor_producto
-      JOIN proveedor p ON p.idproveedor = pp.proveedor_idproveedor
-      WHERE f.idfoil = $1 AND pp.proveedor_idproveedor = $2 AND f.activo = true
+      JOIN foil_proveedor fp ON fp.idfoil = f.idfoil AND fp.activo = true
+      JOIN proveedor pv ON pv.idproveedor = fp.proveedor_idproveedor
+      WHERE f.idfoil = $1 AND fp.proveedor_idproveedor = $2 AND f.activo = true
     `, [idFoil, id]);
 
-    if (!check.length)
+    if (!check.length) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Foil no encontrado para este proveedor" });
+    }
 
-    // Regenerar clave con nuevo color/código
     const clavefoil = [
       check[0].proveedor_nombre.substring(0, 2).toUpperCase(),
       colorfoil.trim().substring(0, 3).toUpperCase(),
       codigofoil?.trim() ?? "",
     ].join("");
 
-    // 1. Actualizar proveedor_producto
-    await client.query(`
-      UPDATE proveedor_producto SET
-        nombre        = $1,
-        codigo        = $2,
-        precio        = $3,
-        notas         = $4,
-        minimo_compra = $5,
-        unidad        = $6
-      WHERE idproveedor_producto = $7
-    `, [
-      colorfoil.trim(),
-      codigofoil?.trim() || null,
-      precio != null ? Number(precio) : null,
-      notas?.trim() || null,
-      minimo_compra != null ? Number(minimo_compra) : null,
-      unidad || null,
-      check[0].idproveedor_producto,
-    ]);
-
-    // 2. Actualizar foil
+    // 1. Identidad del foil (COMPARTIDA entre todos sus proveedores)
     await client.query(`
       UPDATE foil SET colorfoil = $1, codigofoil = $2, clavefoil = $3
       WHERE idfoil = $4
     `, [colorfoil.trim(), codigofoil?.trim() || null, clavefoil, idFoil]);
 
-    // 3. Presentaciones — delete + reinsert
+    // 2. Determinar el conjunto final de proveedores
+    const idsFinales: number[] = Array.isArray(proveedores_ids) && proveedores_ids.length > 0
+      ? proveedores_ids.map(Number)
+      : [Number(id)]; // si no mandan la lista, al menos conserva el actual
+
+    // 3. Dar de baja relaciones que ya no aplican
+    await client.query(`
+      UPDATE foil_proveedor SET activo = false
+      WHERE idfoil = $1 AND proveedor_idproveedor <> ALL($2::int[]) AND activo = true
+    `, [idFoil, idsFinales]);
+
+    // 4. Upsert de cada proveedor final (mismo precio/código/notas para todos
+    //    los seleccionados — si necesitas precio distinto por proveedor,
+    //    edítalo por separado después desde cada relación).
+    for (const idProv of idsFinales) {
+      await client.query(`
+        INSERT INTO foil_proveedor
+          (idfoil, proveedor_idproveedor, codigo, precio, notas, minimo_compra, unidad, activo)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+        ON CONFLICT (idfoil, proveedor_idproveedor)
+        DO UPDATE SET
+          codigo = EXCLUDED.codigo,
+          precio = EXCLUDED.precio,
+          notas = EXCLUDED.notas,
+          minimo_compra = EXCLUDED.minimo_compra,
+          unidad = EXCLUDED.unidad,
+          activo = true
+      `, [
+        idFoil, idProv,
+        codigofoil?.trim() || null,
+        precio != null ? Number(precio) : null,
+        notas?.trim() || null,
+        minimo_compra != null ? Number(minimo_compra) : null,
+        unidad || null,
+      ]);
+    }
+
+    // 5. Presentaciones — delete + reinsert
     await client.query(`DELETE FROM foil_presentacion WHERE idfoil = $1`, [idFoil]);
     for (const p of (presentaciones ?? [])) {
       if (!p?.trim()) continue;
@@ -257,77 +263,33 @@ export const actualizarFoil = async (req: Request, res: Response) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// DELETE /proveedores/:id/foil/:idFoil  → soft delete
+// DELETE /proveedores/:id/foil/:idFoil
+//
+// IMPORTANTE — cambio de comportamiento respecto a antes: como un foil
+// ahora puede tener varios proveedores, "eliminar" desde la ficha de UN
+// proveedor solo desvincula a ESE proveedor (desactiva su fila en
+// foil_proveedor). El foil como tal (su identidad/color/clave) sigue vivo
+// mientras tenga al menos otro proveedor activo. Si era el último
+// proveedor, el foil queda sin proveedores pero no se borra su identidad
+// (para no perder historial); si prefieres que también se desactive el
+// foil completo cuando se queda sin proveedores, dímelo y lo agrego.
 // ═══════════════════════════════════════════════════════════════════════════
 export const eliminarFoil = async (req: Request, res: Response) => {
   try {
     const { id, idFoil } = req.params;
 
     const { rowCount } = await pool.query(`
-      UPDATE foil SET activo = false
-      WHERE idfoil = $1
-        AND idproveedor_producto IN (
-          SELECT idproveedor_producto FROM proveedor_producto
-          WHERE proveedor_idproveedor = $2
-        )
+      UPDATE foil_proveedor SET activo = false
+      WHERE idfoil = $1 AND proveedor_idproveedor = $2 AND activo = true
     `, [idFoil, id]);
 
     if (rowCount === 0)
-      return res.status(404).json({ error: "Foil no encontrado" });
+      return res.status(404).json({ error: "Foil no encontrado para este proveedor" });
 
-    // Soft delete también en proveedor_producto
-    await pool.query(`
-      UPDATE proveedor_producto SET activo = false
-      WHERE idproveedor_producto = (
-        SELECT idproveedor_producto FROM foil WHERE idfoil = $1
-      )
-    `, [idFoil]);
-
-    console.log(`✅ Foil eliminado: id=${idFoil}`);
-    return res.json({ message: "Foil desactivado" });
+    console.log(`✅ Foil desvinculado: idfoil=${idFoil} proveedor=${id}`);
+    return res.json({ message: "Foil desvinculado de este proveedor" });
   } catch (error: any) {
     console.error("❌ ELIMINAR FOIL ERROR:", error.message);
     return res.status(500).json({ error: "Error al eliminar foil" });
-  }
-};
-
-// GET /foil  — listado global para catálogos
-export const getFoils = async (_req: Request, res: Response) => {
-  try {
-    const { rows } = await pool.query(`
-      SELECT
-        f.idfoil,
-        f.colorfoil,
-        f.codigofoil,
-        f.clavefoil,
-        f.activo,
-        f.created_at,
-        pp.idproveedor_producto,
-        pp.precio,
-        pp.notas,
-        pp.minimo_compra,
-        pp.unidad,
-        p.idproveedor,
-        p.nombre AS proveedor_nombre,
-        COALESCE(
-          JSON_AGG(
-            JSON_BUILD_OBJECT('idfoil_presentacion', fp.idfoil_presentacion, 'presentacion', fp.presentacion)
-            ORDER BY fp.idfoil_presentacion
-          ) FILTER (WHERE fp.idfoil_presentacion IS NOT NULL),
-          '[]'
-        ) AS presentaciones
-      FROM foil f
-      JOIN proveedor_producto pp ON pp.idproveedor_producto = f.idproveedor_producto
-      JOIN proveedor p ON p.idproveedor = pp.proveedor_idproveedor
-      LEFT JOIN foil_presentacion fp ON fp.idfoil = f.idfoil AND fp.activo = true
-      WHERE f.activo = true AND pp.activo = true
-      GROUP BY f.idfoil, pp.idproveedor_producto, pp.precio, pp.notas,
-               pp.minimo_compra, pp.unidad, p.idproveedor, p.nombre
-      ORDER BY p.nombre, f.colorfoil
-    `);
-    return res.json(rows);
-  } catch (error: any) {
-    console.error("❌ GET FOILS ERROR:", error.message);
-    return res.status(500).json({ error: "Error al obtener foils" });
   }
 };

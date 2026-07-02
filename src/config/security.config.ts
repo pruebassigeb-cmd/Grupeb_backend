@@ -3,8 +3,9 @@ import { Express } from "express";
 import rateLimit from "express-rate-limit";
 
 export const setupSecurity = (app: Express) => {
-  app.use(
+app.use(
     helmet({
+      crossOriginResourcePolicy: { policy: "cross-origin" },
       frameguard: {
         action: "deny",
       },

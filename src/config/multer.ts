@@ -20,7 +20,8 @@ export const CARPETAS = {
   backups: "backups",
   usuarios: "usuarios",
   usuarios_ine: "usuarios-ine",
-  suaje: "suaje",          // ← NUEVO
+  suaje: "suaje",
+  catalogo_productos: "catalogoproductos",   // ← fotos del catálogo de productos (expo)
 } as const;
 
 export const SUBCARPETAS_PDF = [
@@ -41,15 +42,23 @@ export const SUBCARPETAS_SUAJE = [
   "rendimiento",
 ] as const;
 
-// Todas las subcarpetas válidas (PDF + Suaje)
+export const SUBCARPETAS_CATALOGO = [
+  "papel",
+  "plastico",
+  "carton",
+] as const;
+
+// Todas las subcarpetas válidas (PDF + Suaje + Catálogo)
 export const TODAS_SUBCARPETAS = [
   ...SUBCARPETAS_PDF,
   ...SUBCARPETAS_SUAJE,
+  ...SUBCARPETAS_CATALOGO,
 ] as const;
 
 export type CarpetaS3 = typeof CARPETAS[keyof typeof CARPETAS];
 export type SubcarpetaPDF = typeof SUBCARPETAS_PDF[number];
 export type SubcarpetaSuaje = typeof SUBCARPETAS_SUAJE[number];
+export type SubcarpetaCatalogo = typeof SUBCARPETAS_CATALOGO[number];
 
 // ── Acepta CUALQUIER tipo de archivo sin restricción ─────────────────────────
 export const upload = multer({
