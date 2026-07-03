@@ -10,6 +10,9 @@ lerna-debug.log*
 .env
 .env.example
 
+node_modules/
+
+
 scripts/importar-cp.ts
 
 # Diagnostic reports (https://nodejs.org/api/report.html)

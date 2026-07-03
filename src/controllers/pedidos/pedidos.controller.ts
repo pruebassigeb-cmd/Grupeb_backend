@@ -41,6 +41,100 @@ const normalizarId = (v: unknown): number | null => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DISEÑO — enganchar un producto nuevo al diseño existente del pedido
+// ═══════════════════════════════════════════════════════════════════════════════
+// Cuando se agrega un producto durante la EDICIÓN de un pedido (no en su
+// creación original), ese producto también debe quedar disponible para
+// revisión de diseño, igual que los productos con los que se creó el pedido.
+// Replica exactamente lo que hace crearVentaYDiseno en cotizaciones.controller.ts
+// para cada producto al crear un pedido:
+//   1) diseno_producto (enganchado a la fila `diseno` — cabecera — ya
+//      existente para la solicitud) en estado PENDIENTE.
+//   2) orden_diseno con folio propio (OD{yy}{###}) en estado 'en_revision'.
+const DISENO_ESTADO = { PENDIENTE: 1, EN_PROCESO: 2, APROBADO: 3 } as const;
+
+async function generarFolioOrdenDiseno(client: any): Promise<string> {
+  const yy = new Date().getFullYear().toString().slice(-2);
+  const { rows } = await client.query(`
+    SELECT COALESCE(MAX(
+      CAST(SUBSTRING(no_orden_diseno FROM 'OD${yy}(\\d+)') AS INTEGER)
+    ), 0) + 1 AS siguiente
+    FROM orden_diseno
+    WHERE no_orden_diseno LIKE 'OD${yy}%'
+  `);
+  return `OD${yy}${String(rows[0].siguiente).padStart(3, "0")}`;
+}
+
+async function registrarProductoNuevoEnDiseno(
+  client: any,
+  solicitudId: number,
+  idsolicitudProducto: number,
+  noPedido: string
+): Promise<void> {
+  const { rows: disenoRows } = await client.query(
+    `SELECT iddiseno FROM diseno WHERE solicitud_idsolicitud = $1 LIMIT 1`,
+    [solicitudId]
+  );
+
+  if (disenoRows.length === 0) {
+    console.warn(
+      `⚠️ No existe registro de diseño (tabla diseno) para solicitud=${solicitudId}; ` +
+      `el producto ${idsolicitudProducto} no quedó enganchado a revisión de diseño.`
+    );
+    return;
+  }
+
+  const disenoId = disenoRows[0].iddiseno;
+
+  await client.query(
+    `INSERT INTO diseno_producto (
+       diseno_iddiseno,
+       solicitud_producto_idsolicitud_producto,
+       estado_administrativo_cat_idestado_administrativo_cat,
+       fecha
+     ) VALUES ($1, $2, $3, NOW())`,
+    [disenoId, idsolicitudProducto, DISENO_ESTADO.PENDIENTE]
+  );
+
+  // Igual que en crearVentaYDiseno: cada producto recibe también su propia
+  // orden_diseno con folio, en 'en_revision'.
+  const folioOD = await generarFolioOrdenDiseno(client);
+  await client.query(
+    `INSERT INTO orden_diseno
+       (solicitud_producto_id, no_pedido, no_orden_diseno, estado, version_actual)
+     VALUES ($1, $2, $3, 'en_revision', 1)`,
+    [idsolicitudProducto, noPedido, folioOD]
+  );
+
+  // El producto nuevo siempre entra PENDIENTE, así que la cabecera de diseño
+  // ya no puede seguir marcada como APROBADO. Recalculamos el estado padre
+  // con el mismo criterio que actualizarEstadoProducto en diseno.controller.ts.
+  const { rows: todosProductos } = await client.query(
+    `SELECT estado_administrativo_cat_idestado_administrativo_cat AS estado_id
+     FROM diseno_producto WHERE diseno_iddiseno = $1`,
+    [disenoId]
+  );
+  const estados: number[] = todosProductos.map((p: any) => Number(p.estado_id));
+  const nuevoEstadoPadre =
+    estados.every((e: number) => e === DISENO_ESTADO.APROBADO) ? DISENO_ESTADO.APROBADO :
+    estados.some((e: number) => e === DISENO_ESTADO.EN_PROCESO || e === DISENO_ESTADO.APROBADO) ? DISENO_ESTADO.EN_PROCESO :
+    DISENO_ESTADO.PENDIENTE;
+
+  await client.query(
+    `UPDATE diseno SET
+       estado_administrativo_cat_idestado_administrativo_cat = $1,
+       fecha_aprobacion_general = CASE WHEN $2 = $3 THEN fecha_aprobacion_general ELSE NULL END
+     WHERE iddiseno = $4`,
+    [nuevoEstadoPadre, nuevoEstadoPadre, DISENO_ESTADO.APROBADO, disenoId]
+  );
+
+  console.log(
+    `✅ Producto ${idsolicitudProducto} registrado en diseño #${disenoId} y orden de diseño ${folioOD} ` +
+    `(estado cabecera → ${nuevoEstadoPadre})`
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // GET /pedidos — con JOINs de papel igual que getCotizaciones
 // ═══════════════════════════════════════════════════════════════════════════════
 export const getPedidos = async (req: Request, res: Response) => {
@@ -299,6 +393,8 @@ export const getPedidos = async (req: Request, res: Response) => {
               id_asa: row.id_asa ?? null,
               asa_nombre: row.asa_nombre ?? null,
               tamano_asa: row.tamano_asa ?? null,
+              id_color: row.id_color ?? null,
+              color_asa_nombre: row.color_asa_nombre ?? null,
               idcat_laminado: row.idcat_laminado ?? null,
               laminado_nombre: row.laminado_nombre ?? null,
               idfoil: row.idfoil ?? null,
@@ -436,6 +532,10 @@ export const actualizarPedido = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
+    // req.params.id puede tipar como string | string[] según la config del
+    // proyecto; lo normalizamos una sola vez para poder pasarlo a funciones
+    // que exigen `string` estricto (registrarProductoNuevoEnDiseno).
+    const noPedidoParam: string = Array.isArray(id) ? id[0] : id;
     const { productos } = req.body;
 
     const { rows: pedRows } = await client.query(
@@ -867,6 +967,127 @@ export const actualizarPedido = async (req: Request, res: Response) => {
     const { productos_nuevos = [] } = req.body;
 
     for (const prod of (productos_nuevos as any[])) {
+      // ── Producto de PAPEL nuevo ─────────────────────────────────────────────
+      if (esProductoPapel(prod)) {
+        if (!["hojeado", "guillotina"].includes(prod.metodo_hojeado)) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `Selecciona Hojeado o Guillotina para el producto nuevo "${prod.nombre ?? prod.idproducto_papel}"`,
+          });
+        }
+        if (!prod.tintasId) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `El producto de papel nuevo "${prod.nombre ?? prod.idproducto_papel}" requiere tintas porque Impresión es obligatoria`,
+          });
+        }
+
+        const maquinariaSeleccionadaNuevo =
+          await validarMaquinariaSeleccionadaPapel(
+            client,
+            Number(prod.idproducto_papel),
+            prod.maquinaria_seleccionada
+          );
+
+        const idColorParaGuardarNuevo = prod.id_asa
+          ? normalizarId(prod.id_color)
+          : null;
+
+        const { rows: spPapelRows } = await client.query(
+          `INSERT INTO solicitud_producto (
+             solicitud_idsolicitud,
+             tipo_material,
+             producto_papel_idproducto_papel,
+             grupo_papel_idgrupo_papel,
+             grupo_papel_descripcion,
+             tintas_idtintas,
+             caras_idcaras,
+             pantones,
+             observacion,
+             descripcion,
+             id_color
+           ) VALUES ($1,'papel',$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           RETURNING idsolicitud_producto`,
+          [
+            solicitudId,
+            prod.idproducto_papel,
+            prod.idgrupo_papel ?? null,
+            prod.grupo_descripcion ?? null,
+            prod.tintasId ?? null,
+            prod.carasId ?? null,
+            prod.pantones || null,
+            prod.observacion || null,
+            prod.descripcion || null,
+            idColorParaGuardarNuevo,
+          ]
+        );
+        const nuevoSpPapelId: number = spPapelRows[0].idsolicitud_producto;
+
+        await registrarProductoNuevoEnDiseno(client, solicitudId, nuevoSpPapelId, noPedidoParam);
+
+        const { rows: sppInsertNuevo } = await client.query(
+          `INSERT INTO solicitud_producto_papel
+             (idsolicitud_producto, id_asa, tamano_asa, idcat_laminado, idfoil, idcat_textura,
+              uv, alto_relieve, tintas_dentro_idtintas, pantones_dentro,
+              cargo_adicional_descripcion, cargo_adicional_precio,
+              metodo_hojeado, lleva_armado)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+           RETURNING idsolicitud_producto_papel`,
+          [
+            nuevoSpPapelId,
+            prod.id_asa ?? null,
+            prod.id_asa && typeof prod.tamano_asa === "string" && prod.tamano_asa.trim()
+              ? prod.tamano_asa.trim()
+              : null,
+            prod.idcat_laminado ?? null,
+            prod.idfoil ?? null,
+            prod.idcat_textura ?? null,
+            prod.uv === true,
+            prod.alto_relieve === true,
+            prod.tintasDentroId ?? null,
+            prod.pantonesDentro || null,
+            prod.cargo_adicional_descripcion || null,
+            prod.cargo_adicional_precio != null && Number(prod.cargo_adicional_precio) > 0
+              ? Number(prod.cargo_adicional_precio)
+              : null,
+            prod.metodo_hojeado,
+            prod.lleva_armado === true,
+          ]
+        );
+        const idsolicitudProductoPapelNuevo =
+          Number(sppInsertNuevo[0].idsolicitud_producto_papel);
+
+        await guardarMaquinariaSeleccionadaPapel(
+          client,
+          idsolicitudProductoPapelNuevo,
+          maquinariaSeleccionadaNuevo
+        );
+
+        // Herramental — si viene con datos lo insertamos como aprobado
+        if (prod.herramental_descripcion || prod.herramental_precio != null) {
+          await client.query(
+            `INSERT INTO herramental
+               (idsolicitud_producto, herramental_descripcion, herramental_precio, aprobado)
+             VALUES ($1, $2, $3, true)`,
+            [nuevoSpPapelId, prod.herramental_descripcion, prod.herramental_precio]
+          );
+        }
+
+        for (const det of (prod.detalles as any[])) {
+          const { cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad } = det;
+          await client.query(
+            `INSERT INTO solicitud_detalle
+               (solicitud_producto_id, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad, aprobado)
+             VALUES ($1,$2,$3,$4,$5,$6,false)`,
+            [nuevoSpPapelId, cantidad, precio_total, precio_unitario ?? null, kilogramos ?? null, modo_cantidad]
+          );
+        }
+
+        console.log(`✅ Producto de papel nuevo insertado: sp_id=${nuevoSpPapelId} producto_papel=${prod.idproducto_papel}`);
+        continue;
+      }
+
+      // ── Producto de PLÁSTICO nuevo ──────────────────────────────────────────
       const {
         configuracion_plastico_id,
         tintas,
@@ -928,6 +1149,8 @@ export const actualizarPedido = async (req: Request, res: Response) => {
         ]
       );
       const nuevoSpId: number = spRows[0].idsolicitud_producto;
+
+      await registrarProductoNuevoEnDiseno(client, solicitudId, nuevoSpId, noPedidoParam);
 
       // Herramental — si viene con datos lo insertamos como aprobado
       if (herramental_descripcion || herramental_precio != null) {
@@ -1671,6 +1894,8 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
               id_asa: row.id_asa ?? null,
               asa_nombre: row.asa_nombre ?? null,
               tamano_asa: row.tamano_asa ?? null,
+              id_color: row.id_color ?? null,
+              color_asa_nombre: row.color_asa_nombre ?? null,
               idcat_laminado: row.idcat_laminado ?? null,
               laminado_nombre: row.laminado_nombre ?? null,
               idfoil: row.idfoil ?? null,

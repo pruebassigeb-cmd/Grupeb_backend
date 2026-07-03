@@ -1049,16 +1049,17 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ON sd.solicitud_producto_id = sp.idsolicitud_producto
         AND sd.aprobado = true
       LEFT JOIN LATERAL (
-        SELECT
-          spj.idsuaje_papel,
-          spj.numero,
-          spj.tamano,
-          spj.matrix
-        FROM suaje_papel spj
-        WHERE spj.idproducto_papel = pp.idproducto_papel
-        ORDER BY spj.idsuaje_papel DESC
-        LIMIT 1
-      ) suj ON true
+  SELECT
+    spj.idsuaje_papel,
+    spj.numero,
+    spj.tamano,
+    mx.medida_matrix AS matrix
+  FROM suaje_papel spj
+  LEFT JOIN matrix mx ON mx.idmatrix = spj.idcat_matrix
+  WHERE spj.idproducto_papel = pp.idproducto_papel
+  ORDER BY spj.idsuaje_papel DESC
+  LIMIT 1
+) suj ON true
       WHERE sp.solicitud_idsolicitud = $1
         AND sp.tipo_material = 'papel'
       ORDER BY sp.idsolicitud_producto
