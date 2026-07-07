@@ -671,3 +671,99 @@ export const validateUpdateProductoPlastico = (
 
   next();
 };
+
+// ==========================
+// TIPO DE PRODUCTO PLÁSTICO
+// ==========================
+export const validateCreateTipoProductoPlastico = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  let { nombre } = req.body;
+ 
+  if (!nombre || typeof nombre !== "string" || !nombre.trim()) {
+    return res.status(400).json({ error: "El nombre es requerido" });
+  }
+ 
+  nombre = nombre.trim();
+  if (nombre.length < 2 || nombre.length > 100) {
+    return res.status(400).json({ error: "El nombre debe tener entre 2 y 100 caracteres" });
+  }
+ 
+  req.body.nombre = nombre;
+  next();
+};
+ 
+// ==========================
+// MATERIAL PLÁSTICO
+// ==========================
+export const validateCreateMaterialPlastico = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  let { nombre, valor } = req.body;
+  const errors: string[] = [];
+ 
+  if (!nombre || typeof nombre !== "string" || !nombre.trim()) {
+    errors.push("El nombre es requerido");
+  } else {
+    nombre = nombre.trim();
+    if (nombre.length < 2 || nombre.length > 100) {
+      errors.push("El nombre debe tener entre 2 y 100 caracteres");
+    }
+  }
+ 
+  if (valor === undefined || valor === null || isNaN(Number(valor)) || Number(valor) <= 0) {
+    errors.push("El valor (factor de cálculo) es requerido y debe ser mayor a 0");
+  }
+ 
+  if (errors.length > 0) {
+    return res.status(400).json({ error: "Datos inválidos", details: errors });
+  }
+ 
+  req.body.nombre = nombre;
+  req.body.valor = Number(valor);
+  next();
+};
+ 
+// ==========================
+// CALIBRE
+// ==========================
+export const validateCreateCalibrePlastico = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  const { calibre, calibre_bopp, gramos } = req.body;
+  const errors: string[] = [];
+ 
+  if (calibre === undefined || calibre === null || isNaN(Number(calibre)) || Number(calibre) <= 0) {
+    errors.push("El calibre es requerido y debe ser un número mayor a 0");
+  }
+ 
+  if (
+    calibre_bopp !== undefined && calibre_bopp !== null && calibre_bopp !== "" &&
+    (isNaN(Number(calibre_bopp)) || Number(calibre_bopp) <= 0)
+  ) {
+    errors.push("El calibre BOPP debe ser un número mayor a 0");
+  }
+ 
+  if (
+    gramos !== undefined && gramos !== null && gramos !== "" &&
+    (isNaN(Number(gramos)) || Number(gramos) <= 0)
+  ) {
+    errors.push("Los gramos deben ser un número mayor a 0");
+  }
+ 
+  if (errors.length > 0) {
+    return res.status(400).json({ error: "Datos inválidos", details: errors });
+  }
+ 
+  req.body.calibre = Number(calibre);
+  req.body.calibre_bopp = calibre_bopp ? Number(calibre_bopp) : null;
+  req.body.gramos = gramos ? Number(gramos) : null;
+  next();
+};
+ 

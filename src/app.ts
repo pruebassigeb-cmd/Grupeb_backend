@@ -19,6 +19,7 @@ import clientesRoutes from "./routes/clientes/clientes.routes";
 import tarifasRoutes from "./routes/tarifas/tarifas.routes";
 import catalogosProductosRoutes from "./routes/productos/catalogos-productos.routes";
 import productosPlasticoRoutes from "./routes/productos/productos-plastico.routes";
+import catalogosPlasticoAdminRoutes from "./routes/productos/catalogosPlasticoAdmin.routes";
 import catalogosProduccionRoutes from "./routes/catalogos_produccion/catalogos-produccion.routes";
 import cotizacionesRoutes from "./routes/cotizaciones/cotizaciones.routes";
 import calcularPrecioRoutes from "./routes/cotizaciones/calcular-precio.routes";
@@ -53,6 +54,9 @@ import expoRoutes from "./routes/expo/expo.routes";
 import procesosPapelRoutes from "./routes/producto_papel/procesosPapel.routes";
 import productosPapelRoutes from "./routes/producto_papel/producto_papel.routes";
 import maquinariaPedidoPapelRoutes from "./routes/producto_papel/maquinariaPedidoPapel.routes";
+import correoRoutes from "./routes/correo/correo.routes";
+import whatsappRoutes from "./routes/whatsapp/whatsapp.routes";
+
 
 
 const app = express();
@@ -103,6 +107,7 @@ app.use("/api/clientes", clientesRoutes);
 app.use("/api/tarifas", tarifasRoutes);
 app.use("/api/catalogos-productos", catalogosProductosRoutes);
 app.use("/api/productos-plastico", productosPlasticoRoutes);
+app.use("/api/catalogos-productos/plastico/admin", catalogosPlasticoAdminRoutes);
 app.use("/api/catalogos-produccion", catalogosProduccionRoutes);
 app.use("/api/cotizaciones", cotizacionesRoutes);
 app.use("/api/pedidos", pedidosRoutes);
@@ -139,8 +144,8 @@ app.use("/api", procesosPapelRoutes);
 app.use("/api/catalogos-papel", catalogosPapelRoutes);
 app.use("/api/productos-papel", productosPapelRoutes);
 app.use("/api/pedidos", maquinariaPedidoPapelRoutes);
-
-
+app.use("/api/correos", correoRoutes);
+app.use("/api/whatsapp", whatsappRoutes);
 
 
 // ==========================

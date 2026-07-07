@@ -6,8 +6,9 @@ import {
   getProductosPlastico,
   getProductoPlasticoById,
   updateProductoPlastico,
+  deleteProductoPlastico,
+  reactivarProductoPlastico,
   checkProductoDuplicado,
-  // deleteProductoPlastico,
 } from "../../controllers/productos/productos-plastico.controller";
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 import {
@@ -82,13 +83,24 @@ router.put(
   updateProductoPlastico
 );
 
+// ✅ Antes estaba comentado (sin handler) — ahora sí desactiva el producto
 router.delete(
   "/:id",
   authMiddleware,
   checkPermiso(PERMISO),
   updateDeleteLimiter,
   validateId,
-  // deleteProductoPlastico
+  deleteProductoPlastico
+);
+
+// ✅ NUEVO — reactivar un producto previamente desactivado
+router.patch(
+  "/:id/reactivar",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  updateDeleteLimiter,
+  validateId,
+  reactivarProductoPlastico
 );
 
 export default router;

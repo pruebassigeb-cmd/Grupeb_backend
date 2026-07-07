@@ -33,6 +33,9 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
       return;
     }
 
+    // Para plástico el frontend manda carpeta="catalogoproductos" y
+    // subcarpeta="plastico" (ambos ya existentes en config/multer.ts —
+    // CARPETAS.catalogo_productos y SUBCARPETAS_CATALOGO).
     const carpeta = validarCarpeta(req.body.carpeta || "disenos");
     const subcarpeta = req.body.subcarpeta ? validarSubcarpeta(req.body.subcarpeta) : undefined;
     const categoria = req.body.categoria ?? null;
@@ -45,11 +48,15 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
     const envioId = req.body.envio_id ? Number(req.body.envio_id) : null;
     const notaId = req.body.nota_id ? Number(req.body.nota_id) : null;
     const idproducto_papel = req.body.idproducto_papel ? Number(req.body.idproducto_papel) : null;
+    // ✅ NUEVO: vínculo con producto plástico
+    const idconfiguracion_plastico = req.body.idconfiguracion_plastico
+      ? Number(req.body.idconfiguracion_plastico)
+      : null;
 
     const result = await pool.query(
       `INSERT INTO archivos 
-        (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria, usuario_id, envio_id, nota_id, idproducto_papel)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria, usuario_id, envio_id, nota_id, idproducto_papel, idconfiguracion_plastico)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING *`,
       [
         req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb,
@@ -57,6 +64,7 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
         categoria,
         usuarioId, envioId, notaId,
         idproducto_papel,
+        idconfiguracion_plastico,
       ]
     );
 
@@ -119,6 +127,35 @@ export const getFotosNota = async (req: Request, res: Response): Promise<void> =
   } catch (error) {
     console.error("❌ Error al obtener fotos de la nota:", error);
     res.status(500).json({ error: "Error al obtener fotos" });
+  }
+};
+
+// ✅ NUEVO — GET archivos por producto plástico.
+// Nombre del param es `idproducto` para coincidir EXACTAMENTE con tu ruta:
+//   router.get("/producto-plastico/:idproducto", authMiddleware, getArchivosProductoPlastico);
+export const getArchivosProductoPlastico = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { idproducto } = req.params;
+
+    const result = await pool.query(
+      `SELECT id_archivo, nombre, tipo, mime_type, public_id, tamano_kb, categoria, created_at
+       FROM archivos
+       WHERE idconfiguracion_plastico = $1
+       ORDER BY id_archivo ASC`,
+      [idproducto]
+    );
+
+    const archivosConUrl = await Promise.all(
+      result.rows.map(async (archivo) => ({
+        ...archivo,
+        url: await getPresignedUrl(archivo.public_id),
+      }))
+    );
+
+    res.json(archivosConUrl);
+  } catch (error) {
+    console.error("❌ Error al obtener archivos del producto plástico:", error);
+    res.status(500).json({ error: "Error al obtener archivos" });
   }
 };
 

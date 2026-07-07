@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn src/server.ts",
-    "build": "tsc",
-    "start": "node dist/server.js"
-  },
+  "dev": "ts-node-dev --respawn -r dotenv/config src/server.ts",
+  "build": "tsc",
+  "start": "node -r dotenv/config dist/server.js"
+},
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -32,6 +32,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
     "node-cron": "^4.2.1",
+    "nodemailer": "^9.0.3",
     "pg": "^8.18.0",
     "pg-copy-streams": "^7.0.0",
     "sharp": "^0.35.3",
@@ -43,6 +44,7 @@
     "@types/bcrypt": "^6.0.0",
     "@types/multer": "^2.1.0",
     "@types/node-cron": "^3.0.11",
+    "@types/nodemailer": "^8.0.1",
     "@types/pg-copy-streams": "^1.2.5",
     "@types/uuid": "^10.0.0",
     "ts-node": "^10.9.2",
