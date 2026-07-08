@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 import app from "./app";
 import cron from "node-cron";
 import { pool } from "./config/db";
@@ -6,6 +8,10 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log(`🔥 Backend corriendo en http://localhost:${PORT}`);
+
+  console.log("WHATSAPP_ACCESS_TOKEN cargado:", !!process.env.WHATSAPP_ACCESS_TOKEN);
+  console.log("WHATSAPP_PHONE_NUMBER_ID cargado:", !!process.env.WHATSAPP_PHONE_NUMBER_ID);
+  console.log("WHATSAPP_VERIFY_TOKEN cargado:", !!process.env.WHATSAPP_VERIFY_TOKEN);
 });
 
 // ============================================================
@@ -16,6 +22,7 @@ app.listen(PORT, () => {
 cron.schedule("0 2 * * *", async () => {
   console.log("🧹 Iniciando limpieza de chats antiguos...");
   const client = await pool.connect();
+
   try {
     await client.query("BEGIN");
 
@@ -39,6 +46,7 @@ cron.schedule("0 2 * * *", async () => {
          LIMIT 1`,
         [ordenId]
       );
+
       const revisionFinalId = finalRows[0]?.idrevision ?? null;
 
       // Desvincular archivos de revisiones que NO son la versión final
@@ -70,12 +78,16 @@ cron.schedule("0 2 * * *", async () => {
       totalArchivos += archivosDesvinculados ?? 0;
       totalMensajes += mensajesEliminados ?? 0;
 
-      console.log(`   ✓ Orden ${ordenId} — ${mensajesEliminados} mensajes, ${archivosDesvinculados} archivos`);
+      console.log(
+        `   ✓ Orden ${ordenId} — ${mensajesEliminados} mensajes, ${archivosDesvinculados} archivos`
+      );
     }
 
     await client.query("COMMIT");
 
-    console.log(`✅ Limpieza completada — ${ordenes.length} órdenes procesadas, ${totalMensajes} mensajes eliminados, ${totalArchivos} archivos desvinculados`);
+    console.log(
+      `✅ Limpieza completada — ${ordenes.length} órdenes procesadas, ${totalMensajes} mensajes eliminados, ${totalArchivos} archivos desvinculados`
+    );
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ Error en limpieza de chats:", error.message);

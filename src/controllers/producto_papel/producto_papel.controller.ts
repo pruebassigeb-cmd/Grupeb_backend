@@ -3,6 +3,46 @@ import { pool } from "../../config/db";
 import { getPresignedUrl } from "../../config/multer";
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HELPERS DE FORMATO NUMÉRICO (ancho / fuelle / altura / medida)
+// ═══════════════════════════════════════════════════════════════════════════
+// Postgres regresa las columnas numeric como texto con ceros decimales fijos
+// (ej. "12.00"). limpiarNumero los deja como "12" (o "12.5" si el decimal es
+// real). Se aplica aquí, en el backend, para que CUALQUIER consumidor
+// (frontend de alta, PDF, futuras vistas) reciba el valor ya correcto sin
+// tener que repetir el filtro en cada lugar donde se use.
+function limpiarNumero(v: unknown): string | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? String(n) : String(v);
+}
+
+// Recalcula "medida" a partir de ancho/fuelle/altura YA limpios, con la
+// misma regla que usa el frontend: "ancho+fuellexaltura" si hay fuelle
+// distinto de 0, o "anchoxaltura" si no. Si no hay ancho ni altura, se
+// respeta la medida ya guardada en BD (por si el producto no usa estos
+// campos y la medida se capturó como texto libre).
+function recalcularMedida(anchoLimpio: string | null, fuelleLimpio: string | null, alturaLimpio: string | null, medidaOriginal: string | null): string | null {
+  if (!anchoLimpio && !alturaLimpio) return medidaOriginal;
+  const tieneFuelle = fuelleLimpio && fuelleLimpio !== "0";
+  return tieneFuelle
+    ? `${anchoLimpio ?? ""}+${fuelleLimpio}x${alturaLimpio ?? ""}`
+    : `${anchoLimpio ?? ""}x${alturaLimpio ?? ""}`;
+}
+
+function limpiarMedidasProducto<T extends { ancho?: unknown; fuelle?: unknown; altura?: unknown; medida?: unknown }>(row: T): T {
+  const ancho = limpiarNumero(row.ancho);
+  const fuelle = limpiarNumero(row.fuelle);
+  const altura = limpiarNumero(row.altura);
+  return {
+    ...row,
+    ancho,
+    fuelle,
+    altura,
+    medida: recalcularMedida(ancho, fuelle, altura, (row.medida as string) ?? null),
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // HELPERS MAQUINARIA MULTISELECT
 // ═══════════════════════════════════════════════════════════════════════════
 const MAQ_PIVOTS: Record<string, { tabla: string; col: string }> = {
@@ -114,6 +154,7 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
         pp.altura,
         pp.medida,
         pp.tamano_asa_default,
+        pp.tamano_prod,
         pp.descripcion_papel,
         pp.activo,
         pp.created_at,
@@ -183,7 +224,7 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
       ORDER BY pp.idproducto_papel DESC
     `);
 
-    // Generar presigned URLs para los archivos de preview
+    // Generar presigned URLs para los archivos de preview + limpiar medidas
     const rowsConUrls = await Promise.all(
       rows.map(async (row) => {
         const archivosRaw: any[] = row.archivos_raw ?? [];
@@ -197,7 +238,7 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
           }))
         );
         const { archivos_raw, ...rest } = row;
-        return { ...rest, archivos_preview };
+        return limpiarMedidasProducto({ ...rest, archivos_preview });
       })
     );
 
@@ -231,7 +272,7 @@ export const getProductoPapelById = async (req: Request, res: Response) => {
     if (prodRows.length === 0)
       return res.status(404).json({ error: "Producto no encontrado" });
 
-    const producto = prodRows[0];
+    const producto = limpiarMedidasProducto(prodRows[0]);
 
     // ── Grupos y materiales ───────────────────────────────────────────────
     const { rows: grupoRows } = await pool.query(`
@@ -393,6 +434,7 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       descripcion_papel,
       ancho, fuelle, altura, medida,
       tamano_asa_default,
+      tamano_prod,
       grupos = [],
       suaje,
       acabados,
@@ -404,6 +446,13 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
     if (!idcat_tipo_producto_papel)
       return res.status(400).json({ error: "El tipo de producto es requerido" });
 
+    // Validación del desplegable fijo — evita guardar basura si llega algo
+    // fuera de las 5 opciones (por bug de frontend o llamada directa a la API).
+    const TAMANOS_VALIDOS = ["Mini", "Chico", "Mediano", "Grande", "Extragrande"];
+    if (tamano_prod != null && tamano_prod !== "" && !TAMANOS_VALIDOS.includes(tamano_prod)) {
+      return res.status(400).json({ error: "tamano_prod inválido" });
+    }
+
     await client.query("BEGIN");
 
     // ── 1. Producto padre ─────────────────────────────────────────────────
@@ -411,8 +460,9 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       INSERT INTO producto_papel (
         idproductos, idcat_tipo_producto_papel,
         descripcion_papel, ancho, fuelle, altura, medida, tamano_asa_default,
+        tamano_prod,
         creado_por, actualizado_por
-      ) VALUES (2, $1, $2, $3, $4, $5, $6, $7, $8, $8)
+      ) VALUES (2, $1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
       RETURNING idproducto_papel
     `, [
       idcat_tipo_producto_papel,
@@ -421,6 +471,7 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       typeof tamano_asa_default === "string" && tamano_asa_default.trim()
         ? tamano_asa_default.trim()
         : null,
+      tamano_prod || null,
       idusuario,
     ]);
 
@@ -572,6 +623,7 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
       descripcion_papel,
       ancho, fuelle, altura, medida,
       tamano_asa_default,
+      tamano_prod,
       grupos = [],
       suaje,
       acabados,
@@ -579,6 +631,12 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
     } = req.body;
 
     const idusuario = (req as any).user?.id ?? null;
+
+    // Validación del desplegable fijo, misma lógica que en creación.
+    const TAMANOS_VALIDOS = ["Mini", "Chico", "Mediano", "Grande", "Extragrande"];
+    if (tamano_prod != null && tamano_prod !== "" && !TAMANOS_VALIDOS.includes(tamano_prod)) {
+      return res.status(400).json({ error: "tamano_prod inválido" });
+    }
 
     const { rows: check } = await client.query(
       `SELECT idproducto_papel FROM producto_papel WHERE idproducto_papel = $1 AND activo = true`, [id]
@@ -595,9 +653,10 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
         descripcion_papel = $2,
         ancho = $3, fuelle = $4, altura = $5, medida = $6,
         tamano_asa_default = $7,
-        actualizado_por = $8,
+        tamano_prod = $8,
+        actualizado_por = $9,
         updated_at = NOW()
-      WHERE idproducto_papel = $9
+      WHERE idproducto_papel = $10
     `, [
       idcat_tipo_producto_papel,
       descripcion_papel ?? null,
@@ -605,6 +664,7 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
       typeof tamano_asa_default === "string" && tamano_asa_default.trim()
         ? tamano_asa_default.trim()
         : null,
+      tamano_prod || null,
       idusuario, id,
     ]);
 
