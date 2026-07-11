@@ -1244,3 +1244,483 @@ export const aprobarHerramental = async (req: Request, res: Response) => {
       .json({ error: "Error al actualizar aprobación de herramental" });
   }
 };
+
+// ============================================================
+// ACTUALIZAR PRODUCTOS DE UNA COTIZACIÓN (solo mientras no se
+// haya convertido a pedido — no toca ventas/diseño/maquinaria,
+// porque esas tablas no existen todavía en este punto del flujo)
+// ============================================================
+export const actualizarCotizacionProductos = async (
+  req: Request,
+  res: Response,
+) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const { productos, productos_nuevos = [] } = req.body;
+
+    const { rows: docRows } = await client.query(
+      `SELECT idsolicitud, estado, no_pedido
+       FROM solicitud
+       WHERE no_cotizacion = $1`,
+      [id],
+    );
+    if (docRows.length === 0) {
+      return res.status(404).json({ error: "Cotización no encontrada" });
+    }
+    const doc = docRows[0];
+    if (doc.estado !== "cotizacion" || doc.no_pedido) {
+      return res.status(409).json({
+        error:
+          "Esta cotización ya fue convertida a pedido y no puede editarse desde aquí.",
+      });
+    }
+    const solicitudId: number = doc.idsolicitud;
+
+    await client.query("BEGIN");
+
+    for (const prod of productos as any[]) {
+      // ── PAPEL ──────────────────────────────────────────────────────────
+      if (esProductoPapel(prod)) {
+        if (prod.eliminado) {
+          await client.query(
+            `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
+            [prod.idsolicitud_producto],
+          );
+          await client.query(
+            `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = $1`,
+            [prod.idsolicitud_producto],
+          );
+          await client.query(
+            `DELETE FROM solicitud_producto_papel WHERE idsolicitud_producto = $1`,
+            [prod.idsolicitud_producto],
+          );
+          await client.query(
+            `DELETE FROM solicitud_producto WHERE idsolicitud_producto = $1`,
+            [prod.idsolicitud_producto],
+          );
+          continue;
+        }
+
+        if (!prod.tintasId) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `El producto de papel "${prod.nombre ?? prod.idsolicitud_producto}" requiere tintas porque Impresión es obligatoria`,
+          });
+        }
+
+        const idColorParaGuardar = prod.id_asa
+          ? (Number(prod.id_color) > 0 ? Number(prod.id_color) : null)
+          : null;
+
+        await client.query(
+          `UPDATE solicitud_producto SET
+             producto_papel_idproducto_papel = $1,
+             grupo_papel_idgrupo_papel       = $2,
+             grupo_papel_descripcion         = $3,
+             tintas_idtintas                 = $4,
+             caras_idcaras                   = $5,
+             pantones                        = $6,
+             observacion                     = $7,
+             descripcion                     = $8,
+             id_color                        = $9
+           WHERE idsolicitud_producto = $10`,
+          [
+            prod.idproducto_papel,
+            prod.idgrupo_papel ?? null,
+            prod.grupo_descripcion ?? null,
+            prod.tintasId ?? null,
+            prod.carasId ?? null,
+            prod.pantones || null,
+            prod.observacion || null,
+            prod.descripcion || null,
+            idColorParaGuardar,
+            prod.idsolicitud_producto,
+          ],
+        );
+
+        const { rows: sppCheck } = await client.query(
+          `SELECT idsolicitud_producto_papel FROM solicitud_producto_papel WHERE idsolicitud_producto = $1`,
+          [prod.idsolicitud_producto],
+        );
+
+        const tamanoAsa =
+          prod.id_asa && typeof prod.tamano_asa === "string" && prod.tamano_asa.trim()
+            ? prod.tamano_asa.trim()
+            : null;
+        const cargoAdicionalPrecio =
+          prod.cargo_adicional_precio != null && Number(prod.cargo_adicional_precio) > 0
+            ? Number(prod.cargo_adicional_precio)
+            : null;
+
+        if (sppCheck.length > 0) {
+          await client.query(
+            `UPDATE solicitud_producto_papel SET
+               id_asa                       = $1,
+               tamano_asa                   = $2,
+               idcat_laminado               = $3,
+               idfoil                       = $4,
+               idcat_textura                = $5,
+               uv                           = $6,
+               alto_relieve                 = $7,
+               tintas_dentro_idtintas       = $8,
+               pantones_dentro              = $9,
+               cargo_adicional_descripcion  = $10,
+               cargo_adicional_precio       = $11
+             WHERE idsolicitud_producto = $12`,
+            [
+              prod.id_asa ?? null,
+              tamanoAsa,
+              prod.idcat_laminado ?? null,
+              prod.idfoil ?? null,
+              prod.idcat_textura ?? null,
+              prod.uv === true,
+              prod.alto_relieve === true,
+              prod.tintasDentroId ?? null,
+              prod.pantonesDentro || null,
+              prod.cargo_adicional_descripcion || null,
+              cargoAdicionalPrecio,
+              prod.idsolicitud_producto,
+            ],
+          );
+        } else {
+          await client.query(
+            `INSERT INTO solicitud_producto_papel
+               (idsolicitud_producto, id_asa, tamano_asa, idcat_laminado, idfoil, idcat_textura,
+                uv, alto_relieve, tintas_dentro_idtintas, pantones_dentro,
+                cargo_adicional_descripcion, cargo_adicional_precio)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+            [
+              prod.idsolicitud_producto,
+              prod.id_asa ?? null,
+              tamanoAsa,
+              prod.idcat_laminado ?? null,
+              prod.idfoil ?? null,
+              prod.idcat_textura ?? null,
+              prod.uv === true,
+              prod.alto_relieve === true,
+              prod.tintasDentroId ?? null,
+              prod.pantonesDentro || null,
+              prod.cargo_adicional_descripcion || null,
+              cargoAdicionalPrecio,
+            ],
+          );
+        }
+
+        // ── Herramental (upsert / delete) ──
+        const { rows: herrRows } = await client.query(
+          `SELECT id_herramental FROM herramental WHERE idsolicitud_producto = $1`,
+          [prod.idsolicitud_producto],
+        );
+        const tieneHerramental =
+          prod.herramental_descripcion || prod.herramental_precio != null;
+        if (herrRows.length > 0) {
+          if (tieneHerramental) {
+            await client.query(
+              `UPDATE herramental SET herramental_descripcion = $1, herramental_precio = $2
+               WHERE idsolicitud_producto = $3`,
+              [prod.herramental_descripcion, prod.herramental_precio, prod.idsolicitud_producto],
+            );
+          } else {
+            await client.query(
+              `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
+              [prod.idsolicitud_producto],
+            );
+          }
+        } else if (tieneHerramental) {
+          await client.query(
+            `INSERT INTO herramental (idsolicitud_producto, herramental_descripcion, herramental_precio)
+             VALUES ($1, $2, $3)`,
+            [prod.idsolicitud_producto, prod.herramental_descripcion, prod.herramental_precio],
+          );
+        }
+
+        // ── Detalles (hasta 3 opciones, sin aprobar todavía) ──
+        const idsEnviados: number[] = (prod.detalles as any[])
+          .map((d) => d.iddetalle)
+          .filter((v) => v != null);
+        if (idsEnviados.length > 0) {
+          await client.query(
+            `DELETE FROM solicitud_detalle
+             WHERE solicitud_producto_id = $1 AND idsolicitud_detalle != ALL($2::int[])`,
+            [prod.idsolicitud_producto, idsEnviados],
+          );
+        } else {
+          await client.query(
+            `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = $1`,
+            [prod.idsolicitud_producto],
+          );
+        }
+        for (const det of prod.detalles as any[]) {
+          if (Number(det.cantidad) <= 0 || Number(det.precio_total) <= 0) continue;
+          if (det.iddetalle) {
+            await client.query(
+              `UPDATE solicitud_detalle SET
+                 cantidad = $1, precio_total = $2, modo_cantidad = 'unidad'
+               WHERE idsolicitud_detalle = $3`,
+              [det.cantidad, det.precio_total, det.iddetalle],
+            );
+          } else {
+            await client.query(
+              `INSERT INTO solicitud_detalle
+                 (solicitud_producto_id, cantidad, precio_total, aprobado, kilogramos, modo_cantidad)
+               VALUES ($1,$2,$3,NULL,NULL,'unidad')`,
+              [prod.idsolicitud_producto, det.cantidad, det.precio_total],
+            );
+          }
+        }
+        continue;
+      }
+
+      // ── PLÁSTICO ─────────────────────────────────────────────────────
+      if (prod.eliminado) {
+        await client.query(
+          `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
+          [prod.idsolicitud_producto],
+        );
+        await client.query(
+          `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = $1`,
+          [prod.idsolicitud_producto],
+        );
+        await client.query(
+          `DELETE FROM solicitud_producto WHERE idsolicitud_producto = $1`,
+          [prod.idsolicitud_producto],
+        );
+        continue;
+      }
+
+      const tintasId = await resolverIdTintasCotizacion(client, prod.tintas);
+      const carasId = await resolverIdCarasCotizacion(client, prod.caras);
+
+      const pantonesLimpios = (() => {
+        if (!prod.pantones) return null;
+        const arr = prod.pantones.split(",").map((s: string) => s.trim()).filter(Boolean);
+        const truncados = arr.slice(0, prod.tintas);
+        return truncados.length > 0 ? truncados.join(", ") : null;
+      })();
+
+      if (prod.nuevo_configuracion_id) {
+        await client.query(
+          `UPDATE solicitud_producto SET
+             configuracion_plastico_idconfiguracion_plastico = $1,
+             tintas_idtintas = $2, caras_idcaras = $3,
+             pantones = $4, pigmentos = $5, observacion = $6, descripcion = $7,
+             perforacion = $8, idsuaje = $9, id_color = $10, id_medidatro = $11
+           WHERE idsolicitud_producto = $12`,
+          [
+            prod.nuevo_configuracion_id, tintasId, carasId, pantonesLimpios,
+            prod.pigmentos || null, prod.observacion || null, prod.descripcion || null,
+            prod.perforacion === true, prod.idsuaje ?? null, prod.id_color ?? null,
+            prod.id_medidatro ?? null, prod.idsolicitud_producto,
+          ],
+        );
+      } else {
+        await client.query(
+          `UPDATE solicitud_producto SET
+             tintas_idtintas = $1, caras_idcaras = $2, pantones = $3, pigmentos = $4,
+             observacion = $5, descripcion = $6, perforacion = $7,
+             idsuaje = $8, id_color = $9, id_medidatro = $10
+           WHERE idsolicitud_producto = $11`,
+          [
+            tintasId, carasId, pantonesLimpios, prod.pigmentos || null,
+            prod.observacion || null, prod.descripcion || null, prod.perforacion === true,
+            prod.idsuaje ?? null, prod.id_color ?? null, prod.id_medidatro ?? null,
+            prod.idsolicitud_producto,
+          ],
+        );
+      }
+
+      const { rows: herrRows } = await client.query(
+        `SELECT id_herramental FROM herramental WHERE idsolicitud_producto = $1`,
+        [prod.idsolicitud_producto],
+      );
+      const tieneHerramental = prod.herramental_descripcion || prod.herramental_precio != null;
+      if (herrRows.length > 0) {
+        if (tieneHerramental) {
+          await client.query(
+            `UPDATE herramental SET herramental_descripcion = $1, herramental_precio = $2
+             WHERE idsolicitud_producto = $3`,
+            [prod.herramental_descripcion, prod.herramental_precio, prod.idsolicitud_producto],
+          );
+        } else {
+          await client.query(
+            `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
+            [prod.idsolicitud_producto],
+          );
+        }
+      } else if (tieneHerramental) {
+        await client.query(
+          `INSERT INTO herramental (idsolicitud_producto, herramental_descripcion, herramental_precio)
+           VALUES ($1, $2, $3)`,
+          [prod.idsolicitud_producto, prod.herramental_descripcion, prod.herramental_precio],
+        );
+      }
+
+      const idsEnviados: number[] = (prod.detalles as any[])
+        .map((d) => d.iddetalle)
+        .filter((v) => v != null);
+      if (idsEnviados.length > 0) {
+        await client.query(
+          `DELETE FROM solicitud_detalle
+           WHERE solicitud_producto_id = $1 AND idsolicitud_detalle != ALL($2::int[])`,
+          [prod.idsolicitud_producto, idsEnviados],
+        );
+      } else {
+        await client.query(
+          `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = $1`,
+          [prod.idsolicitud_producto],
+        );
+      }
+      for (const det of prod.detalles as any[]) {
+        if (Number(det.cantidad) <= 0 || Number(det.precio_total) <= 0) continue;
+        if (det.iddetalle) {
+          await client.query(
+            `UPDATE solicitud_detalle SET
+               cantidad = $1, precio_total = $2, kilogramos = $3, modo_cantidad = $4
+             WHERE idsolicitud_detalle = $5`,
+            [det.cantidad, det.precio_total, det.kilogramos ?? null, det.modo_cantidad || "unidad", det.iddetalle],
+          );
+        } else {
+          await client.query(
+            `INSERT INTO solicitud_detalle
+               (solicitud_producto_id, cantidad, precio_total, aprobado, kilogramos, modo_cantidad)
+             VALUES ($1,$2,$3,NULL,$4,$5)`,
+            [prod.idsolicitud_producto, det.cantidad, det.precio_total, det.kilogramos ?? null, det.modo_cantidad || "unidad"],
+          );
+        }
+      }
+    }
+
+    // ── Productos nuevos ────────────────────────────────────────────────
+    for (const prod of productos_nuevos as any[]) {
+      if (esProductoPapel(prod)) {
+        if (!prod.tintasId) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `El producto de papel nuevo "${prod.nombre ?? prod.idproducto_papel}" requiere tintas porque Impresión es obligatoria`,
+          });
+        }
+        const idColorNuevo = prod.id_asa
+          ? (Number(prod.id_color) > 0 ? Number(prod.id_color) : null)
+          : null;
+
+        const { rows: spPapelRows } = await client.query(
+          `INSERT INTO solicitud_producto (
+             solicitud_idsolicitud, tipo_material, producto_papel_idproducto_papel,
+             grupo_papel_idgrupo_papel, grupo_papel_descripcion,
+             tintas_idtintas, caras_idcaras, pantones, observacion, descripcion, id_color
+           ) VALUES ($1,'papel',$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           RETURNING idsolicitud_producto`,
+          [
+            solicitudId, prod.idproducto_papel, prod.idgrupo_papel ?? null,
+            prod.grupo_descripcion ?? null, prod.tintasId ?? null, prod.carasId ?? null,
+            prod.pantones || null, prod.observacion || null, prod.descripcion || null,
+            idColorNuevo,
+          ],
+        );
+        const nuevoSpPapelId: number = spPapelRows[0].idsolicitud_producto;
+
+        const tamanoAsaNuevo =
+          prod.id_asa && typeof prod.tamano_asa === "string" && prod.tamano_asa.trim()
+            ? prod.tamano_asa.trim()
+            : null;
+
+        await client.query(
+          `INSERT INTO solicitud_producto_papel
+             (idsolicitud_producto, id_asa, tamano_asa, idcat_laminado, idfoil, idcat_textura,
+              uv, alto_relieve, tintas_dentro_idtintas, pantones_dentro,
+              cargo_adicional_descripcion, cargo_adicional_precio)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [
+            nuevoSpPapelId, prod.id_asa ?? null, tamanoAsaNuevo,
+            prod.idcat_laminado ?? null, prod.idfoil ?? null, prod.idcat_textura ?? null,
+            prod.uv === true, prod.alto_relieve === true, prod.tintasDentroId ?? null,
+            prod.pantonesDentro || null, prod.cargo_adicional_descripcion || null,
+            prod.cargo_adicional_precio != null && Number(prod.cargo_adicional_precio) > 0
+              ? Number(prod.cargo_adicional_precio) : null,
+          ],
+        );
+
+        if (prod.herramental_descripcion || prod.herramental_precio != null) {
+          await client.query(
+            `INSERT INTO herramental (idsolicitud_producto, herramental_descripcion, herramental_precio)
+             VALUES ($1, $2, $3)`,
+            [nuevoSpPapelId, prod.herramental_descripcion, prod.herramental_precio],
+          );
+        }
+
+        for (const det of prod.detalles as any[]) {
+          if (Number(det.cantidad) <= 0 || Number(det.precio_total) <= 0) continue;
+          await client.query(
+            `INSERT INTO solicitud_detalle
+               (solicitud_producto_id, cantidad, precio_total, aprobado, kilogramos, modo_cantidad)
+             VALUES ($1,$2,$3,NULL,NULL,'unidad')`,
+            [nuevoSpPapelId, det.cantidad, det.precio_total],
+          );
+        }
+        continue;
+      }
+
+      const tintasIdNuevo = await resolverIdTintasCotizacion(client, prod.tintas);
+      const carasIdNuevo = await resolverIdCarasCotizacion(client, prod.caras);
+      const pantonesLimpiosNuevo = (() => {
+        if (!prod.pantones) return null;
+        const arr = prod.pantones.split(",").map((s: string) => s.trim()).filter(Boolean);
+        return arr.slice(0, prod.tintas).join(", ") || null;
+      })();
+
+      const { rows: spRows } = await client.query(
+        `INSERT INTO solicitud_producto (
+           solicitud_idsolicitud, configuracion_plastico_idconfiguracion_plastico,
+           tintas_idtintas, caras_idcaras, pantones, pigmentos, observacion, descripcion,
+           perforacion, idsuaje, id_color, id_medidatro
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         RETURNING idsolicitud_producto`,
+        [
+          solicitudId, prod.configuracion_plastico_id, tintasIdNuevo, carasIdNuevo,
+          pantonesLimpiosNuevo, prod.pigmentos || null, prod.observacion || null,
+          prod.descripcion || null, prod.perforacion === true, prod.idsuaje ?? null,
+          prod.id_color ?? null, prod.id_medidatro ?? null,
+        ],
+      );
+      const nuevoSpId: number = spRows[0].idsolicitud_producto;
+
+      if (prod.herramental_descripcion || prod.herramental_precio != null) {
+        await client.query(
+          `INSERT INTO herramental (idsolicitud_producto, herramental_descripcion, herramental_precio)
+           VALUES ($1, $2, $3)`,
+          [nuevoSpId, prod.herramental_descripcion, prod.herramental_precio],
+        );
+      }
+
+      for (const det of prod.detalles as any[]) {
+        if (Number(det.cantidad) <= 0 || Number(det.precio_total) <= 0) continue;
+        await client.query(
+          `INSERT INTO solicitud_detalle
+             (solicitud_producto_id, cantidad, precio_total, aprobado, kilogramos, modo_cantidad)
+           VALUES ($1,$2,$3,NULL,$4,$5)`,
+          [nuevoSpId, det.cantidad, det.precio_total, det.kilogramos ?? null, det.modo_cantidad || "unidad"],
+        );
+      }
+    }
+
+    await client.query("COMMIT");
+    return res.json({ message: `Cotización ${id} actualizada correctamente` });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    console.error("❌ ACTUALIZAR COTIZACIÓN ERROR:", error.message);
+    return res.status(500).json({ error: "Error al actualizar cotización", detalle: error.message });
+  } finally {
+    client.release();
+  }
+};
+
+// Helpers locales (mismo criterio que resolverIdTintas/Caras en pedidos.controller.ts)
+async function resolverIdTintasCotizacion(client: any, cantidad: number): Promise<number | null> {
+  const { rows } = await client.query(`SELECT idtintas FROM tintas WHERE cantidad = $1 LIMIT 1`, [cantidad]);
+  return rows[0]?.idtintas ?? null;
+}
+async function resolverIdCarasCotizacion(client: any, cantidad: number): Promise<number | null> {
+  const { rows } = await client.query(`SELECT idcaras FROM caras WHERE cantidad = $1 LIMIT 1`, [cantidad]);
+  return rows[0]?.idcaras ?? null;
+}

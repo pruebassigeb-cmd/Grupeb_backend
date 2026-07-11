@@ -56,6 +56,7 @@ import productosPapelRoutes from "./routes/producto_papel/producto_papel.routes"
 import maquinariaPedidoPapelRoutes from "./routes/producto_papel/maquinariaPedidoPapel.routes";
 import correoRoutes from "./routes/correo/correo.routes";
 import whatsappRoutes from "./routes/whatsapp/whatsapp.routes";
+import catalogosPapelInsumoRoutes from "./routes/producto_papel/catalogosPapelInsumo.routes";
 
 
 
@@ -75,11 +76,23 @@ setupSecurity(app);
 // MIDDLEWARES BASE
 // ==========================
 app.use(cors(corsOptions));
-//app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: true, limit: "5mb" }));
-app.use(cookieParser());
 
-app.use(express.json({ limit: "5mb", type: "application/json" }));
+app.use(
+  express.json({
+    limit: "10mb",
+    type: ["application/json", "application/*+json"],
+  })
+);
+
+app.use(
+  express.text({
+    limit: "10mb",
+    type: "text/plain",
+  })
+);
+
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(cookieParser());
 
 app.use((req, res, next) => {
   res.charset = "utf-8";
@@ -146,6 +159,7 @@ app.use("/api/productos-papel", productosPapelRoutes);
 app.use("/api/pedidos", maquinariaPedidoPapelRoutes);
 app.use("/api/correos", correoRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
+app.use("/api/catalogos-papel/insumo", catalogosPapelInsumoRoutes);
 
 
 // ==========================

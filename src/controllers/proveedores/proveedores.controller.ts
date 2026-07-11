@@ -1,5 +1,11 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
+import {
+  sincronizarEspejoSiAplica,
+  sincronizarEspejoDesdeInsumo,
+  desactivarInsumoCompleto,
+  reactivarInsumoCompleto,
+} from "../../services/insumoCatalogoBridge";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TIPOS DE INSUMO  (catálogo)
@@ -128,11 +134,13 @@ export const getProveedorById = async (req: Request, res: Response) => {
     const { rows: prodRows } = await pool.query(
       `SELECT
          ip.idinsumo_proveedor AS idproveedor_producto,
+         i.idinsumo,
          i.nombre,
          ip.codigo,
          ip.precio,
          ip.notas,
          ip.activo,
+         i.activo AS insumo_activo,
          i.clave_producto,
          ip.minimo_compra,
          i.unidad,
@@ -317,7 +325,10 @@ export const getProductosProveedor = async (req: Request, res: Response) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 export const buscarInsumos = async (req: Request, res: Response) => {
   try {
-    const { tipo, q } = req.query;
+    const { tipo, q, activo } = req.query;
+    // Por defecto solo activos (comportamiento previo intacto); activo=false
+    // permite listar los desactivados para el toggle "ver inactivos".
+    const filtroActivo = activo === "false" ? false : true;
 
     let query = `
       SELECT
@@ -325,6 +336,7 @@ export const buscarInsumos = async (req: Request, res: Response) => {
         i.nombre,
         i.clave_producto,
         i.unidad,
+        i.activo,
         ti.idtipo_insumo,
         ti.nombre AS tipo_insumo_nombre,
         COALESCE(
@@ -346,9 +358,9 @@ export const buscarInsumos = async (req: Request, res: Response) => {
         ON ip.insumo_idinsumo = i.idinsumo AND ip.activo = true
       LEFT JOIN proveedor pv
         ON pv.idproveedor = ip.proveedor_idproveedor AND pv.activo = true
-      WHERE i.activo = true
+      WHERE i.activo = $1
     `;
-    const params: any[] = [];
+    const params: any[] = [filtroActivo];
 
     if (tipo) {
       params.push(tipo);
@@ -361,7 +373,7 @@ export const buscarInsumos = async (req: Request, res: Response) => {
     }
 
     query += `
-      GROUP BY i.idinsumo, i.nombre, i.clave_producto, i.unidad, ti.idtipo_insumo, ti.nombre
+      GROUP BY i.idinsumo, i.nombre, i.clave_producto, i.unidad, i.activo, ti.idtipo_insumo, ti.nombre
       ORDER BY i.nombre
       LIMIT 50
     `;
@@ -376,6 +388,9 @@ export const buscarInsumos = async (req: Request, res: Response) => {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POST /proveedores/:id/productos  (agregar insumo a ESE proveedor)
+// ✅ Ahora, si el tipo de insumo corresponde a un catálogo de papel
+// sincronizado (Tipo de papel, Pegamento, Laminado, Sacabocados, Perforado,
+// Matrix), se crea/actualiza automáticamente su espejo en cat_*.
 // ═══════════════════════════════════════════════════════════════════════════════
 export const crearProductoProveedor = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -429,6 +444,9 @@ export const crearProductoProveedor = async (req: Request, res: Response) => {
       idinsumo = nuevoInsumo[0].idinsumo;
     }
 
+    // ✅ Sincroniza espejo en cat_* si el tipo de insumo aplica
+    await sincronizarEspejoSiAplica(client, idinsumo, tipo_insumo_id, nombre.trim());
+
     const { rows: yaExiste } = await client.query(
       `SELECT idinsumo_proveedor FROM insumo_proveedor
        WHERE insumo_idinsumo = $1 AND proveedor_idproveedor = $2`,
@@ -470,6 +488,8 @@ export const crearProductoProveedor = async (req: Request, res: Response) => {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUT /proveedores/:id/productos/:idProducto
+// ✅ Si se renombra el insumo y su tipo es un catálogo sincronizado, el
+// espejo en cat_* se actualiza también.
 // ═══════════════════════════════════════════════════════════════════════════════
 export const actualizarProductoProveedor = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -516,6 +536,9 @@ export const actualizarProductoProveedor = async (req: Request, res: Response) =
       ]
     );
 
+    // ✅ Sincroniza espejo en cat_* (rename) si el tipo de insumo aplica
+    await sincronizarEspejoSiAplica(client, idinsumo, tipo_insumo_id, nombre.trim());
+
     const { rows } = await client.query(
       `UPDATE insumo_proveedor SET
          codigo = $1,
@@ -550,7 +573,9 @@ export const actualizarProductoProveedor = async (req: Request, res: Response) =
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DELETE /proveedores/:id/productos/:idProducto → desactiva SOLO ese proveedor
+// DELETE /proveedores/:id/productos/:idProducto → desactiva SOLO ese vínculo
+// insumo-proveedor (el insumo puede seguir teniendo otros proveedores activos).
+// Para desactivar el INSUMO completo, usa desactivarInsumo más abajo.
 // ═══════════════════════════════════════════════════════════════════════════════
 export const eliminarProductoProveedor = async (req: Request, res: Response) => {
   try {
@@ -569,23 +594,62 @@ export const eliminarProductoProveedor = async (req: Request, res: Response) => 
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ✅ NUEVO — PATCH /proveedores/insumos/:idinsumo  (desactivar INSUMO completo)
+// Esto es distinto de eliminarProductoProveedor: aquí se da de baja el insumo
+// en sí (independiente de con cuántos proveedores esté vinculado), y si su
+// tipo corresponde a un catálogo de papel sincronizado, también se desactiva
+// su espejo en cat_*. Nunca se borra información de la base de datos.
+// ═══════════════════════════════════════════════════════════════════════════════
+export const desactivarInsumo = async (req: Request, res: Response) => {
+  try {
+    const { idinsumo } = req.params;
+    const resultado = await desactivarInsumoCompleto(Number(idinsumo));
+    if (!resultado) return res.status(404).json({ error: "Insumo no encontrado" });
+    console.log(`✅ Insumo desactivado: ${resultado.idinsumo} — ${resultado.nombre}`);
+    return res.json({ message: "Insumo desactivado", insumo: resultado });
+  } catch (error: any) {
+    console.error("❌ DESACTIVAR INSUMO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al desactivar insumo" });
+  }
+};
+
+// ✅ NUEVO — PATCH /proveedores/insumos/:idinsumo/reactivar
+export const reactivarInsumo = async (req: Request, res: Response) => {
+  try {
+    const { idinsumo } = req.params;
+    const resultado = await reactivarInsumoCompleto(Number(idinsumo));
+    if (!resultado) return res.status(404).json({ error: "Insumo no encontrado o ya está activo" });
+    console.log(`✅ Insumo reactivado: ${resultado.idinsumo} — ${resultado.nombre}`);
+    return res.json({ message: "Insumo reactivado", insumo: resultado });
+  } catch (error: any) {
+    console.error("❌ REACTIVAR INSUMO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al reactivar insumo" });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // POST /proveedores/insumos/registrar-rapido  ← ahora acepta varios proveedores
+// ✅ También sincroniza espejo en cat_* si el tipo de insumo aplica.
 // ═══════════════════════════════════════════════════════════════════════════════
 export const registrarInsumoRapido = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const { tipo_insumo_id, nombre, codigo, proveedores_ids } = req.body;
-
+    const {
+      tipo_insumo_id, nombre, codigo, proveedores_ids,
+      precio, notas, clave_producto, minimo_compra, unidad,
+      producto_sat_idproducto_sat,
+    } = req.body;
+ 
     if (!tipo_insumo_id || !nombre?.trim()) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "tipo_insumo_id y nombre son requeridos" });
     }
-
+ 
     const idsProveedores: number[] = Array.isArray(proveedores_ids)
       ? proveedores_ids.map(Number).filter((n) => !Number.isNaN(n))
       : [];
-
+ 
     const { rows: existentes } = await client.query(
       `SELECT idinsumo, nombre FROM insumo
        WHERE tipo_insumo_id = $1 AND LOWER(TRIM(nombre)) = LOWER(TRIM($2))
@@ -599,7 +663,7 @@ export const registrarInsumoRapido = async (req: Request, res: Response) => {
         existente: existentes[0],
       });
     }
-
+ 
     if (codigo?.trim()) {
       const { rows: existentesCodigo } = await client.query(
         `SELECT i.idinsumo, i.nombre, ip.codigo
@@ -619,15 +683,28 @@ export const registrarInsumoRapido = async (req: Request, res: Response) => {
         });
       }
     }
-
+ 
+    // ✅ NUEVO: clave_producto, unidad y producto_sat ahora sí se guardan
     const { rows: nuevoInsumo } = await client.query(
-      `INSERT INTO insumo (tipo_insumo_id, nombre, activo)
-       VALUES ($1, $2, true)
+      `INSERT INTO insumo (tipo_insumo_id, nombre, clave_producto, unidad, producto_sat_idproducto_sat, activo)
+       VALUES ($1, $2, $3, $4, $5, true)
        RETURNING *`,
-      [tipo_insumo_id, nombre.trim()]
+      [
+        tipo_insumo_id,
+        nombre.trim(),
+        clave_producto?.trim() || null,
+        unidad || null,
+        producto_sat_idproducto_sat || null,
+      ]
     );
     const insumo = nuevoInsumo[0];
-
+ 
+    await sincronizarEspejoSiAplica(client, insumo.idinsumo, tipo_insumo_id, nombre.trim());
+ 
+    const precioFinal = precio !== undefined && precio !== null && precio !== "" ? Number(precio) : null;
+    const notasFinal = notas?.trim() || null;
+    const minimoFinal = minimo_compra !== undefined && minimo_compra !== null && minimo_compra !== "" ? Number(minimo_compra) : null;
+ 
     const proveedoresCreados: any[] = [];
     if (idsProveedores.length > 0) {
       const { rows: provRows } = await client.query(
@@ -636,12 +713,14 @@ export const registrarInsumoRapido = async (req: Request, res: Response) => {
         [idsProveedores]
       );
       for (const prov of provRows) {
+        // ✅ NUEVO: precio, notas y minimo_compra ahora se guardan (mismo
+        // valor para todos los proveedores marcados, igual que en Foil)
         const { rows: ipRows } = await client.query(
-          `INSERT INTO insumo_proveedor (insumo_idinsumo, proveedor_idproveedor, codigo, activo)
-           VALUES ($1, $2, $3, true)
+          `INSERT INTO insumo_proveedor (insumo_idinsumo, proveedor_idproveedor, codigo, precio, notas, minimo_compra, activo)
+           VALUES ($1, $2, $3, $4, $5, $6, true)
            ON CONFLICT (insumo_idinsumo, proveedor_idproveedor) DO NOTHING
            RETURNING *`,
-          [insumo.idinsumo, prov.idproveedor, codigo?.trim() || null]
+          [insumo.idinsumo, prov.idproveedor, codigo?.trim() || null, precioFinal, notasFinal, minimoFinal]
         );
         if (ipRows.length > 0) {
           proveedoresCreados.push({
@@ -654,19 +733,21 @@ export const registrarInsumoRapido = async (req: Request, res: Response) => {
         }
       }
     }
-
+ 
     await client.query("COMMIT");
-
+ 
     const resultado = {
       idinsumo: insumo.idinsumo,
       nombre: insumo.nombre,
+      clave_producto: insumo.clave_producto,
+      unidad: insumo.unidad,
       idtipo_insumo: tipo_insumo_id,
       proveedores: proveedoresCreados,
     };
-
+ 
     console.log(`✅ Insumo rápido creado: ${insumo.idinsumo} — ${insumo.nombre} (${proveedoresCreados.length} proveedor/es)`);
     return res.status(201).json({ message: "Insumo registrado", producto: resultado });
-
+ 
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ REGISTRAR INSUMO RÁPIDO ERROR:", error.message);
@@ -675,6 +756,7 @@ export const registrarInsumoRapido = async (req: Request, res: Response) => {
     client.release();
   }
 };
+ 
 
 // POST /proveedores/tipos-insumo
 export const crearTipoInsumo = async (req: Request, res: Response) => {
@@ -938,20 +1020,23 @@ export const crearFoil = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-
+ 
     const { id } = req.params; // idproveedor "principal" (compatibilidad con la ruta actual)
-    const { colorfoil, codigofoil, presentaciones, proveedores_ids } = req.body;
-    // proveedores_ids: number[] opcional — si no viene, usa solo :id
-
+    const {
+      colorfoil, codigofoil, presentaciones, proveedores_ids,
+      precio, notas, minimo_compra, unidad,
+      producto_sat_idproducto_sat, // ✅ NUEVO
+    } = req.body;
+ 
     if (!colorfoil?.trim()) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "colorfoil es requerido" });
     }
-
+ 
     const idsProveedores: number[] = Array.isArray(proveedores_ids) && proveedores_ids.length > 0
       ? proveedores_ids.map(Number)
       : [Number(id)];
-
+ 
     const { rows: provRows } = await client.query(
       `SELECT idproveedor, nombre FROM proveedor WHERE idproveedor = ANY($1::int[]) AND activo = true`,
       [idsProveedores]
@@ -960,30 +1045,38 @@ export const crearFoil = async (req: Request, res: Response) => {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Proveedor no encontrado" });
     }
-
+ 
     const clavefoil = [
       provRows[0].nombre.substring(0, 2).toUpperCase(),
       colorfoil.trim().substring(0, 3).toUpperCase(),
       codigofoil?.trim() ?? "",
     ].join("");
-
+ 
+    // ✅ NUEVO: producto_sat_idproducto_sat se guarda desde la creación
     const { rows: foilRows } = await client.query(
-      `INSERT INTO foil (colorfoil, codigofoil, clavefoil)
-       VALUES ($1, $2, $3)
+      `INSERT INTO foil (colorfoil, codigofoil, clavefoil, producto_sat_idproducto_sat)
+       VALUES ($1, $2, $3, $4)
        RETURNING idfoil`,
-      [colorfoil.trim(), codigofoil?.trim() || null, clavefoil]
+      [colorfoil.trim(), codigofoil?.trim() || null, clavefoil, producto_sat_idproducto_sat || null]
     );
     const idfoil = foilRows[0].idfoil;
-
+ 
+    const precioFinal = precio !== undefined && precio !== null && precio !== "" ? Number(precio) : null;
+    const notasFinal = notas?.trim() || null;
+    const minimoFinal = minimo_compra !== undefined && minimo_compra !== null && minimo_compra !== "" ? Number(minimo_compra) : null;
+    const unidadFinal = unidad || null;
+ 
     for (const prov of provRows) {
+      // ✅ De paso, esto también arregla que antes precio/notas/minimo/unidad
+      // no se guardaban al CREAR (solo se guardaban al editar) — ahora sí.
       await client.query(
-        `INSERT INTO foil_proveedor (idfoil, proveedor_idproveedor, codigo)
-         VALUES ($1, $2, $3)
+        `INSERT INTO foil_proveedor (idfoil, proveedor_idproveedor, codigo, precio, notas, minimo_compra, unidad)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (idfoil, proveedor_idproveedor) DO NOTHING`,
-        [idfoil, prov.idproveedor, codigofoil?.trim() || null]
+        [idfoil, prov.idproveedor, codigofoil?.trim() || null, precioFinal, notasFinal, minimoFinal, unidadFinal]
       );
     }
-
+ 
     for (const p of (presentaciones ?? [])) {
       if (!p?.trim()) continue;
       await client.query(
@@ -991,9 +1084,9 @@ export const crearFoil = async (req: Request, res: Response) => {
         [idfoil, p.trim()]
       );
     }
-
+ 
     await client.query("COMMIT");
-
+ 
     console.log(`✅ Foil creado: ${idfoil} — ${clavefoil}`);
     return res.status(201).json({
       message: "Foil registrado",
@@ -1001,7 +1094,7 @@ export const crearFoil = async (req: Request, res: Response) => {
       clavefoil,
       proveedores: provRows.map((p) => p.idproveedor),
     });
-
+ 
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("❌ CREAR FOIL ERROR:", error.message);
@@ -1010,3 +1103,4 @@ export const crearFoil = async (req: Request, res: Response) => {
     client.release();
   }
 };
+

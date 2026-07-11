@@ -5,6 +5,7 @@ import {
   crearCotizacion,
   getCotizaciones,
   actualizarEstadoCotizacion,
+  actualizarCotizacionProductos,
   eliminarCotizacion,
   aprobarDetalle,
   actualizarObservacion,
@@ -140,6 +141,14 @@ router.post(
   "/cotizaciones-papel/mock",
   authMiddleware,
   crearCotizacionPapelMock
+);
+router.put(
+  "/:id",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  writeLimiter,
+  preventSQLInjection,
+  actualizarCotizacionProductos
 );
 
 export default router;

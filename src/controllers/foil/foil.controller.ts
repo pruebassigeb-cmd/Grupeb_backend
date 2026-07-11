@@ -4,6 +4,8 @@ import { pool } from "../../config/db";
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /foil  — listado global (usado por FoilPanel), AGRUPADO por foil con
 // todos sus proveedores anidados en `.proveedores`.
+// ✅ Ahora incluye producto_sat_idproducto_sat + su clave/nombre (join a
+// producto_sat), igual que ya hace ProductosProveedor con los insumos.
 // ═══════════════════════════════════════════════════════════════════════════
 export const getFoils = async (_req: Request, res: Response) => {
   try {
@@ -15,9 +17,13 @@ export const getFoils = async (_req: Request, res: Response) => {
         f.clavefoil,
         f.activo,
         f.created_at,
+        f.producto_sat_idproducto_sat,
+        ps.clave AS producto_sat_clave,
+        ps.pdft  AS producto_sat_nombre,
         COALESCE(prov_agg.proveedores, '[]') AS proveedores,
         COALESCE(pres_agg.presentaciones, '[]') AS presentaciones
       FROM foil f
+      LEFT JOIN producto_sat ps ON ps.idproducto_sat = f.producto_sat_idproducto_sat
       LEFT JOIN LATERAL (
         SELECT JSON_AGG(
           JSON_BUILD_OBJECT(
@@ -69,6 +75,9 @@ export const getFoilByProveedor = async (req: Request, res: Response) => {
         f.clavefoil,
         f.activo,
         f.created_at,
+        f.producto_sat_idproducto_sat,
+        ps.clave AS producto_sat_clave,
+        ps.pdft  AS producto_sat_nombre,
         fp.idfoil_proveedor,
         fp.codigo,
         fp.precio,
@@ -78,6 +87,7 @@ export const getFoilByProveedor = async (req: Request, res: Response) => {
         COALESCE(pres_agg.presentaciones, '[]') AS presentaciones
       FROM foil f
       JOIN foil_proveedor fp ON fp.idfoil = f.idfoil AND fp.activo = true
+      LEFT JOIN producto_sat ps ON ps.idproducto_sat = f.producto_sat_idproducto_sat
       LEFT JOIN LATERAL (
         SELECT JSON_AGG(
           JSON_BUILD_OBJECT('idfoil_presentacion', fpres.idfoil_presentacion, 'presentacion', fpres.presentacion)
@@ -112,8 +122,12 @@ export const getFoilById = async (req: Request, res: Response) => {
         f.clavefoil,
         f.activo,
         f.created_at,
+        f.producto_sat_idproducto_sat,
+        ps.clave AS producto_sat_clave,
+        ps.pdft  AS producto_sat_nombre,
         COALESCE(prov_agg.proveedores, '[]') AS proveedores
       FROM foil f
+      LEFT JOIN producto_sat ps ON ps.idproducto_sat = f.producto_sat_idproducto_sat
       LEFT JOIN LATERAL (
         SELECT JSON_AGG(
           JSON_BUILD_OBJECT(
@@ -157,11 +171,8 @@ export const getFoilById = async (req: Request, res: Response) => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PUT /proveedores/:id/foil/:idFoil
-//
-// :id = proveedor "desde el cual" editas. El body puede traer
-// `proveedores_ids: number[]` para reemplazar el conjunto completo de
-// proveedores ligados a este foil; si no viene, solo se actualiza la
-// identidad del foil (colorfoil/codigofoil/clavefoil) y la relación de :id.
+// ✅ Ahora acepta producto_sat_idproducto_sat y lo guarda en la identidad
+// del foil (compartida entre todos sus proveedores, igual que colorfoil).
 // ═══════════════════════════════════════════════════════════════════════════
 export const actualizarFoil = async (req: Request, res: Response) => {
   const client = await pool.connect();
@@ -169,14 +180,17 @@ export const actualizarFoil = async (req: Request, res: Response) => {
     await client.query("BEGIN");
 
     const { id, idFoil } = req.params;
-    const { colorfoil, codigofoil, precio, notas, minimo_compra, unidad, presentaciones, proveedores_ids } = req.body;
+    const {
+      colorfoil, codigofoil, precio, notas, minimo_compra, unidad,
+      presentaciones, proveedores_ids,
+      producto_sat_idproducto_sat, // ✅ NUEVO
+    } = req.body;
 
     if (!colorfoil?.trim()) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "colorfoil es requerido" });
     }
 
-    // Verificar que el foil está ligado al proveedor desde el que editas
     const { rows: check } = await client.query(`
       SELECT f.idfoil, pv.nombre AS proveedor_nombre
       FROM foil f
@@ -198,14 +212,20 @@ export const actualizarFoil = async (req: Request, res: Response) => {
 
     // 1. Identidad del foil (COMPARTIDA entre todos sus proveedores)
     await client.query(`
-      UPDATE foil SET colorfoil = $1, codigofoil = $2, clavefoil = $3
-      WHERE idfoil = $4
-    `, [colorfoil.trim(), codigofoil?.trim() || null, clavefoil, idFoil]);
+      UPDATE foil SET colorfoil = $1, codigofoil = $2, clavefoil = $3, producto_sat_idproducto_sat = $4
+      WHERE idfoil = $5
+    `, [
+      colorfoil.trim(),
+      codigofoil?.trim() || null,
+      clavefoil,
+      producto_sat_idproducto_sat || null,
+      idFoil,
+    ]);
 
     // 2. Determinar el conjunto final de proveedores
     const idsFinales: number[] = Array.isArray(proveedores_ids) && proveedores_ids.length > 0
       ? proveedores_ids.map(Number)
-      : [Number(id)]; // si no mandan la lista, al menos conserva el actual
+      : [Number(id)];
 
     // 3. Dar de baja relaciones que ya no aplican
     await client.query(`
@@ -213,9 +233,7 @@ export const actualizarFoil = async (req: Request, res: Response) => {
       WHERE idfoil = $1 AND proveedor_idproveedor <> ALL($2::int[]) AND activo = true
     `, [idFoil, idsFinales]);
 
-    // 4. Upsert de cada proveedor final (mismo precio/código/notas para todos
-    //    los seleccionados — si necesitas precio distinto por proveedor,
-    //    edítalo por separado después desde cada relación).
+    // 4. Upsert de cada proveedor final
     for (const idProv of idsFinales) {
       await client.query(`
         INSERT INTO foil_proveedor
@@ -264,15 +282,7 @@ export const actualizarFoil = async (req: Request, res: Response) => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DELETE /proveedores/:id/foil/:idFoil
-//
-// IMPORTANTE — cambio de comportamiento respecto a antes: como un foil
-// ahora puede tener varios proveedores, "eliminar" desde la ficha de UN
-// proveedor solo desvincula a ESE proveedor (desactiva su fila en
-// foil_proveedor). El foil como tal (su identidad/color/clave) sigue vivo
-// mientras tenga al menos otro proveedor activo. Si era el último
-// proveedor, el foil queda sin proveedores pero no se borra su identidad
-// (para no perder historial); si prefieres que también se desactive el
-// foil completo cuando se queda sin proveedores, dímelo y lo agrego.
+// (sin cambios respecto a lo que ya tenías)
 // ═══════════════════════════════════════════════════════════════════════════
 export const eliminarFoil = async (req: Request, res: Response) => {
   try {

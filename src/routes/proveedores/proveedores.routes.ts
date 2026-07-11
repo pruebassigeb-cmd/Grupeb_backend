@@ -12,6 +12,8 @@ import {
   crearProductoProveedor,
   actualizarProductoProveedor,
   eliminarProductoProveedor,
+  desactivarInsumo,
+  reactivarInsumo,
   crearTipoInsumo,
   getDomicilioProveedor,
   upsertDomicilioProveedor,
@@ -35,6 +37,12 @@ router.post("/tipos-insumo", crearTipoInsumo);
 // ── Búsqueda global + registro rápido ────────────────────────────────────────
 router.get("/insumos", buscarInsumos);
 router.post("/insumos/registrar-rapido", registrarInsumoRapido);
+
+// ✅ NUEVO — desactivar/reactivar el INSUMO completo (no un vínculo con un
+// proveedor específico). Debe ir ANTES de "/:id" para que Express no confunda
+// "insumos" con un id de proveedor.
+router.patch("/insumos/:idinsumo", desactivarInsumo);
+router.patch("/insumos/:idinsumo/reactivar", reactivarInsumo);
 
 router.get("/regimenes-fiscales", getRegimenesFiscales);
 router.get("/productos-sat", getProductosSat);
@@ -60,8 +68,6 @@ router.post("/:id/productos", crearProductoProveedor);
 router.put("/:id/productos/:idProducto", actualizarProductoProveedor);
 router.delete("/:id/productos/:idProducto", eliminarProductoProveedor);
 router.put("/:id/completo", guardarProveedorCompleto);
-router.post("/:id/foil", crearFoil);
-
 
 // ── Domicilio ─────────────────────────────────────────────────────────────────
 router.get("/:id/domicilio", getDomicilioProveedor);
@@ -73,8 +79,4 @@ router.post("/:id/facturacion", crearFacturacionProveedor);
 router.put("/:id/facturacion/:idFact", actualizarFacturacionProveedor);
 router.delete("/:id/facturacion/:idFact", eliminarFacturacionProveedor);
 
-router.get("/:id", getProveedorById);
-router.put("/:id", actualizarProveedor);
-router.delete("/:id", eliminarProveedor);
-
-export default router; 
+export default router;

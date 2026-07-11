@@ -1,6 +1,16 @@
 import { Request, Response } from "express";
-import { uploadToS3, deleteFromS3, getPresignedUrl, CarpetaS3, CARPETAS, MulterFile, SUBCARPETAS_PDF, SUBCARPETAS_SUAJE, SUBCARPETAS_CATALOGO } from "../../config/multer";
-import { pool } from "../../config/db";
+import {
+  uploadToS3,
+  deleteFromS3,
+  getPresignedUrl,
+  getPresignedUrlLarga,
+  CarpetaS3,
+  CARPETAS,
+  MulterFile,
+  SUBCARPETAS_PDF,
+  SUBCARPETAS_SUAJE,
+  SUBCARPETAS_CATALOGO,
+} from "../../config/multer";import { pool } from "../../config/db";
 
 type RequestConArchivo = Request & { file?: MulterFile };
 
@@ -32,6 +42,8 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
       res.status(400).json({ error: "No se recibió ningún archivo" });
       return;
     }
+
+    
 
     // Para plástico el frontend manda carpeta="catalogoproductos" y
     // subcarpeta="plastico" (ambos ya existentes en config/multer.ts —
@@ -232,6 +244,47 @@ export const obtenerUrlFirmada = async (req: Request, res: Response): Promise<vo
   } catch (error) {
     console.error("❌ Error al obtener URL:", error);
     res.status(500).json({ error: "Error al obtener URL" });
+  }
+};
+
+export const obtenerUrlFirmadaLarga = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { id_archivo } = req.params;
+
+    const diasRaw = Number(req.query.dias ?? 7);
+
+    const dias =
+      Number.isFinite(diasRaw) && diasRaw > 0
+        ? Math.min(Math.floor(diasRaw), 7)
+        : 7;
+
+    const result = await pool.query(
+      "SELECT public_id, nombre, mime_type FROM archivos WHERE id_archivo = $1",
+      [id_archivo]
+    );
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "Archivo no encontrado" });
+      return;
+    }
+
+    const archivo = result.rows[0];
+
+    const url = await getPresignedUrlLarga(archivo.public_id, dias);
+
+    res.json({
+      url,
+      nombre: archivo.nombre,
+      mime_type: archivo.mime_type,
+      public_id: archivo.public_id,
+      dias,
+    });
+  } catch (error) {
+    console.error("❌ Error al obtener URL larga:", error);
+    res.status(500).json({ error: "Error al obtener URL larga" });
   }
 };
 

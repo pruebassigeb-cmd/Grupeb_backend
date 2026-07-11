@@ -40,6 +40,10 @@ export const SUBCARPETAS_SUAJE = [
   "catalogo",
   "imagen",
   "rendimiento",
+  // ✅ NUEVO — aquí se guarda la imagen del producto que se sube al dar de
+  // alta un producto de plástico (antes se guardaba en
+  // carpeta="catalogoproductos", subcarpeta="plastico").
+  "plastico-producto",
 ] as const;
 
 export const SUBCARPETAS_CATALOGO = [
