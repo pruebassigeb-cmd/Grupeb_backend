@@ -52,13 +52,12 @@ import productoPapelRoutes from "./routes/producto_papel/producto_papel.routes";
 import catTexturaRoutes from "./routes/catTextura/catTextura.routes";
 import expoRoutes from "./routes/expo/expo.routes";
 import procesosPapelRoutes from "./routes/producto_papel/procesosPapel.routes";
-import productosPapelRoutes from "./routes/producto_papel/producto_papel.routes";
 import maquinariaPedidoPapelRoutes from "./routes/producto_papel/maquinariaPedidoPapel.routes";
 import correoRoutes from "./routes/correo/correo.routes";
 import whatsappRoutes from "./routes/whatsapp/whatsapp.routes";
 import catalogosPapelInsumoRoutes from "./routes/producto_papel/catalogosPapelInsumo.routes";
-
-
+import preciosAcabadosPapelRoutes from "./routes/producto_papel/precios_acabados_papel.routes";
+import calculadorPrecioPapelRoutes from "./routes/producto_papel/calculadorPrecioPapel.routes";
 
 const app = express();
 
@@ -151,37 +150,46 @@ app.use("/api/proveedores", proveedoresRoutes);
 app.use("/api/foil", foilRoutes);
 app.use("/api/catalogos-papel", catalogosPapelRoutes);
 app.use("/api/productos-papel", productoPapelRoutes);
+app.use("/api/precios-acabados-papel", preciosAcabadosPapelRoutes);
+app.use("/api/calculador-precio-papel", calculadorPrecioPapelRoutes);
 app.use("/api", catTexturaRoutes);
 app.use("/api/expo", expoRoutes);
 app.use("/api", procesosPapelRoutes);
-app.use("/api/catalogos-papel", catalogosPapelRoutes);
-app.use("/api/productos-papel", productosPapelRoutes);
 app.use("/api/pedidos", maquinariaPedidoPapelRoutes);
 app.use("/api/correos", correoRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/catalogos-papel/insumo", catalogosPapelInsumoRoutes);
 
-
 // ==========================
 // HEALTH CHECK
 // ==========================
-app.get("/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+app.get("/health", (_req, res) => {
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ==========================
 // 404 - RUTA NO ENCONTRADA
 // ==========================
-app.use((req, res) => {
+app.use((_req, res) => {
   res.status(404).json({ error: "Ruta no encontrada" });
 });
 
 // ==========================
 // MANEJO DE ERRORES GLOBAL
 // ==========================
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error("❌ Error no manejado:", err);
-  res.status(500).json({ error: "Error interno del servidor" });
-});
+app.use(
+  (
+    err: any,
+    _req: express.Request,
+    res: express.Response,
+    _next: express.NextFunction
+  ) => {
+    console.error("❌ Error no manejado:", err);
+    res.status(500).json({ error: "Error interno del servidor" });
+  }
+);
 
 export default app;

@@ -13,6 +13,7 @@ const CATALOGOS: Record<string, {
   esCorte?: boolean;
   esDoble?: boolean;
   esPuntos?: boolean;
+  esRolloLam?: boolean;
   tieneTipoMaquina?: boolean;
 }> = {
   tipo_producto: { tabla: "cat_tipo_producto_papel", pk: "idcat_tipo_producto_papel", tieneMedida: false, tieneNumMaquina: false },
@@ -45,6 +46,12 @@ const CATALOGOS: Record<string, {
   puntos: { tabla: "cat_puntos", pk: "idcat_punto", tieneMedida: false, tieneNumMaquina: false, esPuntos: true },
   cortes: { tabla: "cat_cortes", pk: "idcat_corte", tieneMedida: false, tieneNumMaquina: false, esCorte: true },
   dobles: { tabla: "cat_dobles", pk: "idcat_doble", tieneMedida: false, tieneNumMaquina: false, esDoble: true },
+  // NUEVO: catálogo de rollos de laminado. El usuario captura solo el
+  // número de ancho (ej. "38.5") y el backend arma el nombre final
+  // ("38.5 cm") — ver ramas esRolloLam más abajo. Se usa desde
+  // FormularioProductoPapelAlta.tsx (campo "Rollo de laminado") y desde
+  // el panel general de Catálogos.
+  rollo_lam: { tabla: "rollo_lam", pk: "idrollo_lam", tieneMedida: false, tieneNumMaquina: false, esRolloLam: true },
 };
 
 const normalizarTipoMaquinaHojeado = (valor: unknown): "hojeadora" | "guillotina" | null => {
@@ -76,6 +83,13 @@ const buildListQuery = (key: string, cat: (typeof CATALOGOS)[string], activo: bo
       LEFT JOIN cat_puntos p ON p.idcat_punto = d.idcat_punto
       WHERE d.activo = ${flag}
       ORDER BY d.idcat_doble ASC`;
+  }
+  if (cat.esRolloLam) {
+    return `
+      SELECT idrollo_lam AS id, nombre, medida_ancho, activo
+      FROM rollo_lam
+      WHERE activo = ${flag}
+      ORDER BY medida_ancho ASC`;
   }
   if (cat.esPuntos) {
     return `
@@ -187,6 +201,20 @@ export const agregarItemCatalogo = async (req: Request, res: Response) => {
         LEFT JOIN cat_puntos p ON p.idcat_punto = ins.idcat_punto`;
       values = [dobleVal, alturaVal, idcat_punto ?? null];
 
+    } else if (cat.esRolloLam) {
+      // El usuario escribe solo el número (ej. "38.5"); el nombre final
+      // ("38.5 cm") se arma aquí siempre, nunca lo manda el frontend.
+      const medida_ancho = Number.parseFloat(String(nombre).trim().replace(",", "."));
+      if (isNaN(medida_ancho)) {
+        return res.status(400).json({ error: "El ancho del rollo debe ser un número (ej. 38.5)" });
+      }
+      const nombreFinal = `${medida_ancho} cm`;
+      query = `
+        INSERT INTO rollo_lam (nombre, medida_ancho)
+        VALUES ($1, $2)
+        RETURNING idrollo_lam AS id, nombre, medida_ancho, activo`;
+      values = [nombreFinal, medida_ancho];
+
     } else if (cat.esPuntos) {
       const puntosVal = parseInt(nombre.trim(), 10);
       if (isNaN(puntosVal)) return res.status(400).json({ error: "El valor de puntos debe ser numérico" });
@@ -280,6 +308,18 @@ export const editarItemCatalogo = async (req: Request, res: Response) => {
         FROM upd
         LEFT JOIN cat_puntos p ON p.idcat_punto = upd.idcat_punto`;
       values = [dobleVal, alturaVal, idcat_punto ?? null, id];
+
+    } else if (cat.esRolloLam) {
+      const medida_ancho = Number.parseFloat(String(nombre).trim().replace(",", "."));
+      if (isNaN(medida_ancho)) {
+        return res.status(400).json({ error: "El ancho del rollo debe ser un número (ej. 38.5)" });
+      }
+      const nombreFinal = `${medida_ancho} cm`;
+      query = `
+        UPDATE rollo_lam SET nombre = $1, medida_ancho = $2
+        WHERE idrollo_lam = $3
+        RETURNING idrollo_lam AS id, nombre, medida_ancho, activo`;
+      values = [nombreFinal, medida_ancho, id];
 
     } else if (cat.esPuntos) {
       const puntosVal = parseInt(nombre.trim(), 10);

@@ -1,3 +1,4 @@
+// src/routes/expo.routes.ts
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
@@ -7,6 +8,7 @@ import {
   crearClienteExpo, getClientesExpo, actualizarClienteExpo, eliminarClienteExpo,
   crearCotizacionExpo, getCotizacionesExpo, aprobarCotizacionExpo, eliminarCotizacionExpo,
   getSiguienteFolioExpo,
+  getOpcionesRegistroExpo, // ← NUEVA IMPORTACIÓN
 } from "../../controllers/expo/expo.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 import { preventSQLInjection } from "../../middlewares/validation.middleware";
@@ -19,6 +21,14 @@ const generalLimiter = rateLimit({ windowMs: 15*60*1000, max: 200, standardHeade
 const writeLimiter   = rateLimit({ windowMs: 15*60*1000, max: 60,  standardHeaders: true, legacyHeaders: false });
 
 router.use(generalLimiter);
+
+// ── OPCIONES DE REGISTRO EXPO ─────────────────────────────────────────────
+// ⚠️ DEBE IR ANTES DE /catalogo/:id PARA EVITAR CONFLICTOS
+router.get(
+  "/catalogo/opciones-registro",
+  authMiddleware,
+  getOpcionesRegistroExpo
+);
 
 // ── Catálogo ──────────────────────────────────────────────
 router.get("/catalogo/propio",  authMiddleware, getCatalogoPropio);

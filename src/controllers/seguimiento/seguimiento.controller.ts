@@ -1169,12 +1169,13 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         r.asa_medida,
       ].filter(Boolean).join(" ");
 
+      // NUEVO: Hojeado y Guillotina ya no dependen de metodo_hojeado (que
+      // ahora siempre es NULL — esto se decide físicamente en producción,
+      // no en el sistema). Ambos procesos aplican siempre para un producto
+      // de papel, igual que en procesosOrdenPapelPdf.ts en el frontend.
       const procesosAplican = [
-        r.metodo_hojeado === "hojeado"
-          ? "hojeado_papel"
-          : r.metodo_hojeado === "guillotina"
-            ? "guillotina_papel"
-            : null,
+        "hojeado_papel",
+        "guillotina_papel",
         "impresion_papel",
         r.laminado_nombre ? "laminacion_papel" : null,
         r.uv === true ? "barniz_uv_papel" : null,

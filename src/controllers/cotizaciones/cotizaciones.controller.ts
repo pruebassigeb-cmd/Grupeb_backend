@@ -2,9 +2,9 @@ import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import {
   construirProductoPapel,
-  guardarMaquinariaSeleccionadaPapel,
+  fijarMaquinariaPedidoPapel,
+  clavesMaquinariaRequeridasPapel,
   insertarProductoPapel,
-  validarMaquinariaRequeridaPapel,
 } from "./cotizacionPapel.helper";
 
 const ESTADO = {
@@ -18,30 +18,6 @@ const IVA_PORCENTAJE = 0.16;
 const ANTICIPO_PORCENTAJE = 0.5;
 
 type TipoDocumento = "cotizacion" | "pedido";
-type MetodoHojeadoPapel = "hojeado" | "guillotina";
-
-function esMetodoHojeadoValido(valor: unknown): valor is MetodoHojeadoPapel {
-  return valor === "hojeado" || valor === "guillotina";
-}
-
-function clavesMaquinariaRequeridasPapel(
-  producto: any,
-  llevaArmado: boolean,
-): string[] {
-  return [
-    "hojeado_guillotina",
-    "impresora",
-    ...(producto.idcat_laminado != null ? ["laminado_maquina"] : []),
-    ...(producto.uv === true ? ["uv"] : []),
-    ...(producto.idfoil != null || producto.alto_relieve === true
-      ? ["hs_ar"]
-      : []),
-    ...(producto.idcat_textura != null ? ["texturizadora"] : []),
-    "suaje_maquina",
-    ...(llevaArmado ? ["armado"] : []),
-    "empaque_maquina",
-  ];
-}
 
 function esProductoPapel(producto: any): boolean {
   return (
@@ -893,7 +869,7 @@ export const actualizarEstadoCotizacion = async (
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    const { estadoId, maquinariaPapel = [] } = req.body;
+    const { estadoId } = req.body;
     if (!estadoId)
       return res.status(400).json({ error: "Se requiere estadoId" });
 
@@ -931,7 +907,6 @@ export const actualizarEstadoCotizacion = async (
            spp.idcat_textura,
            spp.uv,
            spp.alto_relieve,
-           spp.metodo_hojeado,
            spp.lleva_armado
          FROM solicitud_producto sp
          JOIN solicitud_producto_papel spp
@@ -950,52 +925,19 @@ export const actualizarEstadoCotizacion = async (
         [doc.idsolicitud],
       );
 
-      const seleccionPorProducto = new Map(
-        (Array.isArray(maquinariaPapel) ? maquinariaPapel : []).map(
-          (item: any) => [Number(item.idsolicitud_producto), item],
-        ),
-      );
-
+      // NUEVO: ya no se recibe "maquinariaPapel" del frontend ni se pide
+      // Hojeado/Guillotina — la maquinaria de cada proceso se lee directo
+      // del producto (registrada desde su alta) y se fija aquí mismo, al
+      // convertir a pedido.
       for (const producto of productosPapel) {
-        const item = seleccionPorProducto.get(
-          Number(producto.idsolicitud_producto),
-        ) as any;
-        if (!item) {
-          throw new Error(
-            `Falta configurar los procesos y la maquinaria del producto de papel ${producto.idsolicitud_producto}`,
-          );
-        }
+        const llevaArmado = producto.lleva_armado === true;
 
-        if (!esMetodoHojeadoValido(item.metodo_hojeado)) {
-          throw new Error(
-            `Selecciona Hojeado o Guillotina para el producto de papel ${producto.idsolicitud_producto}`,
-          );
-        }
-
-        const llevaArmado = item.lleva_armado === true;
-
-        await client.query(
-          `UPDATE solicitud_producto_papel
-           SET metodo_hojeado = $1, lleva_armado = $2
-           WHERE idsolicitud_producto_papel = $3`,
-          [
-            item.metodo_hojeado,
-            llevaArmado,
-            Number(producto.idsolicitud_producto_papel),
-          ],
-        );
-
-        const seleccionValidada = await validarMaquinariaRequeridaPapel(
+        await fijarMaquinariaPedidoPapel(
           client,
           Number(producto.producto_papel_idproducto_papel),
-          clavesMaquinariaRequeridasPapel(producto, llevaArmado),
-          item.maquinaria_seleccionada,
-        );
-
-        await guardarMaquinariaSeleccionadaPapel(
-          client,
           Number(producto.idsolicitud_producto_papel),
-          seleccionValidada,
+          clavesMaquinariaRequeridasPapel(producto, llevaArmado),
+          `Producto #${producto.idsolicitud_producto}`,
         );
       }
 

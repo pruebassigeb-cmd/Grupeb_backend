@@ -1,28 +1,17 @@
+// NOTA: Este endpoint ya no se llama desde un modal manual — la
+// confirmación de "Configurar maquinaria" (ModalMaquinariaPedidoPapel /
+// ConfigurarMaquinariaPedidoPapel) se quitó del flujo de aprobación en
+// EditarCotizacion.tsx. Si nada más lo invoca (revisar EditarPedidoPapel.tsx
+// / Pedido.tsx, que no tengo en esta revisión), este archivo y su ruta
+// pueden eliminarse. Si se conserva, item.maquinaria_seleccionada seguiría
+// esperando que alguien lo mande — confirma si sigue teniendo un llamador.
 import type { Request, Response } from "express";
 import { pool } from "../../config/db";
 import {
   guardarMaquinariaSeleccionadaPapel,
   validarMaquinariaRequeridaPapel,
+  clavesMaquinariaRequeridasPapel,
 } from "../cotizaciones/cotizacionPapel.helper";
-
-type MetodoHojeadoPapel = "hojeado" | "guillotina";
-
-const esMetodoHojeadoValido = (valor: unknown): valor is MetodoHojeadoPapel =>
-  valor === "hojeado" || valor === "guillotina";
-
-const clavesRequeridas = (producto: any, llevaArmado: boolean): string[] => [
-  "hojeado_guillotina",
-  "impresora",
-  ...(producto.idcat_laminado != null ? ["laminado_maquina"] : []),
-  ...(producto.uv === true ? ["uv"] : []),
-  ...(producto.idfoil != null || producto.alto_relieve === true
-    ? ["hs_ar"]
-    : []),
-  ...(producto.idcat_textura != null ? ["texturizadora"] : []),
-  "suaje_maquina",
-  ...(llevaArmado ? ["armado"] : []),
-  "empaque_maquina",
-];
 
 export const guardarMaquinariaPedidoPapel = async (
   req: Request,
@@ -90,37 +79,26 @@ export const guardarMaquinariaPedidoPapel = async (
         );
       }
 
-      if (!esMetodoHojeadoValido(item.metodo_hojeado)) {
-        throw new Error(
-          `Selecciona Hojeado o Guillotina para el producto ${producto.idsolicitud_producto}`
-        );
-      }
-
       const llevaArmado = item.lleva_armado === true;
 
+      // NUEVO: metodo_hojeado ya no se guarda — Hojeado/Guillotina se
+      // decide físicamente en producción, no en el sistema. Se deja lo que
+      // ya traiga la fila (normalmente NULL); solo se actualiza lleva_armado.
       await client.query(
         `UPDATE solicitud_producto_papel
-         SET metodo_hojeado = $1, lleva_armado = $2
-         WHERE idsolicitud_producto_papel = $3`,
-        [
-          item.metodo_hojeado,
-          llevaArmado,
-          Number(producto.idsolicitud_producto_papel),
-        ]
+         SET lleva_armado = $1
+         WHERE idsolicitud_producto_papel = $2`,
+        [llevaArmado, Number(producto.idsolicitud_producto_papel)]
       );
 
-      const filtroHojeadoGuillotina = {
-        hojeado_guillotina: {
-          tipo_maquina: item.metodo_hojeado === "guillotina" ? "guillotina" : "hojeadora",
-        },
-      } as const;
-
+      // NUEVO: ya no se filtra por tipo_maquina según un método elegido —
+      // "hojeadora" y "guillotina" ahora son dos claves independientes, cada
+      // una con la máquina que el producto ya tiene registrada por default.
       const seleccionValidada = await validarMaquinariaRequeridaPapel(
         client,
         Number(producto.producto_papel_idproducto_papel),
-        clavesRequeridas(producto, llevaArmado),
-        item.maquinaria_seleccionada,
-        filtroHojeadoGuillotina
+        clavesMaquinariaRequeridasPapel(producto, llevaArmado),
+        item.maquinaria_seleccionada
       );
 
       await guardarMaquinariaSeleccionadaPapel(

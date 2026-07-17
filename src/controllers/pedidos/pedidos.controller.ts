@@ -147,6 +147,7 @@ export const getPedidos = async (req: Request, res: Response) => {
           s.estado          AS tipo_documento,
           s.fecha,
           s.prioridad,
+          s.sin_iva,
           s.clientes_idclientes,
           s.estado_administrativo_cat_idestado_administrativo_cat,
 
@@ -325,6 +326,7 @@ export const getPedidos = async (req: Request, res: Response) => {
           es_directo: row.no_cotizacion === null,
           fecha: row.fecha,
           prioridad: row.prioridad ?? false,
+          sin_iva: row.sin_iva ?? false,
           estado_id: row.estado_administrativo_cat_idestado_administrativo_cat,
           estado: normalizarNombreEstado(row.estado_nombre || ""),
           diseno_estado_id: row.diseno_estado_id ?? 1,
@@ -1683,6 +1685,7 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
           s.no_pedido,
           s.fecha,
           s.prioridad,
+          s.sin_iva,
 
           cli.atencion      AS cliente_nombre,
           cli.empresa       AS cliente_empresa,
@@ -1829,6 +1832,7 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
           es_directo: row.no_cotizacion === null,
           fecha: row.fecha,
           prioridad: row.prioridad ?? false,
+          sin_iva: row.sin_iva ?? false,
           cliente_id: row.clientes_idclientes,
           identificar: row.cliente_identificar || null,
           cliente: row.cliente_nombre || "",
@@ -2008,7 +2012,7 @@ const nombre =
     return res.json(Object.values(agrupados));
 
   } catch (error: any) {
-    console.error("❌ GET HISTORIAL PEDIDOS ERROR:", error.message);
+    console.error("❌  GET HISTORIAL PEDIDOS ERROR:", error.message);
     return res.status(500).json({ error: "Error al obtener historial de pedidos" });
   }
 };
