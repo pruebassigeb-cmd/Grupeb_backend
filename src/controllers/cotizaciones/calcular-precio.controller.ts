@@ -40,6 +40,16 @@ const enteroPositivo = (valor: unknown): number => {
   return Number.isInteger(numero) && numero > 0 ? numero : 0;
 };
 
+const esSolicitudSinTintas = (
+  tintasIdValor: unknown,
+  tintasCantidadValor: unknown,
+): boolean => {
+  const tintasId = enteroPositivo(tintasIdValor);
+  const cantidad = Number(tintasCantidadValor);
+
+  return tintasId === 0 && Number.isInteger(cantidad) && cantidad === 0;
+};
+
 async function resolverTintas(
   tintasIdValor: unknown,
   tintasCantidadValor: unknown,
@@ -168,15 +178,34 @@ export const calcularPrecioPreview = async (req: Request, res: Response) => {
   try {
     const cantidad = numeroPositivo(req.body?.cantidad);
     const porKilo = numeroPositivo(req.body?.porKilo);
+
+    if (cantidad <= 0) {
+      return res.status(400).json({
+        error: "Se requiere una cantidad válida.",
+      });
+    }
+
+    // Con cero tintas no hay cargo de impresión ni tarifa por consultar.
+    // El frontend conserva/restaura el precio base del producto.
+    if (esSolicitudSinTintas(req.body?.tintasId, req.body?.tintasCantidad)) {
+      return res.json({
+        success: true,
+        sin_tintas: true,
+        tintas_id: null,
+        tintas_cantidad: 0,
+        resultado: null,
+      });
+    }
+
     const tintas = await resolverTintas(
       req.body?.tintasId,
       req.body?.tintasCantidad,
     );
 
-    if (cantidad <= 0 || porKilo <= 0 || !tintas) {
+    if (porKilo <= 0 || !tintas) {
       return res.status(400).json({
         error:
-          "Se requieren cantidad, porKilo y tintasId o tintasCantidad válidos.",
+          "Se requieren porKilo y tintasId o tintasCantidad válidos.",
       });
     }
 
@@ -232,16 +261,28 @@ export const calcularPreciosBatch = async (
 
     const porKilo = numeroPositivo(req.body?.porKilo);
 
-    const tintas = await resolverTintas(
-      req.body?.tintasId,
-      req.body?.tintasCantidad,
-    );
-
     if (cantidades.length === 0) {
       return res.status(400).json({
         error: "Se requiere un arreglo de cantidades.",
       });
     }
+
+    // Con cero tintas no se consulta una tarifa y tampoco se devuelve un
+    // precio unitario de cero, porque eso borraría el precio base del producto.
+    if (esSolicitudSinTintas(req.body?.tintasId, req.body?.tintasCantidad)) {
+      return res.json({
+        success: true,
+        sin_tintas: true,
+        tintas_id: null,
+        tintas_cantidad: 0,
+        resultados: cantidades.map(() => null),
+      });
+    }
+
+    const tintas = await resolverTintas(
+      req.body?.tintasId,
+      req.body?.tintasCantidad,
+    );
 
     if (porKilo <= 0 || !tintas) {
       return res.status(400).json({

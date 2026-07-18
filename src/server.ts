@@ -9,9 +9,9 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🔥 Backend corriendo en http://localhost:${PORT}`);
 
-  console.log("WHATSAPP_ACCESS_TOKEN cargado:", !!process.env.WHATSAPP_ACCESS_TOKEN);
+  /*console.log("WHATSAPP_ACCESS_TOKEN cargado:", !!process.env.WHATSAPP_ACCESS_TOKEN);
   console.log("WHATSAPP_PHONE_NUMBER_ID cargado:", !!process.env.WHATSAPP_PHONE_NUMBER_ID);
-  console.log("WHATSAPP_VERIFY_TOKEN cargado:", !!process.env.WHATSAPP_VERIFY_TOKEN);
+  console.log("WHATSAPP_VERIFY_TOKEN cargado:", !!process.env.WHATSAPP_VERIFY_TOKEN);*/
 });
 
 // ============================================================

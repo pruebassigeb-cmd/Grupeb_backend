@@ -90,20 +90,29 @@ async function crearVentaYDiseno(
   console.log(`✅ [EXPO] Diseño #${disenoId} con ${prods.length} producto(s)`);
 }
 
-// ─── Resolver cantidad de tintas (1-6, o null) → id real ────────────────────
+// ─── Resolver cantidad de tintas (0-6, o null) → id real ────────────────────
 // El frontend de Expo nunca conoce ni maneja ids de tintas — solo maneja
-// números planos (cantidad), para no depender de una tabla con ids que
-// puede cambiar. Aquí, justo antes de guardar en cualquier parte del
-// backend, se traduce esa cantidad al id real que el resto del sistema
-// (solicitud_producto, solicitud_producto_papel, producto_acabado_default)
-// sí necesita como FK.
+// números planos. La cantidad 0 significa “sin tintas”: no se cobra y la FK
+// se guarda como NULL. Solo las cantidades positivas se traducen al id real
+// de la tabla `tintas`.
 async function resolverIdTintasPorCantidad(
   client: any, cantidad: number | null | undefined
 ): Promise<number | null> {
-  if (cantidad == null || Number(cantidad) <= 0) return null;
+  if (cantidad === null || cantidad === undefined) return null;
+
+  const cantidadNumero = Number(cantidad);
+  if (!Number.isInteger(cantidadNumero) || cantidadNumero < 0) return null;
+  if (cantidadNumero === 0) return null;
+
   const { rows } = await client.query(
-    `SELECT idtintas FROM tintas WHERE cantidad = $1 LIMIT 1`, [cantidad]
+    `SELECT idtintas
+     FROM tintas
+     WHERE cantidad = $1
+     ORDER BY idtintas
+     LIMIT 1`,
+    [cantidadNumero],
   );
+
   return rows[0]?.idtintas ?? null;
 }
 
