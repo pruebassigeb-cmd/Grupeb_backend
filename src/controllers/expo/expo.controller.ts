@@ -1040,6 +1040,17 @@ const { rows: productoRows } = await client.query(
 
 const idproductoPapelNuevo = Number(productoRows[0].idproducto_papel);
 
+// Referencias comerciales del catálogo Expo. Estos campos son únicamente
+// informativos y NO participan en precio_base, precio_sugerido ni en los
+// calculadores de papel/cartón.
+await client.query(
+  `UPDATE producto_papel
+   SET precio_1000 = $1,
+       precio_3000 = $2
+   WHERE idproducto_papel = $3`,
+  [num(precio_1000), num(precio_3000), idproductoPapelNuevo],
+);
+
 // Todo producto Expo de papel necesita grupo, aunque material/calibre todavía
 // estén vacíos, porque el precio base pertenece al grupo.
 const { rows: grupoRows } = await client.query(
@@ -1258,6 +1269,32 @@ export const actualizarProductoCatalogo = async (req: Request, res: Response) =>
         precioBase: numeroNullable(precio_base ?? precio_500),
         idusuario,
       });
+    }
+
+    // Referencias comerciales del catálogo Expo. Se actualizan de forma
+    // independiente para no tocar el precio base unitario ni los cálculos.
+    const recibioReferencia500 =
+      Object.prototype.hasOwnProperty.call(req.body, "precio_1000");
+    const recibioReferencia1000 =
+      Object.prototype.hasOwnProperty.call(req.body, "precio_3000");
+
+    if (recibioReferencia500 || recibioReferencia1000) {
+      await client.query(
+        `UPDATE producto_papel
+         SET precio_1000 = CASE WHEN $1 THEN $2 ELSE precio_1000 END,
+             precio_3000 = CASE WHEN $3 THEN $4 ELSE precio_3000 END,
+             actualizado_por = COALESCE($5, actualizado_por),
+             updated_at = NOW()
+         WHERE idproducto_papel = $6`,
+        [
+          recibioReferencia500,
+          num(precio_1000),
+          recibioReferencia1000,
+          num(precio_3000),
+          idusuario,
+          idProductoPapel,
+        ],
+      );
     }
 
     await aplicarAcabadosPapel(client, idProductoPapel, {
