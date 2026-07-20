@@ -15,19 +15,21 @@ const ESTADO = { PENDIENTE: 1, EN_PROCESO: 2, APROBADO: 3, RECHAZADO: 4 } as con
 // ─── Helpers de folio ─────────────────────────────────────────────────────────
 
 async function obtenerSiguienteFolioCotizacion(client: any): Promise<string> {
-  const yy = new Date().getFullYear().toString().slice(-2);
-  const { rows } = await client.query(`
-    SELECT COALESCE(MAX(CAST(SUBSTRING(no_cotizacion FROM 'CO${yy}(\\d+)') AS INTEGER)),0)+1 AS siguiente
-    FROM solicitud WHERE no_cotizacion LIKE 'CO${yy}%'`);
-  return `CO${yy}${String(rows[0].siguiente).padStart(3, "0")}`;
+  // La función de PostgreSQL usa una secuencia anual y devuelve el folio
+  // definitivo. nextval() es atómico: dos vendedores nunca reciben el mismo.
+  const { rows } = await client.query(
+    `SELECT public.generar_folio_cotizacion() AS folio`,
+  );
+  return String(rows[0].folio);
 }
 
 async function obtenerSiguienteFolioPedido(client: any): Promise<string> {
-  const yy = new Date().getFullYear().toString().slice(-2);
-  const { rows } = await client.query(`
-    SELECT COALESCE(MAX(CAST(SUBSTRING(no_pedido FROM 'P${yy}(\\d+)') AS INTEGER)),0)+1 AS siguiente
-    FROM solicitud WHERE no_pedido LIKE 'P${yy}%'`);
-  return `P${yy}${String(rows[0].siguiente).padStart(3, "0")}`;
+  // Se aplica el mismo mecanismo a los pedidos para evitar colisiones al
+  // aprobar cotizaciones simultáneamente.
+  const { rows } = await client.query(
+    `SELECT public.generar_folio_pedido() AS folio`,
+  );
+  return String(rows[0].folio);
 }
 
 async function generarFolioOrdenDiseno(client: any): Promise<string> {
@@ -1469,15 +1471,14 @@ export const eliminarClienteExpo = async (req: Request, res: Response) => {
 // COTIZACIONES EXPO
 // ═══════════════════════════════════════════════════════════
 
-export const getSiguienteFolioExpo = async (req: Request, res: Response) => {
-  try {
-    const yy = new Date().getFullYear().toString().slice(-2);
-    const { rows } = await pool.query(`
-      SELECT COALESCE(MAX(CAST(SUBSTRING(no_cotizacion FROM 'CO${yy}(\\d+)') AS INTEGER)),0)+1 AS siguiente
-      FROM solicitud WHERE no_cotizacion LIKE 'CO${yy}%'`);
-    const folio = `CO${yy}${String(rows[0].siguiente).padStart(3, "0")}`;
-    return res.json({ folio });
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+export const getSiguienteFolioExpo = async (_req: Request, res: Response) => {
+  // No se consume una secuencia para una vista previa. El folio definitivo se
+  // asigna dentro de crearCotizacionExpo y se devuelve en la misma respuesta
+  // del POST. Se conserva este endpoint únicamente por compatibilidad.
+  return res.json({
+    folio: "Se asigna al guardar",
+    provisional: true,
+  });
 };
 
 // La cotización recibe CANTIDADES de tintas del frontend
