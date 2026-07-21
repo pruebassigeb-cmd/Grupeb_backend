@@ -2,6 +2,7 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import { getPresignedUrl } from "../../config/multer";
+import { clonarProductoPapelSistemaAExpo } from "../../services/expo/clonarProductoPapelExpo.service";
 import { insertarProductoPapel } from "../cotizaciones/cotizacionPapel.helper";
 import type { ProductoPapelPayload } from "../cotizaciones/cotizacionPapel.helper";
 import {
@@ -396,92 +397,165 @@ mp.tipo_material AS material,
   return obtenerProductoPapelCatalogoExpoPorId(id);
 }
 
-// Guarda/actualiza laminado + asa. El precio base ya no pertenece a
-// producto_papel: se administra en grupo_papel.precio_sugerido.
+// Asegura que el acabado elegido como predeterminado también forme parte de
+// las opciones permitidas del producto. Las opciones se guardan en
+// acabados_papel; el default exacto se guarda en producto_acabado_default.
 async function aplicarAcabadosPapel(
   client: any,
   idproducto_papel: number,
   datos: {
+    idcat_laminado?: number | null;
+    idcat_tipo_asa?: number | null;
     tipo_laminado?: string | null;
     tipo_asa?: string | null;
   }
 ) {
-  if (!datos.tipo_laminado && !datos.tipo_asa) return;
+  let idcatLaminado = numeroNullable(datos.idcat_laminado);
+  let idcatTipoAsa = numeroNullable(datos.idcat_tipo_asa);
+
+  if (!idcatLaminado && datos.tipo_laminado) {
+    const { rows } = await client.query(
+      `SELECT idcat_laminado
+         FROM cat_laminado
+        WHERE LOWER(nombre) = LOWER($1)
+           OR LOWER(nombre) LIKE $2
+        ORDER BY CASE WHEN LOWER(nombre) = LOWER($1) THEN 0 ELSE 1 END
+        LIMIT 1`,
+      [datos.tipo_laminado.trim(), `%${datos.tipo_laminado.trim().toLowerCase()}%`],
+    );
+    idcatLaminado = rows[0]?.idcat_laminado ?? null;
+  }
+
+  if (!idcatTipoAsa && datos.tipo_asa) {
+    const { rows } = await client.query(
+      `SELECT idcat_tipo_asa
+         FROM cat_tipo_asa
+        WHERE LOWER(nombre) = LOWER($1)
+           OR LOWER(nombre) LIKE $2
+        ORDER BY CASE WHEN LOWER(nombre) = LOWER($1) THEN 0 ELSE 1 END
+        LIMIT 1`,
+      [datos.tipo_asa.trim(), `%${datos.tipo_asa.trim().toLowerCase()}%`],
+    );
+    idcatTipoAsa = rows[0]?.idcat_tipo_asa ?? null;
+  }
+
+  if (!idcatLaminado && !idcatTipoAsa) return;
 
   const { rows: acabRows } = await client.query(
-    `SELECT idacabados_papel FROM acabados_papel WHERE idproducto_papel=$1`, [idproducto_papel]
+    `SELECT idacabados_papel
+       FROM acabados_papel
+      WHERE idproducto_papel = $1
+      ORDER BY idacabados_papel
+      LIMIT 1`,
+    [idproducto_papel],
   );
-  let idacabados_papel: number;
+
+  let idacabadosPapel: number;
   if (acabRows.length) {
-    idacabados_papel = acabRows[0].idacabados_papel;
+    idacabadosPapel = Number(acabRows[0].idacabados_papel);
   } else {
     const { rows: nuevo } = await client.query(
-      `INSERT INTO acabados_papel (idproducto_papel) VALUES ($1) RETURNING idacabados_papel`,
-      [idproducto_papel]
+      `INSERT INTO acabados_papel (idproducto_papel)
+       VALUES ($1)
+       RETURNING idacabados_papel`,
+      [idproducto_papel],
     );
-    idacabados_papel = nuevo[0].idacabados_papel;
+    idacabadosPapel = Number(nuevo[0].idacabados_papel);
   }
 
-  if (datos.tipo_laminado) {
-    const { rows: lamR } = await client.query(
-      `SELECT idcat_laminado FROM cat_laminado WHERE LOWER(nombre) LIKE $1 LIMIT 1`,
-      [`%${datos.tipo_laminado.toLowerCase()}%`]
+  if (idcatLaminado) {
+    await client.query(
+      `INSERT INTO acabados_laminado (idacabados_papel, idcat_laminado)
+       VALUES ($1,$2)
+       ON CONFLICT DO NOTHING`,
+      [idacabadosPapel, idcatLaminado],
     );
-    if (lamR[0]?.idcat_laminado) {
-      await client.query(
-        `INSERT INTO acabados_laminado (idacabados_papel, idcat_laminado) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
-        [idacabados_papel, lamR[0].idcat_laminado]
-      );
-    }
   }
 
-  if (datos.tipo_asa) {
-    const { rows: asaR } = await client.query(
-      `SELECT idcat_tipo_asa FROM cat_tipo_asa WHERE LOWER(nombre) LIKE $1 LIMIT 1`,
-      [`%${datos.tipo_asa.toLowerCase()}%`]
+  if (idcatTipoAsa) {
+    await client.query(
+      `INSERT INTO acabados_asas (idacabados_papel, idcat_tipo_asa)
+       VALUES ($1,$2)
+       ON CONFLICT DO NOTHING`,
+      [idacabadosPapel, idcatTipoAsa],
     );
-    if (asaR[0]?.idcat_tipo_asa) {
-      await client.query(
-        `INSERT INTO acabados_asas (idacabados_papel, idcat_tipo_asa) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
-        [idacabados_papel, asaR[0].idcat_tipo_asa]
-      );
-    }
   }
 }
 
-// ─── Acabados "de fábrica" — tabla aparte producto_acabado_default ─────────
-// Los parámetros de tintas son CANTIDAD (no id) — se resuelven aquí mismo
-// contra la tabla `tintas` antes de guardar. Sin pantones.
+// Acabados seleccionados en Expo. Estos son los valores que aparecerán
+// inicialmente en el cotizador; no sustituyen las opciones permitidas copiadas
+// desde el producto del sistema.
 async function guardarAcabadosDefaultPapel(
-  client: any, idproducto_papel: number,
+  client: any,
+  idproducto_papel: number,
   datos: {
-    tipo_hs?: string | null; tipo_textura?: string | null; uv?: boolean; ar?: boolean;
+    idcatLaminado?: number | null;
+    idcatTipoAsa?: number | null;
+    idfoil?: number | null;
+    idcatTextura?: number | null;
+    tipo_laminado?: string | null;
+    tipo_asa?: string | null;
+    tipo_hs?: string | null;
+    tipo_textura?: string | null;
+    uv?: boolean;
+    ar?: boolean;
     tintasFrenteCantidad?: number | null;
     tintasDentroCantidad?: number | null;
   }
 ) {
-  let idfoil: number | null = null;
-  if (datos.tipo_hs) {
+  let idcatLaminado = numeroNullable(datos.idcatLaminado);
+  let idcatTipoAsa = numeroNullable(datos.idcatTipoAsa);
+  let idfoil = numeroNullable(datos.idfoil);
+  let idcatTextura = numeroNullable(datos.idcatTextura);
+
+  if (!idcatLaminado && datos.tipo_laminado) {
+    const { rows } = await client.query(
+      `SELECT idcat_laminado FROM cat_laminado
+       WHERE LOWER(nombre) = LOWER($1) OR LOWER(nombre) LIKE $2
+       ORDER BY CASE WHEN LOWER(nombre) = LOWER($1) THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [datos.tipo_laminado.trim(), `%${datos.tipo_laminado.trim().toLowerCase()}%`],
+    );
+    idcatLaminado = rows[0]?.idcat_laminado ?? null;
+  }
+
+  if (!idcatTipoAsa && datos.tipo_asa) {
+    const { rows } = await client.query(
+      `SELECT idcat_tipo_asa FROM cat_tipo_asa
+       WHERE LOWER(nombre) = LOWER($1) OR LOWER(nombre) LIKE $2
+       ORDER BY CASE WHEN LOWER(nombre) = LOWER($1) THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [datos.tipo_asa.trim(), `%${datos.tipo_asa.trim().toLowerCase()}%`],
+    );
+    idcatTipoAsa = rows[0]?.idcat_tipo_asa ?? null;
+  }
+
+  if (!idfoil && datos.tipo_hs) {
     const termino = datos.tipo_hs.toLowerCase().trim();
     const palabras = termino.split(/\s+/);
     const ultima = palabras[palabras.length - 1];
     const { rows } = await client.query(
-      `SELECT idfoil FROM foil WHERE LOWER(colorfoil) LIKE $1 OR LOWER(codigofoil) LIKE $2 LIMIT 1`,
-      [`%${termino}%`, `%${ultima}%`]
+      `SELECT idfoil
+         FROM foil
+        WHERE LOWER(colorfoil) LIKE $1 OR LOWER(codigofoil) LIKE $2
+        LIMIT 1`,
+      [`%${termino}%`, `%${ultima}%`],
     );
     idfoil = rows[0]?.idfoil ?? null;
   }
-  let idcatTextura: number | null = null;
-  if (datos.tipo_textura) {
+
+  if (!idcatTextura && datos.tipo_textura) {
     const { rows } = await client.query(
-      `SELECT idcat_textura FROM cat_textura WHERE LOWER(nombre) LIKE $1 LIMIT 1`,
-      [`%${datos.tipo_textura.toLowerCase()}%`]
+      `SELECT idcat_textura
+         FROM cat_textura
+        WHERE LOWER(nombre) = LOWER($1) OR LOWER(nombre) LIKE $2
+        ORDER BY CASE WHEN LOWER(nombre) = LOWER($1) THEN 0 ELSE 1 END
+        LIMIT 1`,
+      [datos.tipo_textura.trim(), `%${datos.tipo_textura.trim().toLowerCase()}%`],
     );
     idcatTextura = rows[0]?.idcat_textura ?? null;
   }
 
-  const actualizarTintasFrente = datos.tintasFrenteCantidad !== undefined;
-  const actualizarTintasDentro = datos.tintasDentroCantidad !== undefined;
   const idTintasFrente = await resolverIdTintasPorCantidad(
     client,
     datos.tintasFrenteCantidad,
@@ -491,36 +565,39 @@ async function guardarAcabadosDefaultPapel(
     datos.tintasDentroCantidad,
   );
 
-  await client.query(`
-    INSERT INTO producto_acabado_default (
-      idproducto_papel, idfoil_default, idcat_textura_default, uv_default, alto_relieve_default,
-      idtintas_frente_default, idtintas_dentro_default
-    )
-    VALUES ($1,$2,$3,$4,$5,$6,$7)
-    ON CONFLICT (idproducto_papel) DO UPDATE SET
-      idfoil_default          = COALESCE(EXCLUDED.idfoil_default, producto_acabado_default.idfoil_default),
-      idcat_textura_default   = COALESCE(EXCLUDED.idcat_textura_default, producto_acabado_default.idcat_textura_default),
-      uv_default              = EXCLUDED.uv_default,
-      alto_relieve_default    = EXCLUDED.alto_relieve_default,
-      idtintas_frente_default = CASE
-        WHEN $8 THEN EXCLUDED.idtintas_frente_default
-        ELSE producto_acabado_default.idtintas_frente_default
-      END,
-      idtintas_dentro_default = CASE
-        WHEN $9 THEN EXCLUDED.idtintas_dentro_default
-        ELSE producto_acabado_default.idtintas_dentro_default
-      END`,
+  await client.query(
+    `INSERT INTO producto_acabado_default (
+       idproducto_papel,
+       idcat_laminado_default,
+       idcat_tipo_asa_default,
+       idfoil_default,
+       idcat_textura_default,
+       uv_default,
+       alto_relieve_default,
+       idtintas_frente_default,
+       idtintas_dentro_default
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     ON CONFLICT (idproducto_papel) DO UPDATE SET
+       idcat_laminado_default = EXCLUDED.idcat_laminado_default,
+       idcat_tipo_asa_default = EXCLUDED.idcat_tipo_asa_default,
+       idfoil_default = EXCLUDED.idfoil_default,
+       idcat_textura_default = EXCLUDED.idcat_textura_default,
+       uv_default = EXCLUDED.uv_default,
+       alto_relieve_default = EXCLUDED.alto_relieve_default,
+       idtintas_frente_default = EXCLUDED.idtintas_frente_default,
+       idtintas_dentro_default = EXCLUDED.idtintas_dentro_default`,
     [
       idproducto_papel,
+      idcatLaminado,
+      idcatTipoAsa,
       idfoil,
       idcatTextura,
       datos.uv === true,
       datos.ar === true,
       idTintasFrente,
       idTintasDentro,
-      actualizarTintasFrente,
-      actualizarTintasDentro,
-    ]
+    ],
   );
 }
 
@@ -802,9 +879,13 @@ export const crearProductoCatalogo = async (req: Request, res: Response) => {
   try {
     const {
       nombre, descripcion, categoria, medida, material, calibre, tamano_prod,
-      id_tamano_producto, idgrupo_papel, precio_base,
+      id_tamano_producto, idgrupo_papel, precio_base, costo_laminado,
+      idproducto_sistema_base, idgrupo_sistema_base,
+      copiar_desde_sistema,
       tipo_laminado, tipo_asa,
-      tipo_hs, tipo_textura, uv, ar, pigmento,
+      idcat_laminado_default, idcat_tipo_asa_default,
+      tipo_hs, tipo_textura, idfoil_default, idcat_textura_default,
+      uv, ar, pigmento,
       precio_500, precio_1000, precio_3000,
       tipo_producto,
       altura, ancho, fuelle, fuelle_fondo, fuelle_lateral_iz, fuelle_lateral_de, refuerzo,
@@ -1006,7 +1087,83 @@ if (tamanoRecibido != null && tamanoRecibido !== "" && !idTamanoProducto) {
 // precio_500, se toma como precio base. La fuente de verdad se guarda en
 // grupo_papel.precio_sugerido.
 const precioBase = numeroNullable(precio_base ?? precio_500);
+const idProductoSistemaBase = numeroNullable(idproducto_sistema_base);
+const idGrupoSistemaBase = numeroNullable(idgrupo_sistema_base);
+const copiarDesdeSistema = bool(copiar_desde_sistema);
 
+if (copiarDesdeSistema && (!idProductoSistemaBase || !idGrupoSistemaBase)) {
+  await client.query("ROLLBACK");
+  return res.status(400).json({
+    error:
+      "Se solicitó copiar un producto del sistema, pero no llegaron correctamente los ids del producto y del grupo.",
+  });
+}
+
+if ((idProductoSistemaBase && !idGrupoSistemaBase) || (!idProductoSistemaBase && idGrupoSistemaBase)) {
+  await client.query("ROLLBACK");
+  return res.status(400).json({
+    error: "Para copiar un producto del sistema se requieren el producto y su grupo.",
+  });
+}
+
+// Cuando existe plantilla, la copia se hace por completo dentro del backend.
+// El frontend únicamente manda los ids del producto/grupo y los defaults Expo.
+if (idProductoSistemaBase && idGrupoSistemaBase) {
+  const clonado = await clonarProductoPapelSistemaAExpo(client, {
+    idProductoSistema: idProductoSistemaBase,
+    idGrupoSistema: idGrupoSistemaBase,
+    idUsuario: idusuario,
+    categoriaEsperada: categoria === "carton" ? "carton" : "papel",
+    nombre: nombre?.trim() || null,
+    ancho: num(ancho),
+    fuelle: num(fuelle),
+    altura: num(altura),
+    medida: medida || null,
+    idTamanoProducto,
+    costoLaminado: numeroNullable(costo_laminado),
+    precioBase,
+    precioReferencia500: num(precio_1000),
+    precioReferencia1000: num(precio_3000),
+  });
+
+  await aplicarAcabadosPapel(client, clonado.idproductoPapel, {
+    idcat_laminado: numeroNullable(idcat_laminado_default),
+    idcat_tipo_asa: numeroNullable(idcat_tipo_asa_default),
+    tipo_laminado,
+    tipo_asa,
+  });
+
+  await guardarAcabadosDefaultPapel(client, clonado.idproductoPapel, {
+    idcatLaminado: numeroNullable(idcat_laminado_default),
+    idcatTipoAsa: numeroNullable(idcat_tipo_asa_default),
+    idfoil: numeroNullable(idfoil_default),
+    idcatTextura: numeroNullable(idcat_textura_default),
+    tipo_laminado,
+    tipo_asa,
+    tipo_hs,
+    tipo_textura,
+    uv: bool(uv),
+    ar: bool(ar),
+    tintasFrenteCantidad: tintas_frente_default ?? null,
+    tintasDentroCantidad: tintas_dentro_default ?? null,
+  });
+
+  await client.query("COMMIT");
+
+  const producto = await obtenerProductoCatalogoExpoPorId(
+    clonado.idproductoPapel,
+    categoria === "carton" ? "carton" : "papel",
+  );
+
+  return res.status(201).json({
+    message: "Producto del sistema copiado al catálogo Expo",
+    producto,
+    idproducto_papel: clonado.idproductoPapel,
+    idgrupo_papel: clonado.idgrupoPapel,
+  });
+}
+
+// Sin plantilla se conserva el registro manual actual.
 // Crear un producto NUEVO, aunque coincida con uno del sistema.
 const { rows: productoRows } = await client.query(
   `
@@ -1019,12 +1176,13 @@ const { rows: productoRows } = await client.query(
     altura,
     medida,
     tamano_prod,
+    costo_laminado,
     creado_por,
     actualizado_por,
     activo,
     origen_expo
   )
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,TRUE,TRUE)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,TRUE,TRUE)
   RETURNING idproducto_papel
   `,
   [
@@ -1036,6 +1194,7 @@ const { rows: productoRows } = await client.query(
     num(altura),
     medida || null,
     idTamanoProducto,
+    numeroNullable(costo_laminado),
     idusuario,
   ],
 );
@@ -1090,34 +1249,26 @@ if (idcatTipoPapel || idcatCalibre) {
 }
 
 await aplicarAcabadosPapel(client, idproductoPapelNuevo, {
+  idcat_laminado: numeroNullable(idcat_laminado_default),
+  idcat_tipo_asa: numeroNullable(idcat_tipo_asa_default),
   tipo_laminado,
   tipo_asa,
 });
 
-// Guardar tintas, foil, textura, UV y alto relieve.
-if (
-  tipo_hs ||
-  tipo_textura ||
-  uv != null ||
-  ar != null ||
-  tintas_frente_default != null ||
-  tintas_dentro_default != null
-) {
-  await guardarAcabadosDefaultPapel(
-    client,
-    idproductoPapelNuevo,
-    {
-      tipo_hs,
-      tipo_textura,
-      uv: bool(uv),
-      ar: bool(ar),
-      tintasFrenteCantidad:
-        tintas_frente_default ?? null,
-      tintasDentroCantidad:
-        tintas_dentro_default ?? null,
-    }
-  );
-}
+await guardarAcabadosDefaultPapel(client, idproductoPapelNuevo, {
+  idcatLaminado: numeroNullable(idcat_laminado_default),
+  idcatTipoAsa: numeroNullable(idcat_tipo_asa_default),
+  idfoil: numeroNullable(idfoil_default),
+  idcatTextura: numeroNullable(idcat_textura_default),
+  tipo_laminado,
+  tipo_asa,
+  tipo_hs,
+  tipo_textura,
+  uv: bool(uv),
+  ar: bool(ar),
+  tintasFrenteCantidad: tintas_frente_default ?? null,
+  tintasDentroCantidad: tintas_dentro_default ?? null,
+});
 
 await client.query("COMMIT");
 
@@ -1154,11 +1305,16 @@ export const actualizarProductoCatalogo = async (req: Request, res: Response) =>
   id_tamano_producto,
   idgrupo_papel,
   precio_base,
+  costo_laminado,
 
   tipo_laminado,
   tipo_asa,
+  idcat_laminado_default,
+  idcat_tipo_asa_default,
   tipo_hs,
   tipo_textura,
+  idfoil_default,
+  idcat_textura_default,
   uv,
   ar,
   pigmento,
@@ -1260,6 +1416,17 @@ export const actualizarProductoCatalogo = async (req: Request, res: Response) =>
       );
     }
 
+    if (Object.prototype.hasOwnProperty.call(req.body, "costo_laminado")) {
+      await client.query(
+        `UPDATE producto_papel
+         SET costo_laminado = $1,
+             actualizado_por = COALESCE($2, actualizado_por),
+             updated_at = NOW()
+         WHERE idproducto_papel = $3`,
+        [numeroNullable(costo_laminado), idusuario, idProductoPapel],
+      );
+    }
+
     const recibioPrecioBase =
       Object.prototype.hasOwnProperty.call(req.body, "precio_base") ||
       Object.prototype.hasOwnProperty.call(req.body, "precio_500");
@@ -1300,23 +1467,26 @@ export const actualizarProductoCatalogo = async (req: Request, res: Response) =>
     }
 
     await aplicarAcabadosPapel(client, idProductoPapel, {
+      idcat_laminado: numeroNullable(idcat_laminado_default),
+      idcat_tipo_asa: numeroNullable(idcat_tipo_asa_default),
       tipo_laminado,
       tipo_asa,
     });
-    if (
-      tipo_hs ||
-      tipo_textura ||
-      uv != null ||
-      ar != null ||
-      tintas_frente_default != null ||
-      tintas_dentro_default != null
-    ) {
-      await guardarAcabadosDefaultPapel(client, Number(id), {
-        tipo_hs, tipo_textura, uv: bool(uv), ar: bool(ar),
-        tintasFrenteCantidad: tintas_frente_default ?? null,
-        tintasDentroCantidad: tintas_dentro_default ?? null,
-      });
-    }
+
+    await guardarAcabadosDefaultPapel(client, idProductoPapel, {
+      idcatLaminado: numeroNullable(idcat_laminado_default),
+      idcatTipoAsa: numeroNullable(idcat_tipo_asa_default),
+      idfoil: numeroNullable(idfoil_default),
+      idcatTextura: numeroNullable(idcat_textura_default),
+      tipo_laminado,
+      tipo_asa,
+      tipo_hs,
+      tipo_textura,
+      uv: bool(uv),
+      ar: bool(ar),
+      tintasFrenteCantidad: tintas_frente_default ?? null,
+      tintasDentroCantidad: tintas_dentro_default ?? null,
+    });
 
     await client.query("COMMIT");
     const prod = await obtenerProductoCatalogoExpoPorId(Number(id), categoria === "carton" ? "carton" : "papel");
@@ -2655,12 +2825,19 @@ export const getOpcionesRegistroExpo = async (_req: Request, res: Response) => {
         pp.precio_3000,
 
         COALESCE(materiales.items, '[]'::json) AS materiales,
+        COALESCE(grupos.items, '[]'::json) AS grupos,
         COALESCE(laminados.items, '[]'::json) AS laminados,
         COALESCE(asas.items, '[]'::json) AS asas,
+
+        laminado_preferido.idcat_laminado AS idcat_laminado_default,
+        laminado_preferido.nombre AS tipo_laminado_default,
+        asa_preferida.idcat_tipo_asa AS idcat_tipo_asa_default,
+        asa_preferida.nombre AS tipo_asa_default,
 
         tf.cantidad AS tintas_frente_default,
         td.cantidad AS tintas_dentro_default,
 
+        pad.idfoil_default,
         (pad.idfoil_default IS NOT NULL) AS hs,
         CASE
           WHEN fo.idfoil IS NOT NULL
@@ -2675,6 +2852,7 @@ export const getOpcionesRegistroExpo = async (_req: Request, res: Response) => {
         END AS tipo_hs,
 
         COALESCE(pad.alto_relieve_default, false) AS ar,
+        pad.idcat_textura_default,
         (pad.idcat_textura_default IS NOT NULL) AS textura,
         tex.nombre AS tipo_textura,
         COALESCE(pad.uv_default, false) AS uv,
@@ -2730,34 +2908,101 @@ export const getOpcionesRegistroExpo = async (_req: Request, res: Response) => {
       LEFT JOIN LATERAL (
         SELECT json_agg(
           json_build_object(
-            'id', cl.idcat_laminado,
-            'nombre', cl.nombre
+            'idgrupo_papel', gp.idgrupo_papel,
+            'precio_sugerido', gp.precio_sugerido,
+            'orden', gp.orden,
+            'materiales', COALESCE(detalles.items, '[]'::json)
           )
-          ORDER BY cl.nombre
+          ORDER BY gp.orden, gp.idgrupo_papel
         ) AS items
+        FROM grupo_papel gp
+        LEFT JOIN LATERAL (
+          SELECT json_agg(
+            json_build_object(
+              'iddetalle_material', dmp.iddetalle_material,
+              'orden', dmp.orden,
+              'idcat_tipo_papel', dmp.idcat_tipo_papel,
+              'tipo_papel', ctp2.nombre,
+              'idcat_calibre', dmp.idcat_calibre,
+              'calibre', cc.nombre
+            )
+            ORDER BY dmp.orden, dmp.iddetalle_material
+          ) AS items
+          FROM detalle_material_papel dmp
+          LEFT JOIN cat_tipo_papel ctp2
+            ON ctp2.idcat_tipo_papel = dmp.idcat_tipo_papel
+          LEFT JOIN cat_calibre cc
+            ON cc.idcat_calibre = dmp.idcat_calibre
+          WHERE dmp.idgrupo_papel = gp.idgrupo_papel
+        ) detalles ON true
+        WHERE gp.idproducto_papel = pp.idproducto_papel
+      ) grupos ON true
+
+      LEFT JOIN LATERAL (
+        SELECT json_agg(
+          json_build_object(
+            'id', opciones.idcat_laminado,
+            'nombre', opciones.nombre
+          )
+          ORDER BY opciones.nombre
+        ) AS items
+        FROM (
+          SELECT DISTINCT cl.idcat_laminado, cl.nombre
+          FROM acabados_papel ap
+          JOIN acabados_laminado al
+            ON al.idacabados_papel = ap.idacabados_papel
+          JOIN cat_laminado cl
+            ON cl.idcat_laminado = al.idcat_laminado
+          WHERE ap.idproducto_papel = pp.idproducto_papel
+        ) opciones
+      ) laminados ON true
+
+      LEFT JOIN LATERAL (
+        SELECT json_agg(
+          json_build_object(
+            'id', opciones.idcat_tipo_asa,
+            'nombre', opciones.nombre
+          )
+          ORDER BY opciones.nombre
+        ) AS items
+        FROM (
+          SELECT DISTINCT ta.idcat_tipo_asa, ta.nombre
+          FROM acabados_papel ap
+          JOIN acabados_asas aa
+            ON aa.idacabados_papel = ap.idacabados_papel
+          JOIN cat_tipo_asa ta
+            ON ta.idcat_tipo_asa = aa.idcat_tipo_asa
+          WHERE ap.idproducto_papel = pp.idproducto_papel
+        ) opciones
+      ) asas ON true
+
+      LEFT JOIN LATERAL (
+        SELECT cl.idcat_laminado, cl.nombre
         FROM acabados_papel ap
         JOIN acabados_laminado al
           ON al.idacabados_papel = ap.idacabados_papel
         JOIN cat_laminado cl
           ON cl.idcat_laminado = al.idcat_laminado
         WHERE ap.idproducto_papel = pp.idproducto_papel
-      ) laminados ON true
+        ORDER BY
+          CASE WHEN al.idcat_laminado = pad.idcat_laminado_default THEN 0 ELSE 1 END,
+          al.idacabados_laminado
+        LIMIT 1
+      ) laminado_preferido ON true
 
       LEFT JOIN LATERAL (
-        SELECT json_agg(
-          json_build_object(
-            'id', ta.idcat_tipo_asa,
-            'nombre', ta.nombre
-          )
-          ORDER BY ta.nombre
-        ) AS items
+        SELECT ta.idcat_tipo_asa, ta.nombre
         FROM acabados_papel ap
         JOIN acabados_asas aa
           ON aa.idacabados_papel = ap.idacabados_papel
         JOIN cat_tipo_asa ta
           ON ta.idcat_tipo_asa = aa.idcat_tipo_asa
         WHERE ap.idproducto_papel = pp.idproducto_papel
-      ) asas ON true
+        ORDER BY
+          CASE WHEN aa.idcat_tipo_asa = pad.idcat_tipo_asa_default THEN 0 ELSE 1 END,
+          aa.idacabados_asa
+        LIMIT 1
+      ) asa_preferida ON true
 
       LEFT JOIN LATERAL (
         SELECT public_id

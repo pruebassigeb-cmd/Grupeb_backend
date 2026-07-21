@@ -86,12 +86,12 @@ export const corsOptions = {
  */
 export const SECURITY_CONSTANTS = {
   RATE_LIMIT_WINDOW_MS:    15 * 60 * 1000,
-  LOGIN_MAX_ATTEMPTS:      5,
+  LOGIN_MAX_ATTEMPTS:      10,
   CREATE_USER_MAX_ATTEMPTS: 10,
   GENERAL_MAX_REQUESTS:    500,
   APPROVAL_MAX_REQUESTS:   1000,
-  JWT_EXPIRATION:          "8h",
-  COOKIE_MAX_AGE:          8 * 60 * 60 * 1000,
+  JWT_EXPIRATION:          "16h",
+  COOKIE_MAX_AGE:          16 * 60 * 60 * 1000,
   BCRYPT_ROUNDS:           12,
   REQUEST_TIMEOUT_MS:      30000,
   DB_QUERY_TIMEOUT_MS:     10000,

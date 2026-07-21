@@ -106,6 +106,9 @@ export async function buscarVariantesPapel(
       LEFT JOIN grupo_papel gp
         ON gp.idproducto_papel = pp.idproducto_papel
 
+      LEFT JOIN producto_acabado_default pad
+        ON pad.idproducto_papel = pp.idproducto_papel
+
       LEFT JOIN LATERAL (
         SELECT
           STRING_AGG(
@@ -143,6 +146,9 @@ export async function buscarVariantesPapel(
         WHERE dmp.idgrupo_papel = gp.idgrupo_papel
       ) materiales ON TRUE
 
+      -- El valor seleccionado por defecto es independiente de las opciones
+      -- permitidas. Si el default es NULL, el producto debe entrar al cotizador
+      -- sin laminado/asa aunque sí tenga alternativas disponibles.
       LEFT JOIN LATERAL (
         SELECT al.idcat_laminado, cl.nombre
         FROM acabados_papel ap
@@ -151,6 +157,7 @@ export async function buscarVariantesPapel(
         JOIN cat_laminado cl
           ON cl.idcat_laminado = al.idcat_laminado
         WHERE ap.idproducto_papel = pp.idproducto_papel
+          AND al.idcat_laminado = pad.idcat_laminado_default
         ORDER BY al.idacabados_laminado
         LIMIT 1
       ) lam ON TRUE
@@ -163,6 +170,7 @@ export async function buscarVariantesPapel(
         JOIN cat_tipo_asa ta
           ON ta.idcat_tipo_asa = aa.idcat_tipo_asa
         WHERE ap.idproducto_papel = pp.idproducto_papel
+          AND aa.idcat_tipo_asa = pad.idcat_tipo_asa_default
         ORDER BY aa.idacabados_asa
         LIMIT 1
       ) asa ON TRUE
@@ -204,9 +212,6 @@ export async function buscarVariantesPapel(
           WHERE ap.idproducto_papel = pp.idproducto_papel
         ) opciones
       ) asas_lista ON TRUE
-
-      LEFT JOIN producto_acabado_default pad
-        ON pad.idproducto_papel = pp.idproducto_papel
 
       LEFT JOIN foil fo
         ON fo.idfoil = pad.idfoil_default

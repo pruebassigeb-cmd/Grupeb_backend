@@ -54,6 +54,7 @@ import expoRoutes from "./routes/expo/expo.routes";
 import procesosPapelRoutes from "./routes/producto_papel/procesosPapel.routes";
 import maquinariaPedidoPapelRoutes from "./routes/producto_papel/maquinariaPedidoPapel.routes";
 import correoRoutes from "./routes/correo/correo.routes";
+import pushRoutes from "./routes/push/push.routes";
 import whatsappRoutes from "./routes/whatsapp/whatsapp.routes";
 import catalogosPapelInsumoRoutes from "./routes/producto_papel/catalogosPapelInsumo.routes";
 import preciosAcabadosPapelRoutes from "./routes/producto_papel/precios_acabados_papel.routes";
@@ -157,6 +158,7 @@ app.use("/api/expo", expoRoutes);
 app.use("/api", procesosPapelRoutes);
 app.use("/api/pedidos", maquinariaPedidoPapelRoutes);
 app.use("/api/correos", correoRoutes);
+app.use("/api/push", pushRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/catalogos-papel/insumo", catalogosPapelInsumoRoutes);
 

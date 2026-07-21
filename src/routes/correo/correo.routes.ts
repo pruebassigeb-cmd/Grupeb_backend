@@ -6,10 +6,11 @@ import { authMiddleware } from "../../middlewares/auth.middleware";
 
 const router = Router();
 
-// Límite conservador: el envío de correo no debería dispararse en ráfaga
+// Límite aflojado (antes 30) — el outbox del PWA puede reintentar varios
+// correos encolados en ráfaga al reconectar tras estar offline.
 const correoLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 30,
+  max: 150,
   standardHeaders: true,
   legacyHeaders: false,
 });

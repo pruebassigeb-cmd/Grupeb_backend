@@ -28,8 +28,8 @@ router.use(
 // RATE LIMITING
 // ==========================
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max:      50,
+  windowMs: 5 * 60 * 1000,
+  max:      30,
   message:  {
     error: "Demasiados intentos de inicio de sesión. Intenta en 15 minutos.",
   },
@@ -49,8 +49,8 @@ const verifyLimiter = rateLimit({
 // Rate limit para verificarOperador — más permisivo ya que
 // los operadores de planta lo usan frecuentemente
 const operadorLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minutos
-  max:      30,
+  windowMs: 2 * 60 * 1000, // 5 minutos
+  max:      20,
   message:  {
     error: "Demasiados intentos de verificación. Intenta en 5 minutos.",
   },

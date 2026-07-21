@@ -17,8 +17,11 @@ const router = Router();
 
 router.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 
-const generalLimiter = rateLimit({ windowMs: 15*60*1000, max: 200, standardHeaders: true, legacyHeaders: false });
-const writeLimiter   = rateLimit({ windowMs: 15*60*1000, max: 60,  standardHeaders: true, legacyHeaders: false });
+// Límites aflojados (antes 250/60) — el outbox del PWA reintenta cotizaciones
+// y correos encolados automáticamente al reconectar, lo que puede sumar más
+// tráfico de escritura en ráfaga del que se contempló originalmente.
+const generalLimiter = rateLimit({ windowMs: 15*60*1000, max: 1000, standardHeaders: true, legacyHeaders: false });
+const writeLimiter   = rateLimit({ windowMs: 15*60*1000, max: 300,  standardHeaders: true, legacyHeaders: false });
 
 router.use(generalLimiter);
 
