@@ -182,6 +182,10 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
         mat_preview.primer_calibre,
         mat_preview.primer_pliego,
 
+        -- Costo base = precio_sugerido del Grupo 1 (para mostrar en la tabla
+        -- principal sin tener que abrir el detalle del producto)
+        grupo1.precio_sugerido            AS costo_base_grupo1,
+
         -- Archivos para vista previa en la tabla
         arch_prev.archivos_raw,
 
@@ -234,6 +238,16 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
         LEFT JOIN cat_calibre    cal ON cal.idcat_calibre    = dm.idcat_calibre
         WHERE gp.idproducto_papel = pp.idproducto_papel
       ) mat_preview ON true
+
+      -- Grupo 1 (el de menor "orden", o el idgrupo_papel más chico si no hay
+      -- orden) — su precio_sugerido es el "costo base" del producto
+      LEFT JOIN LATERAL (
+        SELECT g1.precio_sugerido
+        FROM grupo_papel g1
+        WHERE g1.idproducto_papel = pp.idproducto_papel
+        ORDER BY g1.orden ASC NULLS LAST, g1.idgrupo_papel ASC
+        LIMIT 1
+      ) grupo1 ON true
 
       -- Archivos para preview (max 3, priorizando imagen primero)
       LEFT JOIN LATERAL (
