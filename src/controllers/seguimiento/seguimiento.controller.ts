@@ -120,6 +120,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
         op.no_produccion,
         op.idproduccion,
+        op.fecha                                        AS fecha_habilitacion_orden,
 
         CASE WHEN (v.abono >= v.anticipo OR v.estado_administrativo_cat_idestado_administrativo_cat IN (2, 6))
               AND dp.estado_administrativo_cat_idestado_administrativo_cat = 3
@@ -302,6 +303,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
         op.no_produccion,
         op.idproduccion,
+        op.fecha                                        AS fecha_habilitacion_orden,
 
         CASE WHEN (v.abono >= v.anticipo OR v.estado_administrativo_cat_idestado_administrativo_cat IN (2, 6))
               AND dp.estado_administrativo_cat_idestado_administrativo_cat = 3
@@ -537,6 +539,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         diseno_aprobado: Boolean(row.producto_diseno_aprobado),
         no_produccion: row.no_produccion ?? null,
         idproduccion: row.idproduccion ?? null,
+        fecha_habilitacion_orden: row.fecha_habilitacion_orden ?? null,
         puede_pdf: Boolean(row.puede_pdf),
         extrusion_estado: row.lleva_extrusion ? mapEstadoProceso(row.extrusion_estado_id) : "no-aplica",
         impresion_estado: row.lleva_impresion ? mapEstadoProceso(row.impresion_estado_id) : "no-aplica",
@@ -616,6 +619,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         diseno_aprobado: Boolean(row.producto_diseno_aprobado),
         no_produccion: row.no_produccion ?? null,
         idproduccion: row.idproduccion ?? null,
+        fecha_habilitacion_orden: row.fecha_habilitacion_orden ?? null,
         puede_pdf: Boolean(row.puede_pdf),
 
         // Columnas de plástico (Ext/Imp/Bol/Asa) siempre no-aplica para
