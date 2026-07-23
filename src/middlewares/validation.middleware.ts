@@ -595,6 +595,28 @@ export const sanitizeInput = (input: string): string => {
 };
 
 // ==========================
+// HELPER — al menos una medida (altura o ancho) > 0
+// Antes se exigía altura>0 Y ancho>0 siempre. Bobina y Rollo perforado
+// pueden venir con una sola medida (la otra en 0/ausente), así que ahora
+// se exige que AL MENOS UNA de las dos sea un número > 0.
+// ==========================
+const validarMedidasAlturaAncho = (altura: any, ancho: any, errors: string[]) => {
+  if (altura !== undefined && altura !== null && typeof altura !== "number") {
+    errors.push("La altura debe ser un número");
+  }
+  if (ancho !== undefined && ancho !== null && typeof ancho !== "number") {
+    errors.push("El ancho debe ser un número");
+  }
+
+  const alturaValida = typeof altura === "number" && altura > 0;
+  const anchoValido = typeof ancho === "number" && ancho > 0;
+
+  if (!alturaValida && !anchoValido) {
+    errors.push("Debes indicar al menos una medida (altura o ancho) mayor a 0");
+  }
+};
+
+// ==========================
 // VALIDACIÓN CREAR PRODUCTO PLÁSTICO
 // ==========================
 export const validateCreateProductoPlastico = (
@@ -614,11 +636,7 @@ export const validateCreateProductoPlastico = (
   if (!calibre_id || !Number.isInteger(calibre_id))
     errors.push("El calibre es requerido y debe ser un número entero");
 
-  if (!altura || typeof altura !== "number" || altura <= 0)
-    errors.push("La altura es requerida y debe ser mayor a 0");
-
-  if (!ancho || typeof ancho !== "number" || ancho <= 0)
-    errors.push("El ancho es requerido y debe ser mayor a 0");
+  validarMedidasAlturaAncho(altura, ancho, errors);
 
   if (!medida || typeof medida !== "string" || medida.trim() === "")
     errors.push("La medida formateada es requerida");
@@ -653,11 +671,7 @@ export const validateUpdateProductoPlastico = (
   if (!calibre_id || !Number.isInteger(calibre_id))
     errors.push("El calibre es requerido y debe ser un número entero");
 
-  if (!altura || typeof altura !== "number" || altura <= 0)
-    errors.push("La altura es requerida y debe ser mayor a 0");
-
-  if (!ancho || typeof ancho !== "number" || ancho <= 0)
-    errors.push("El ancho es requerido y debe ser mayor a 0");
+  validarMedidasAlturaAncho(altura, ancho, errors);
 
   if (!medida || typeof medida !== "string" || medida.trim() === "")
     errors.push("La medida formateada es requerida");
@@ -766,4 +780,3 @@ export const validateCreateCalibrePlastico = (
   req.body.gramos = gramos ? Number(gramos) : null;
   next();
 };
- 

@@ -552,6 +552,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           sd.idsolicitud_detalle,
           sd.cantidad,
           sd.precio_total,
+          sd.precio_unitario,
           sd.aprobado,
           sd.kilogramos,
           sd.modo_cantidad,
@@ -830,6 +831,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
             iddetalle: row.idsolicitud_detalle,
             cantidad: Number(row.cantidad),
             precio_total: Number(row.precio_total),
+            precio_unitario: row.precio_unitario != null ? Number(row.precio_unitario) : null,
             aprobado: row.aprobado,
             kilogramos: row.kilogramos != null ? Number(row.kilogramos) : null,
             modo_cantidad: row.modo_cantidad || "unidad",
@@ -1398,16 +1400,16 @@ export const actualizarCotizacionProductos = async (
           if (det.iddetalle) {
             await client.query(
               `UPDATE solicitud_detalle SET
-                 cantidad = $1, precio_total = $2, modo_cantidad = 'unidad'
-               WHERE idsolicitud_detalle = $3`,
-              [det.cantidad, det.precio_total, det.iddetalle],
+                 cantidad = $1, precio_total = $2, precio_unitario = $3, modo_cantidad = 'unidad'
+               WHERE idsolicitud_detalle = $4`,
+              [det.cantidad, det.precio_total, det.precio_unitario ?? null, det.iddetalle],
             );
           } else {
             await client.query(
               `INSERT INTO solicitud_detalle
-                 (solicitud_producto_id, cantidad, precio_total, aprobado, kilogramos, modo_cantidad)
-               VALUES ($1,$2,$3,NULL,NULL,'unidad')`,
-              [prod.idsolicitud_producto, det.cantidad, det.precio_total],
+                 (solicitud_producto_id, cantidad, precio_total, precio_unitario, aprobado, kilogramos, modo_cantidad)
+               VALUES ($1,$2,$3,$4,NULL,NULL,'unidad')`,
+              [prod.idsolicitud_producto, det.cantidad, det.precio_total, det.precio_unitario ?? null],
             );
           }
         }
@@ -1595,9 +1597,9 @@ export const actualizarCotizacionProductos = async (
           if (Number(det.cantidad) <= 0 || Number(det.precio_total) <= 0) continue;
           await client.query(
             `INSERT INTO solicitud_detalle
-               (solicitud_producto_id, cantidad, precio_total, aprobado, kilogramos, modo_cantidad)
-             VALUES ($1,$2,$3,NULL,NULL,'unidad')`,
-            [nuevoSpPapelId, det.cantidad, det.precio_total],
+               (solicitud_producto_id, cantidad, precio_total, precio_unitario, aprobado, kilogramos, modo_cantidad)
+             VALUES ($1,$2,$3,$4,NULL,NULL,'unidad')`,
+            [nuevoSpPapelId, det.cantidad, det.precio_total, det.precio_unitario ?? null],
           );
         }
         continue;

@@ -5,6 +5,7 @@ import {
   getPedidosDisponibles,
   getBultosPedido,
   createEnvio,
+  marcarEnvioCompletado,
   getEnviosPedido,
   updateEstadoEnvio,
   deleteEnvio,
@@ -57,6 +58,9 @@ router.patch("/:id/guia", authMiddleware, writeLimiter, validateId, updateGuiaEn
 
 // Crear envío
 router.post("/", authMiddleware, writeLimiter, preventSQLInjection, createEnvio);
+
+// Marcar envío completado (atajo — salta preparando/en_camino)
+router.post("/marcar-completado", authMiddleware, writeLimiter, preventSQLInjection, marcarEnvioCompletado);
 
 // Actualizar estado
 router.patch("/:id/estado", authMiddleware, writeLimiter, validateId, updateEstadoEnvio);

@@ -380,6 +380,167 @@ export const createEnvio = async (req: Request, res: Response) => {
   }
 };
 
+// ==========================
+// MARCAR ENVÍO COMPLETADO (ATAJO — salta preparando/en_camino)
+// POST /envios/marcar-completado
+// ==========================
+export const marcarEnvioCompletado = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const {
+      idsolicitud,
+      idproduccion,
+      tipo,
+      usuarios_idusuario,
+      unidades_idunidad,
+      paqueteria_idpaqueteria,
+      numero_guia,
+      costo_flete,
+      observaciones,
+      nombre_quien_recogio,
+    } = req.body;
+
+    if (!idsolicitud || !idproduccion || !tipo)
+      return res.status(400).json({ error: "Faltan datos requeridos (idsolicitud, idproduccion, tipo)" });
+
+    if (!["local", "paqueteria", "recoleccion"].includes(tipo))
+      return res.status(400).json({ error: "Tipo de envío inválido" });
+
+    await client.query("BEGIN");
+
+    // ── Bultos pendientes de esta orden de producción ──
+    const { rows: bultosPendientes } = await client.query(
+      `SELECT b.idbulto
+       FROM bultos b
+       JOIN (
+         SELECT idbolseo AS id_proceso, 'bolseo' AS tipo_proceso, orden_produccion_idproduccion
+         FROM bolseo WHERE orden_produccion_idproduccion = $1
+         UNION ALL
+         SELECT idasa_flexible AS id_proceso, 'asa_flexible' AS tipo_proceso, orden_produccion_idproduccion
+         FROM asa_flexible WHERE orden_produccion_idproduccion = $1
+       ) proc ON (
+         (proc.tipo_proceso = 'bolseo'       AND b.bolseo_idbolseo             = proc.id_proceso)
+         OR
+         (proc.tipo_proceso = 'asa_flexible' AND b.asa_flexible_idasa_flexible = proc.id_proceso)
+       )
+       LEFT JOIN envio_bulto eb ON eb.bultos_idbulto = b.idbulto
+       WHERE eb.bultos_idbulto IS NULL`,
+      [idproduccion]
+    );
+
+    if (bultosPendientes.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Esta orden no tiene bultos pendientes de envío." });
+    }
+
+    const bultos_ids = bultosPendientes.map((b: any) => Number(b.idbulto));
+
+    // ── Calcular es_parcialidad (mismo criterio que createEnvio) ──
+    const { rows: totalRows } = await client.query(`
+      SELECT COUNT(DISTINCT b.idbulto) AS total
+      FROM solicitud_producto sp
+      JOIN orden_produccion op ON op.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN bolseo bol ON bol.orden_produccion_idproduccion = op.idproduccion
+      LEFT JOIN asa_flexible af ON af.orden_produccion_idproduccion = op.idproduccion
+      LEFT JOIN bultos b ON (
+        b.bolseo_idbolseo = bol.idbolseo
+        OR b.asa_flexible_idasa_flexible = af.idasa_flexible
+      )
+      WHERE sp.solicitud_idsolicitud = $1
+        AND b.idbulto IS NOT NULL
+    `, [idsolicitud]);
+    const totalBultosPedido = Number(totalRows[0].total);
+
+    const { rows: yaEnviadosRows } = await client.query(`
+      SELECT COUNT(DISTINCT eb.bultos_idbulto) AS enviados
+      FROM envio_bulto eb
+      JOIN envio e ON e.idenvio = eb.envio_idenvio
+      WHERE e.solicitud_idsolicitud = $1
+    `, [idsolicitud]);
+    const bultosYaEnviados = Number(yaEnviadosRows[0].enviados);
+    const totalDespues = bultosYaEnviados + bultos_ids.length;
+
+    const { rows: produccionRows } = await client.query(`
+      SELECT
+        COUNT(*) AS total_procesos,
+        SUM(CASE WHEN op.idestado_produccion_cat = 3 THEN 1 ELSE 0 END) AS terminados
+      FROM solicitud_producto sp
+      JOIN orden_produccion op ON op.idsolicitud_producto = sp.idsolicitud_producto
+      WHERE sp.solicitud_idsolicitud = $1
+    `, [idsolicitud]);
+    const totalProcesos = Number(produccionRows[0].total_procesos);
+    const terminados = Number(produccionRows[0].terminados);
+    const produccionCompleta = totalProcesos > 0 && totalProcesos === terminados;
+
+    const es_parcialidad = !produccionCompleta || totalDespues < totalBultosPedido;
+
+    // ── Crear envío directo en estado 'entregado' ──
+    const { rows: envioRows } = await client.query(
+      `INSERT INTO envio (
+        solicitud_idsolicitud, tipo, estado,
+        usuarios_idusuario, unidades_idunidad,
+        paqueteria_idpaqueteria, numero_guia,
+        costo_flete, observaciones, es_parcialidad
+      ) VALUES ($1,$2,'entregado',$3,$4,$5,$6,$7,$8,$9)
+      RETURNING idenvio, estado, fecha_envio, es_parcialidad`,
+      [
+        idsolicitud, tipo,
+        tipo === "local" ? (usuarios_idusuario || null) : null,
+        tipo === "local" ? (unidades_idunidad || null) : null,
+        tipo === "paqueteria" ? (paqueteria_idpaqueteria || null) : null,
+        tipo === "paqueteria" ? (numero_guia || null) : null,
+        costo_flete || null,
+        observaciones || null,
+        es_parcialidad,
+      ]
+    );
+
+    const idenvio = envioRows[0].idenvio;
+
+    for (const idbulto of bultos_ids) {
+      await client.query(
+        `INSERT INTO envio_bulto (envio_idenvio, bultos_idbulto) VALUES ($1,$2)`,
+        [idenvio, idbulto]
+      );
+    }
+
+    // ── Bitácora: se guarda solo fecha/hora (atajo). Si mandaron datos de quien recogió, se guardan también. ──
+    await client.query(
+      `INSERT INTO bitacora_reparto (
+        envio_idenvio, usuarios_idusuario, unidades_idunidad,
+        fecha, hora_salida, hora_llegada,
+        recoleccion_nombre_quien_recogio, observacion_extra
+      ) VALUES ($1,$2,$3, CURRENT_DATE, NOW(), NOW(), $4, $5)`,
+      [
+        idenvio,
+        tipo === "local" ? (usuarios_idusuario || null) : null,
+        tipo === "local" ? (unidades_idunidad || null) : null,
+        tipo === "recoleccion" ? (nombre_quien_recogio || null) : null,
+        "Marcado como envío completado (atajo)",
+      ]
+    );
+
+    await client.query("COMMIT");
+    console.log(`✅ Envío marcado como completado (atajo): ${idenvio} | orden ${idproduccion} | ${bultos_ids.length} bulto(s)`);
+
+    res.status(201).json({
+      message: "Envío marcado como completado",
+      envio: {
+        idenvio,
+        estado: envioRows[0].estado,
+        fecha_envio: envioRows[0].fecha_envio,
+        es_parcialidad: envioRows[0].es_parcialidad,
+      },
+    });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    console.error("❌ MARCAR ENVIO COMPLETADO ERROR:", error.message);
+    res.status(500).json({ error: "Error al marcar envío como completado" });
+  } finally {
+    client.release();
+  }
+};
+
 
 // ==========================
 // OBTENER ENVÍOS DE RECOLECCIÓN
@@ -875,6 +1036,13 @@ export const updateClavesSatBultos = async (req: Request, res: Response) => {
 // ==========================
 // BULTOS POR ORDEN DE PRODUCCIÓN
 // ==========================
+const toIsoEnvios = (v: any): string | null => {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === "string") return v;
+  return null;
+};
+
 export const getBultosPorProduccion = async (req: Request, res: Response) => {
   try {
     const idsolicitud = Number(req.params.idsolicitud);
@@ -966,6 +1134,21 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
          un.placa,
          p.idpaqueteria,
          p.nombre      AS paqueteria_nombre,
+         br.idbitacora,
+         br.hora_salida,
+         br.hora_llegada,
+         br.observacion,
+         br.observacion_extra,
+         br.firma,
+         br.recoleccion_nombre_quien_recogio,
+         br.recoleccion_empresa,
+         br.recoleccion_unidad_marca,
+         br.recoleccion_unidad_modelo,
+         br.recoleccion_unidad_placas,
+         br.recoleccion_foto_url,
+         nr.idnota,
+         nr.no_nota,
+         nr.created_at AS nota_created_at,
          COUNT(eb2.bultos_idbulto) AS total_bultos
        FROM envio e
        JOIN envio_bulto eb ON eb.envio_idenvio = e.idenvio
@@ -984,6 +1167,8 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
        LEFT JOIN usuarios   u  ON u.idusuario   = e.usuarios_idusuario
        LEFT JOIN unidades   un ON un.idunidad    = e.unidades_idunidad
        LEFT JOIN paqueteria p  ON p.idpaqueteria = e.paqueteria_idpaqueteria
+       LEFT JOIN bitacora_reparto br ON br.envio_idenvio = e.idenvio
+       LEFT JOIN nota_remision nr ON nr.envio_idenvio = e.idenvio AND nr.es_multi = FALSE
        JOIN envio_bulto eb2 ON eb2.envio_idenvio = e.idenvio
        WHERE e.estado != 'cancelado'
        GROUP BY
@@ -992,7 +1177,13 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
          e.fecha_entrega_estimada, e.observaciones,
          u.idusuario, u.nombre,
          un.idunidad, un.marca, un.modelo, un.placa,
-         p.idpaqueteria, p.nombre
+         p.idpaqueteria, p.nombre,
+         br.idbitacora, br.hora_salida, br.hora_llegada,
+         br.observacion, br.observacion_extra, br.firma,
+         br.recoleccion_nombre_quien_recogio, br.recoleccion_empresa,
+         br.recoleccion_unidad_marca, br.recoleccion_unidad_modelo,
+         br.recoleccion_unidad_placas, br.recoleccion_foto_url,
+         nr.idnota, nr.no_nota, nr.created_at
        ORDER BY e.idenvio DESC`,
       [idproduccion]
     );
@@ -1015,32 +1206,55 @@ export const getBultosPorProduccion = async (req: Request, res: Response) => {
         idenvio: r.idenvio != null ? Number(r.idenvio) : null,
         estado_envio: r.estado_envio || null,
       })),
-      envios: enviosRows.map((e: any) => ({
-        idenvio: Number(e.idenvio),
-        tipo: e.tipo as "local" | "paqueteria",
-        estado: e.estado as "preparando" | "en_camino" | "entregado",
-        es_parcialidad: Boolean(e.es_parcialidad),
-        numero_guia: e.numero_guia || null,
-        costo_flete: e.costo_flete != null ? Number(e.costo_flete) : null,
-        fecha_envio: e.fecha_envio,
-        fecha_entrega_estimada: e.fecha_entrega_estimada || null,
-        observaciones: e.observaciones || null,
-        total_bultos: Number(e.total_bultos),
-        chofer: e.idusuario ? {
-          idusuario: Number(e.idusuario),
-          nombre: e.chofer_nombre,
-        } : null,
-        unidad: e.idunidad ? {
-          idunidad: Number(e.idunidad),
-          nombre: `${e.marca} ${e.modelo} - ${e.placa}`,
-        } : null,
-        paqueteria: e.idpaqueteria ? {
-          idpaqueteria: Number(e.idpaqueteria),
-          nombre: e.paqueteria_nombre,
-        } : null,
-      })),
+      envios: enviosRows.map((e: any) => {
+        const esAtajo = e.observacion_extra === "Marcado como envío completado (atajo)";
+        return {
+          idenvio: Number(e.idenvio),
+          tipo: e.tipo as "local" | "paqueteria" | "recoleccion",
+          estado: e.estado as "preparando" | "en_camino" | "entregado",
+          es_parcialidad: Boolean(e.es_parcialidad),
+          numero_guia: e.numero_guia || null,
+          costo_flete: e.costo_flete != null ? Number(e.costo_flete) : null,
+          fecha_envio: e.fecha_envio,
+          fecha_entrega_estimada: e.fecha_entrega_estimada || null,
+          observaciones: e.observaciones || null,
+          total_bultos: Number(e.total_bultos),
+          chofer: e.idusuario ? {
+            idusuario: Number(e.idusuario),
+            nombre: e.chofer_nombre,
+          } : null,
+          unidad: e.idunidad ? {
+            idunidad: Number(e.idunidad),
+            nombre: `${e.marca} ${e.modelo} - ${e.placa}`,
+          } : null,
+          paqueteria: e.idpaqueteria ? {
+            idpaqueteria: Number(e.idpaqueteria),
+            nombre: e.paqueteria_nombre,
+          } : null,
+          // ── Detalle completo (bitácora / recolección / nota) ──
+          idbitacora: e.idbitacora ? Number(e.idbitacora) : null,
+          hora_salida: toIsoEnvios(e.hora_salida),
+          hora_llegada: toIsoEnvios(e.hora_llegada),
+          observacion: e.observacion || null,
+          observacion_extra: esAtajo ? null : (e.observacion_extra || null),
+          firma: e.firma || null,
+          es_atajo: esAtajo,
+          recoleccion_datos: e.recoleccion_nombre_quien_recogio ? {
+            nombre_quien_recogio: e.recoleccion_nombre_quien_recogio,
+            empresa: e.recoleccion_empresa || null,
+            unidad_marca: e.recoleccion_unidad_marca || null,
+            unidad_modelo: e.recoleccion_unidad_modelo || null,
+            unidad_placas: e.recoleccion_unidad_placas || null,
+            tiene_foto: !!e.recoleccion_foto_url,
+          } : null,
+          nota_remision: e.idnota ? {
+            idnota: Number(e.idnota),
+            no_nota: e.no_nota,
+            created_at: e.nota_created_at,
+          } : null,
+        };
+      }),
     });
-
   } catch (error: any) {
     console.error("❌ GET BULTOS POR PRODUCCION ERROR:", error.message);
     return res.status(500).json({ error: "Error al obtener bultos por producción" });

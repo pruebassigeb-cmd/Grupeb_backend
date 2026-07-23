@@ -621,12 +621,6 @@ export const actualizarPedido = async (req: Request, res: Response) => {
           continue;
         }
 
-        if (!["hojeado", "guillotina"].includes(prod.metodo_hojeado)) {
-          await client.query("ROLLBACK");
-          return res.status(400).json({
-            error: `Selecciona Hojeado o Guillotina para el producto "${prod.nombre ?? prod.idsolicitud_producto}"`,
-          });
-        }
         if (!prod.tintasId) {
           await client.query("ROLLBACK");
           return res.status(400).json({
@@ -971,12 +965,6 @@ export const actualizarPedido = async (req: Request, res: Response) => {
     for (const prod of (productos_nuevos as any[])) {
       // ── Producto de PAPEL nuevo ─────────────────────────────────────────────
       if (esProductoPapel(prod)) {
-        if (!["hojeado", "guillotina"].includes(prod.metodo_hojeado)) {
-          await client.query("ROLLBACK");
-          return res.status(400).json({
-            error: `Selecciona Hojeado o Guillotina para el producto nuevo "${prod.nombre ?? prod.idproducto_papel}"`,
-          });
-        }
         if (!prod.tintasId) {
           await client.query("ROLLBACK");
           return res.status(400).json({

@@ -146,7 +146,40 @@ export const getSeguimiento = async (req: Request, res: Response) => {
              THEN d.fecha ELSE NULL END                                     AS diseno_fecha_estado,
         CASE WHEN od.estado != 'aprobado'
              THEN od.created_at ELSE NULL END                               AS od_fecha_estado,
-        en.fecha_envio                                                      AS envio_fecha_estado,
+
+        -- ── Envío: calculado por orden de producción (op.idproduccion), no por solicitud ──
+        -- (antes venía de un JOIN a nivel solicitud que duplicaba filas si
+        -- había más de un envío por pedido; ahora son subqueries correlacionadas)
+        (
+          SELECT COUNT(DISTINCT b.idbulto)
+          FROM bultos b
+          WHERE op.idproduccion IS NOT NULL AND (
+            b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
+            OR
+            b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+          )
+        ) AS envio_total_bultos,
+        (
+          SELECT COUNT(DISTINCT eb.bultos_idbulto)
+          FROM envio_bulto eb
+          JOIN bultos b ON b.idbulto = eb.bultos_idbulto
+          WHERE op.idproduccion IS NOT NULL AND (
+            b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
+            OR
+            b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+          )
+        ) AS envio_bultos_enviados,
+        (
+          SELECT MAX(e2.fecha_envio)
+          FROM envio e2
+          JOIN envio_bulto eb2 ON eb2.envio_idenvio = e2.idenvio
+          JOIN bultos b2 ON b2.idbulto = eb2.bultos_idbulto
+          WHERE op.idproduccion IS NOT NULL AND (
+            b2.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
+            OR
+            b2.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+          )
+        ) AS envio_fecha_estado,
 
         EXISTS (
           SELECT 1 FROM tipo_producto_plastico_proceso tppp2
@@ -258,8 +291,6 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           AND sd.aprobado = true
       LEFT JOIN orden_diseno od
           ON od.solicitud_producto_id = sp.idsolicitud_producto
-      LEFT JOIN envio en
-          ON en.solicitud_idsolicitud = s.idsolicitud
 
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
@@ -319,7 +350,41 @@ export const getSeguimiento = async (req: Request, res: Response) => {
              THEN d.fecha ELSE NULL END                                     AS diseno_fecha_estado,
         CASE WHEN od.estado != 'aprobado'
              THEN od.created_at ELSE NULL END                               AS od_fecha_estado,
-        en.fecha_envio                                                      AS envio_fecha_estado,
+
+        -- ── Envío: mismo criterio que plástico (subquery por orden). Para
+        -- papel hoy siempre da 0 bultos porque los bultos aún no se ligan
+        -- a procesos de papel (pendiente adaptar cuando se implemente) —
+        -- eso cae naturalmente en "no-aplica" en el mapeo de abajo.
+        (
+          SELECT COUNT(DISTINCT b.idbulto)
+          FROM bultos b
+          WHERE op.idproduccion IS NOT NULL AND (
+            b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
+            OR
+            b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+          )
+        ) AS envio_total_bultos,
+        (
+          SELECT COUNT(DISTINCT eb.bultos_idbulto)
+          FROM envio_bulto eb
+          JOIN bultos b ON b.idbulto = eb.bultos_idbulto
+          WHERE op.idproduccion IS NOT NULL AND (
+            b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
+            OR
+            b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+          )
+        ) AS envio_bultos_enviados,
+        (
+          SELECT MAX(e2.fecha_envio)
+          FROM envio e2
+          JOIN envio_bulto eb2 ON eb2.envio_idenvio = e2.idenvio
+          JOIN bultos b2 ON b2.idbulto = eb2.bultos_idbulto
+          WHERE op.idproduccion IS NOT NULL AND (
+            b2.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
+            OR
+            b2.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+          )
+        ) AS envio_fecha_estado,
 
         -- ── Ficha del producto de papel ──
         pp.idproducto_papel,
@@ -439,8 +504,6 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           AND sd.aprobado = true
       LEFT JOIN orden_diseno od
           ON od.solicitud_producto_id = sp.idsolicitud_producto
-      LEFT JOIN envio en
-          ON en.solicitud_idsolicitud = s.idsolicitud
 
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
@@ -514,6 +577,16 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       }
     };
 
+    // Envío: mismo vocabulario que el resto de columnas (pendiente/proceso/
+    // finalizado/no-aplica) para que el Badge/BadgeTexto ya existentes lo
+    // pinten sin cambios. "no-aplica" cuando la orden aún no tiene bultos.
+    const mapEstadoEnvio = (totalBultos: number, bultosEnviados: number): string => {
+      if (totalBultos === 0) return "no-aplica";
+      if (bultosEnviados === 0) return "pendiente";
+      if (bultosEnviados < totalBultos) return "proceso";
+      return "finalizado";
+    };
+
     const resultadoPlastico = rowsPlastico.map((row: any) => {
       const mat = (row.material || "").toUpperCase();
       const esBopp = mat.includes("BOPP") || mat.includes("CELOFAN") || mat.includes("CELOFÁN");
@@ -556,6 +629,10 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         diseno_fecha_estado: row.diseno_fecha_estado ?? null,
         od_fecha_estado: row.od_fecha_estado ?? null,
         envio_fecha_estado: row.envio_fecha_estado ?? null,
+        estado_envio: mapEstadoEnvio(
+          Number(row.envio_total_bultos ?? 0),
+          Number(row.envio_bultos_enviados ?? 0),
+        ),
 
         nombre_producto: row.nombre_producto || "",
         medida: row.medida || "",
@@ -644,6 +721,10 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         diseno_fecha_estado: row.diseno_fecha_estado ?? null,
         od_fecha_estado: row.od_fecha_estado ?? null,
         envio_fecha_estado: row.envio_fecha_estado ?? null,
+        estado_envio: mapEstadoEnvio(
+          Number(row.envio_total_bultos ?? 0),
+          Number(row.envio_bultos_enviados ?? 0),
+        ),
 
         nombre_producto: row.nombre_producto || "",
         descripcion: row.descripcion ?? null,
