@@ -1,4 +1,3 @@
-
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import { getPresignedUrl } from "../../config/multer";
@@ -183,8 +182,21 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
         mat_preview.primer_pliego,
 
         -- Costo base = precio_sugerido del Grupo 1 (para mostrar en la tabla
-        -- principal sin tener que abrir el detalle del producto)
+        -- principal sin tener que abrir el detalle del producto). También se
+        -- manda su idgrupo_papel para poder editar ese costo directo desde
+        -- la celda de la tabla (modo edición inline), y el total de grupos
+        -- para saber si el producto tiene más de una opción de material.
+        grupo1.idgrupo_papel              AS idgrupo_papel_grupo1,
         grupo1.precio_sugerido            AS costo_base_grupo1,
+        grupos_total.total                AS total_grupos,
+
+        -- Datos para el modal general de costo de laminado (ver lateral
+        -- lam_info / suaje_info más abajo)
+        lam_info.idrollo_lam,
+        lam_info.rollo_lam_nombre,
+        lam_info.rollo_lam_medida_ancho,
+        lam_info.desarrollo_laminado,
+        suaje_info.piezas_suaje,
 
         -- Archivos para vista previa en la tabla
         arch_prev.archivos_raw,
@@ -242,12 +254,45 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
       -- Grupo 1 (el de menor "orden", o el idgrupo_papel más chico si no hay
       -- orden) — su precio_sugerido es el "costo base" del producto
       LEFT JOIN LATERAL (
-        SELECT g1.precio_sugerido
+        SELECT g1.idgrupo_papel, g1.precio_sugerido
         FROM grupo_papel g1
         WHERE g1.idproducto_papel = pp.idproducto_papel
         ORDER BY g1.orden ASC NULLS LAST, g1.idgrupo_papel ASC
         LIMIT 1
       ) grupo1 ON true
+
+      -- Cuántos grupos (opciones de material) tiene el producto en total —
+      -- se usa en la tabla para avisar cuando hay más de uno y así el
+      -- usuario sepa que debe abrir el detalle para editar los demás costos.
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS total
+        FROM grupo_papel gt
+        WHERE gt.idproducto_papel = pp.idproducto_papel
+      ) grupos_total ON true
+
+      -- Datos que alimentan la fórmula de costo de laminado (ver
+      -- costoLaminado.utils.ts en el frontend) — se traen aquí, en el mismo
+      -- listado, para que el modal general de "Editar costos de laminado"
+      -- pueda mostrar todos los productos de un jalón sin pedir el detalle
+      -- de cada uno por separado.
+      LEFT JOIN LATERAL (
+        SELECT
+          a.idrollo_lam,
+          rl.nombre       AS rollo_lam_nombre,
+          rl.medida_ancho AS rollo_lam_medida_ancho,
+          a.desarrollo_laminado
+        FROM acabados_papel a
+        LEFT JOIN rollo_lam rl ON rl.idrollo_lam = a.idrollo_lam
+        WHERE a.idproducto_papel = pp.idproducto_papel
+        LIMIT 1
+      ) lam_info ON true
+
+      LEFT JOIN LATERAL (
+        SELECT s.pzs AS piezas_suaje
+        FROM suaje_papel s
+        WHERE s.idproducto_papel = pp.idproducto_papel
+        LIMIT 1
+      ) suaje_info ON true
 
       -- Archivos para preview (max 3, priorizando imagen primero)
       LEFT JOIN LATERAL (
@@ -1142,6 +1187,195 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
     await client.query("ROLLBACK");
     console.error("❌ PUT PRODUCTO PAPEL ERROR:", error.message);
     return res.status(500).json({ error: "Error al actualizar el producto", detalle: error.message });
+  } finally {
+    client.release();
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PATCH /productos-papel/:id/costo-base
+// ═══════════════════════════════════════════════════════════════════════════
+// Actualización rápida del costo base (precio_sugerido) de uno o varios
+// grupos de un producto, SIN pasar por el formulario completo de edición.
+// Se usa desde el botón "Costo base" en la tabla de Papel.tsx: permite
+// registrar el costo por primera vez (si quedó vacío al dar de alta) o
+// corregirlo después, sin tocar materiales, suaje, acabados ni maquinaria.
+// Un producto puede tener 1 o N grupos (opciones de material), cada uno con
+// su propio costo — por eso el body acepta un arreglo de grupos.
+export const actualizarCostoBaseGrupos = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const { grupos } = req.body as {
+      grupos: { idgrupo_papel: number; precio_sugerido: number | string | null }[];
+    };
+
+    if (!Array.isArray(grupos) || grupos.length === 0) {
+      return res.status(400).json({ error: "Se requiere al menos un grupo" });
+    }
+
+    const idusuario = (req as any).user?.id ?? null;
+
+    await client.query("BEGIN");
+
+    // Confirma que el producto exista y esté activo antes de tocar sus grupos.
+    const { rows: prodRows } = await client.query(
+      `SELECT idproducto_papel FROM producto_papel WHERE idproducto_papel = $1 AND activo = true`,
+      [id]
+    );
+    if (prodRows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
+    const actualizados: { idgrupo_papel: number; precio_sugerido: number | null }[] = [];
+
+    for (const g of grupos) {
+      if (!g.idgrupo_papel) continue;
+
+      const precio =
+        g.precio_sugerido === null || g.precio_sugerido === undefined || g.precio_sugerido === ""
+          ? null
+          : Number(g.precio_sugerido);
+
+      if (precio !== null && (!Number.isFinite(precio) || precio < 0)) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: `Costo inválido para el grupo ${g.idgrupo_papel}` });
+      }
+
+      // El WHERE idproducto_papel = $4 evita que, por error, se actualice un
+      // grupo que en realidad pertenece a otro producto.
+      const { rows } = await client.query(
+        `UPDATE grupo_papel
+         SET precio_sugerido = $1, actualizado_por = $2
+         WHERE idgrupo_papel = $3 AND idproducto_papel = $4
+         RETURNING idgrupo_papel, precio_sugerido`,
+        [precio, idusuario, g.idgrupo_papel, id]
+      );
+
+      if (rows.length > 0) actualizados.push(rows[0]);
+    }
+
+    await client.query("COMMIT");
+    console.log(`✅ Costo base actualizado: producto=${id}, grupos=${actualizados.length}`);
+    return res.json({ message: "Costo base actualizado correctamente", grupos: actualizados });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    console.error("❌ PATCH COSTO BASE PAPEL ERROR:", error.message);
+    return res.status(500).json({ error: "Error al actualizar el costo base", detalle: error.message });
+  } finally {
+    client.release();
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PATCH /productos-papel/:id/costo-laminado
+// ═══════════════════════════════════════════════════════════════════════════
+// Actualización rápida del costo de laminado, SIN pasar por el formulario
+// completo. A diferencia del costo base (un solo número), aquí se tocan 3
+// campos que alimentan la fórmula (ver costoLaminado.utils.ts en el
+// frontend): idrollo_lam y desarrollo_laminado (en acabados_papel) y pzs
+// (en suaje_papel) — más el resultado ya calculado, que se guarda en
+// producto_papel.costo_laminado igual que hace actualizarProductoPapel
+// (el backend no recalcula, solo valida).
+//
+// IMPORTANTE: acabados_papel y suaje_papel tienen muchas otras columnas
+// (pegamento, refuerzo, empaque, corte, dobles, etc.) que este endpoint NO
+// debe tocar — por eso los UPDATE de abajo solo mencionan las columnas que
+// nos interesan, a diferencia del upsert completo de actualizarProductoPapel.
+export const actualizarCostoLaminado = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const { idrollo_lam, desarrollo_laminado, piezas_suaje, costo_laminado } = req.body as {
+      idrollo_lam?: number | string | null;
+      desarrollo_laminado?: number | string | null;
+      piezas_suaje?: number | string | null;
+      costo_laminado?: number | string | null;
+    };
+
+    const idusuario = (req as any).user?.id ?? null;
+
+    const costoLaminadoValidado = costoLaminadoONull(costo_laminado);
+    if (
+      costo_laminado !== null && costo_laminado !== undefined && costo_laminado !== "" &&
+      costoLaminadoValidado === null
+    ) {
+      return res.status(400).json({ error: "costo_laminado inválido" });
+    }
+
+    const desarrolloValidado =
+      desarrollo_laminado === null || desarrollo_laminado === undefined || desarrollo_laminado === ""
+        ? null
+        : Number(desarrollo_laminado);
+    if (desarrolloValidado !== null && (!Number.isFinite(desarrolloValidado) || desarrolloValidado < 0)) {
+      return res.status(400).json({ error: "desarrollo_laminado inválido" });
+    }
+
+    await client.query("BEGIN");
+
+    const { rows: prodRows } = await client.query(
+      `SELECT idproducto_papel FROM producto_papel WHERE idproducto_papel = $1 AND activo = true`,
+      [id]
+    );
+    if (prodRows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
+    // ── 1. producto_papel.costo_laminado ──────────────────────────────────
+    await client.query(
+      `UPDATE producto_papel SET costo_laminado = $1, actualizado_por = $2 WHERE idproducto_papel = $3`,
+      [costoLaminadoValidado, idusuario, id]
+    );
+
+    // ── 2. acabados_papel: idrollo_lam / desarrollo_laminado (parcial) ────
+    const { rows: acabadosCheck } = await client.query(
+      `SELECT idacabados_papel FROM acabados_papel WHERE idproducto_papel = $1`, [id]
+    );
+    if (acabadosCheck.length > 0) {
+      await client.query(
+        `UPDATE acabados_papel SET idrollo_lam = $1, desarrollo_laminado = $2 WHERE idacabados_papel = $3`,
+        [idrollo_lam ?? null, desarrolloValidado, acabadosCheck[0].idacabados_papel]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO acabados_papel (idproducto_papel, idrollo_lam, desarrollo_laminado) VALUES ($1, $2, $3)`,
+        [id, idrollo_lam ?? null, desarrolloValidado]
+      );
+    }
+
+    // ── 3. suaje_papel.pzs (parcial) ──────────────────────────────────────
+    const { rows: suajeCheck } = await client.query(
+      `SELECT idsuaje_papel FROM suaje_papel WHERE idproducto_papel = $1`, [id]
+    );
+    if (suajeCheck.length > 0) {
+      await client.query(
+        `UPDATE suaje_papel SET pzs = $1 WHERE idsuaje_papel = $2`,
+        [piezas_suaje ?? null, suajeCheck[0].idsuaje_papel]
+      );
+    } else {
+      // herramental_desbarbe se manda explícito en false porque, igual que
+      // en crearProductoPapel, la columna no admite NULL.
+      await client.query(
+        `INSERT INTO suaje_papel (idproducto_papel, pzs, herramental_desbarbe) VALUES ($1, $2, false)`,
+        [id, piezas_suaje ?? null]
+      );
+    }
+
+    await client.query("COMMIT");
+    console.log(`✅ Costo laminado actualizado: producto=${id}`);
+    return res.json({
+      message: "Costo de laminado actualizado correctamente",
+      costo_laminado: costoLaminadoValidado,
+      idrollo_lam: idrollo_lam ?? null,
+      desarrollo_laminado: desarrolloValidado,
+      piezas_suaje: piezas_suaje ?? null,
+    });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    console.error("❌ PATCH COSTO LAMINADO PAPEL ERROR:", error.message);
+    return res.status(500).json({ error: "Error al actualizar el costo de laminado", detalle: error.message });
   } finally {
     client.release();
   }

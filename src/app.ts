@@ -9,6 +9,7 @@ import {
   loginLimiter,
 } from "./config/security.config";
 import { optionalAuth } from "./middlewares/auth.middleware";
+import reportesDestinatariosRoutes from "./routes/reportes/reportesDestinatarios.routes";
 
 // Rutas
 import authRoutes from "./routes/auth/auth.routes";
@@ -170,6 +171,7 @@ app.use("/api/correos", correoRoutes);
 app.use("/api/push", pushRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/catalogos-papel/insumo", catalogosPapelInsumoRoutes);
+app.use("/api/reportes", reportesDestinatariosRoutes);
 
 // ==========================
 // HEALTH CHECK

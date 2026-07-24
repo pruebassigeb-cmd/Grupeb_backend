@@ -6,6 +6,8 @@ import {
   getProductoPapelById,
   crearProductoPapel,
   actualizarProductoPapel,
+  actualizarCostoBaseGrupos,
+  actualizarCostoLaminado,
   eliminarProductoPapel,
   registrarProductoPapelEnBlancoExpo,
 } from "../../controllers/producto_papel/producto_papel.controller";
@@ -78,6 +80,26 @@ router.put(
   authMiddleware,
   checkPermiso(PERMISO),
   actualizarProductoPapel
+);
+
+// ── Edición inline del costo base (uno o varios grupos) — mismo permiso de
+// escritura que el PUT completo, pero sin exigir el resto del formulario.
+// Usado por el modo "Editar costos base" de Papel.tsx (celdas editables en
+// la tabla y en el detalle expandido).
+router.patch(
+  "/:id/costo-base",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  actualizarCostoBaseGrupos
+);
+
+// ── Edición rápida del costo de laminado (rollo, desarrollo, piezas de
+// suaje y el resultado calculado), desde el modal de Papel.tsx.
+router.patch(
+  "/:id/costo-laminado",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  actualizarCostoLaminado
 );
 
 router.delete(

@@ -3,6 +3,7 @@ import "dotenv/config";
 import app from "./app";
 import cron from "node-cron";
 import { pool } from "./config/db";
+import { iniciarCronReporteSemanal } from "./jobs/reporteSemanal.cron";
 
 const PORT = process.env.PORT || 3000;
 
@@ -13,6 +14,13 @@ app.listen(PORT, () => {
   console.log("WHATSAPP_PHONE_NUMBER_ID cargado:", !!process.env.WHATSAPP_PHONE_NUMBER_ID);
   console.log("WHATSAPP_VERIFY_TOKEN cargado:", !!process.env.WHATSAPP_VERIFY_TOKEN);*/
 });
+
+// ============================================================
+// CRON JOB — Reporte semanal por correo (producción, cotizaciones,
+// pedidos, diseño, anticipos)
+// Corre todos los lunes a las 8:00 AM
+// ============================================================
+iniciarCronReporteSemanal();
 
 // ============================================================
 // CRON JOB — Limpieza de chats aprobados hace más de 30 días
