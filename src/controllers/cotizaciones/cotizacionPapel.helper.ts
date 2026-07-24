@@ -1003,28 +1003,22 @@ async function obtenerMaquinariaDefaultPapel(
 
 // NUEVO: reemplaza el paso manual de "Configurar maquinaria". Lee la
 // máquina default de cada proceso requerido directo de las tablas
-// maquinaria_* del producto y la guarda en el pedido. Si al producto le
-// falta registrar la máquina de algún proceso obligatorio, truena con un
-// error claro (hay que registrarla en el alta del producto, no aquí).
+// maquinaria_* del producto y la guarda en el pedido. Ya NO exige que el
+// producto tenga registrada la máquina de cada proceso — si falta alguna,
+// simplemente se guarda como pendiente (null) y se asigna después en
+// producción, en vez de bloquear la creación/conversión del pedido.
 export async function fijarMaquinariaPedidoPapel(
   client: any,
   idproductoPapel: number,
   idsolicitudProductoPapel: number,
   claves: string[],
-  nombreProducto: string,
+  _nombreProducto: string,
 ): Promise<void> {
   const seleccion = await obtenerMaquinariaDefaultPapel(
     client,
     idproductoPapel,
     claves,
   );
-
-  const faltante = claves.find((key) => !seleccion[key]);
-  if (faltante) {
-    throw new Error(
-      `El producto de papel "${nombreProducto}" no tiene registrada la máquina de "${faltante}". Configúrala en el alta del producto antes de crear/convertir el pedido.`,
-    );
-  }
 
   await guardarMaquinariaSeleccionadaPapel(
     client,

@@ -41,11 +41,6 @@ function generarFolioCotizacion(numero: number): string {
   return `COT${yy}${String(numero).padStart(3, "0")}`;
 }
 
-function generarFolioPedido(numero: number): string {
-  const yy = new Date().getFullYear().toString().slice(-2);
-  return `P${yy}${String(numero).padStart(3, "0")}`;
-}
-
 async function obtenerSiguienteNumeroCotizacion(client: any): Promise<number> {
   const yy = new Date().getFullYear().toString().slice(-2);
   const { rows } = await client.query(`
@@ -58,26 +53,23 @@ async function obtenerSiguienteNumeroCotizacion(client: any): Promise<number> {
   return rows[0].siguiente;
 }
 
-async function obtenerSiguienteNumeroPedido(client: any): Promise<number> {
-  const yy = new Date().getFullYear().toString().slice(-2);
-  const { rows } = await client.query(`
-    SELECT COALESCE(MAX(
-      CAST(SUBSTRING(no_pedido FROM 'P${yy}(\\d+)') AS INTEGER)
-    ), 0) + 1 AS siguiente
-    FROM solicitud
-    WHERE no_pedido LIKE 'P${yy}%'
-  `);
-  return rows[0].siguiente;
-}
-
 async function obtenerSiguienteFolioCotizacion(client: any): Promise<string> {
   const numero = await obtenerSiguienteNumeroCotizacion(client);
   return generarFolioCotizacion(numero);
 }
 
+// Antes esta función calculaba MAX(no_pedido)+1 por su cuenta — un mecanismo
+// totalmente separado del que usa el módulo Expo (que sí usa una secuencia
+// real de Postgres con pg_advisory_xact_lock, ver generar_folio_pedido() en
+// la base de datos). Como los dos módulos escriben en la misma columna
+// no_pedido pero cada uno llevaba su propio contador, la secuencia de Expo
+// se quedaba atrás cada vez que se aprobaba un pedido desde este módulo —
+// hasta que Expo intentaba aprobar y chocaba con un folio "P26XXX" que el
+// otro mecanismo ya había asignado (violación de ux_solicitud_no_pedido).
+// Unificado para que ambos módulos compartan el mismo contador atómico.
 async function obtenerSiguienteFolioPedido(client: any): Promise<string> {
-  const numero = await obtenerSiguienteNumeroPedido(client);
-  return generarFolioPedido(numero);
+  const { rows } = await client.query(`SELECT public.generar_folio_pedido() AS folio`);
+  return String(rows[0].folio);
 }
 
 async function generarFolioOrdenDiseno(client: any): Promise<string> {

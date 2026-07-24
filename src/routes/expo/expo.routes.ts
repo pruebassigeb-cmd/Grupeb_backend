@@ -12,6 +12,7 @@ import {
 } from "../../controllers/expo/expo.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 import { preventSQLInjection } from "../../middlewares/validation.middleware";
+import { generarClaveLimitador } from "../../config/security.config";
 
 const router = Router();
 
@@ -20,8 +21,10 @@ router.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: fal
 // Límites aflojados (antes 250/60) — el outbox del PWA reintenta cotizaciones
 // y correos encolados automáticamente al reconectar, lo que puede sumar más
 // tráfico de escritura en ráfaga del que se contempló originalmente.
-const generalLimiter = rateLimit({ windowMs: 15*60*1000, max: 1000, standardHeaders: true, legacyHeaders: false });
-const writeLimiter   = rateLimit({ windowMs: 15*60*1000, max: 300,  standardHeaders: true, legacyHeaders: false });
+// keyGenerator por usuario (no por IP): varios vendedores en la misma red
+// (ej. wifi de un venue de expo) ya no comparten el mismo presupuesto.
+const generalLimiter = rateLimit({ windowMs: 15*60*1000, max: 1000, standardHeaders: true, legacyHeaders: false, keyGenerator: generarClaveLimitador });
+const writeLimiter   = rateLimit({ windowMs: 15*60*1000, max: 300,  standardHeaders: true, legacyHeaders: false, keyGenerator: generarClaveLimitador });
 
 router.use(generalLimiter);
 

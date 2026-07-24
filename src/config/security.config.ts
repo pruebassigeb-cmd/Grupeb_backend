@@ -1,6 +1,21 @@
 import helmet from "helmet";
-import { Express } from "express";
-import rateLimit from "express-rate-limit";
+import { Express, Request } from "express";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+
+/**
+ * Los rate limiters cuentan por IP por defecto — un problema real cuando
+ * varios usuarios comparten la misma red (ej. el wifi del venue en una
+ * expo): todos comparten el mismo presupuesto de peticiones, y uno solo
+ * reconectando repetidamente puede agotarlo para los demás. Esta función
+ * identifica por usuario autenticado cuando es posible (requiere que
+ * `optionalAuth` ya haya corrido antes en la cadena de middlewares — ver
+ * `app.ts` — para que `req.user` ya esté poblado en este punto) y cae a IP
+ * (normalizada para IPv6) solo para peticiones sin sesión, como login.
+ */
+export function generarClaveLimitador(req: Request): string {
+  const usuarioId = (req as Request & { user?: { id?: number } }).user?.id;
+  return usuarioId ? `user:${usuarioId}` : ipKeyGenerator(req.ip ?? "desconocida");
+}
 
 export const setupSecurity = (app: Express) => {
 app.use(
@@ -108,6 +123,7 @@ export const generalLimiter = rateLimit({
   max:            SECURITY_CONSTANTS.GENERAL_MAX_REQUESTS,
   standardHeaders: true,
   legacyHeaders:  false,
+  keyGenerator:   generarClaveLimitador,
   message:        { error: "Demasiadas solicitudes, espera un momento." },
 });
 
@@ -120,11 +136,15 @@ export const approvalLimiter = rateLimit({
   max:            SECURITY_CONSTANTS.APPROVAL_MAX_REQUESTS,
   standardHeaders: true,
   legacyHeaders:  false,
+  keyGenerator:   generarClaveLimitador,
   message:        { error: "Demasiadas solicitudes de aprobación, espera un momento." },
 });
 
 /**
- * Rate limiter estricto para login
+ * Rate limiter estricto para login — se queda por IP a propósito (no por
+ * usuario): antes de autenticarse no hay `req.user` que usar, y el punto de
+ * este limiter es justo frenar intentos de login repetidos desde el mismo
+ * origen antes de que exista una sesión.
  */
 export const loginLimiter = rateLimit({
   windowMs:       SECURITY_CONSTANTS.RATE_LIMIT_WINDOW_MS,

@@ -8,6 +8,7 @@ import {
   approvalLimiter,
   loginLimiter,
 } from "./config/security.config";
+import { optionalAuth } from "./middlewares/auth.middleware";
 
 // Rutas
 import authRoutes from "./routes/auth/auth.routes";
@@ -98,6 +99,14 @@ app.use((req, res, next) => {
   res.charset = "utf-8";
   next();
 });
+
+// Puebla req.user cuando ya hay un token válido, sin rechazar si no lo hay
+// (eso lo sigue haciendo authMiddleware más adelante, por ruta). Tiene que
+// correr ANTES de los rate limiters de abajo para que puedan identificar
+// por usuario en vez de por IP — ver generarClaveLimitador en
+// security.config.ts. Sin esto, varios usuarios en la misma red (ej. el
+// wifi de un venue) comparten el mismo presupuesto de peticiones.
+app.use(optionalAuth);
 
 // ==========================
 // RATE LIMITERS
