@@ -25,6 +25,7 @@ export interface OrdenHabilitadaNueva {
   no_pedido: string;
   cliente: string;
   empresa: string | null;
+  impresion: string | null;
   fecha_habilitacion: Date;
 }
 
@@ -33,7 +34,7 @@ export async function obtenerOrdenesHabilitadasNuevas(hoy = new Date()): Promise
   const { rows } = await pool.query(
     `SELECT
        op.idproduccion, op.no_produccion, op.fecha AS fecha_habilitacion,
-       s.no_pedido, c.razon_social AS cliente, c.empresa
+       s.no_pedido, c.razon_social AS cliente, c.empresa, c.impresion
      FROM orden_produccion op
      JOIN solicitud_producto sp ON sp.idsolicitud_producto = op.idsolicitud_producto
      JOIN solicitud s ON s.idsolicitud = sp.solicitud_idsolicitud
@@ -56,6 +57,7 @@ export interface OrdenSinAvance {
   no_pedido: string;
   cliente: string;
   empresa: string | null;
+  impresion: string | null;
   fecha_habilitacion: Date;
   ultimo_avance: Date | null;
   dias_habiles_sin_avance: number;
@@ -65,7 +67,7 @@ export async function obtenerOrdenesSinAvance(hoy = new Date()): Promise<OrdenSi
   const { rows } = await pool.query(
     `SELECT
        op.idproduccion, op.no_produccion, op.fecha AS fecha_habilitacion,
-       s.no_pedido, c.razon_social AS cliente, c.empresa,
+       s.no_pedido, c.razon_social AS cliente, c.empresa, c.impresion,
        (SELECT MAX(fecha_registro) FROM avance_proceso
          WHERE orden_produccion_idproduccion = op.idproduccion) AS ultimo_avance
      FROM orden_produccion op
@@ -93,13 +95,14 @@ export interface CotizacionNueva {
   no_cotizacion: string;
   cliente: string;
   empresa: string | null;
+  impresion: string | null;
   fecha: Date;
 }
 
 export async function obtenerCotizacionesNuevas(hoy = new Date()): Promise<CotizacionNueva[]> {
   const desde = inicioSemanaAnterior(hoy);
   const { rows } = await pool.query(
-    `SELECT s.idsolicitud, s.no_cotizacion, s.fecha, c.razon_social AS cliente, c.empresa
+    `SELECT s.idsolicitud, s.no_cotizacion, s.fecha, c.razon_social AS cliente, c.empresa, c.impresion
      FROM solicitud s
      LEFT JOIN clientes c ON c.idclientes = s.clientes_idclientes
      WHERE s.estado = 'cotizacion' AND s.fecha >= $1
@@ -124,13 +127,14 @@ export interface CotizacionSinAvance {
   no_cotizacion: string;
   cliente: string;
   empresa: string | null;
+  impresion: string | null;
   fecha: Date;
   dias_habiles_sin_avance: number;
 }
 
 export async function obtenerCotizacionesSinAvance(hoy = new Date()): Promise<CotizacionSinAvance[]> {
   const { rows } = await pool.query(
-    `SELECT s.idsolicitud, s.no_cotizacion, s.fecha, c.razon_social AS cliente, c.empresa
+    `SELECT s.idsolicitud, s.no_cotizacion, s.fecha, c.razon_social AS cliente, c.empresa, c.impresion
      FROM solicitud s
      LEFT JOIN clientes c ON c.idclientes = s.clientes_idclientes
      WHERE s.estado = 'cotizacion'`,
@@ -151,6 +155,7 @@ export interface PedidoNuevo {
   no_cotizacion: string | null;
   cliente: string;
   empresa: string | null;
+  impresion: string | null;
   fecha_aprobacion: Date;
 }
 
@@ -158,7 +163,7 @@ export async function obtenerPedidosNuevos(hoy = new Date()): Promise<PedidoNuev
   const desde = inicioSemanaAnterior(hoy);
   const { rows } = await pool.query(
     `SELECT s.idsolicitud, s.no_pedido, s.no_cotizacion, s.fecha_aprobacion,
-            c.razon_social AS cliente, c.empresa
+            c.razon_social AS cliente, c.empresa, c.impresion
      FROM solicitud s
      LEFT JOIN clientes c ON c.idclientes = s.clientes_idclientes
      WHERE s.estado = 'pedido' AND s.fecha_aprobacion >= $1
@@ -175,6 +180,7 @@ export interface DisenoPendiente {
   no_pedido: string;
   cliente: string;
   empresa: string | null;
+  impresion: string | null;
   fecha_aprobacion_pedido: Date;
   estado_diseno: string;
 }
@@ -182,7 +188,7 @@ export interface DisenoPendiente {
 export async function obtenerDisenoPendientes(hoy = new Date()): Promise<DisenoPendiente[]> {
   const desde = inicioSemanaAnterior(hoy);
   const { rows } = await pool.query(
-    `SELECT s.no_pedido, c.razon_social AS cliente, c.empresa,
+    `SELECT s.no_pedido, c.razon_social AS cliente, c.empresa, c.impresion,
             s.fecha_aprobacion AS fecha_aprobacion_pedido,
             ea.nombre AS estado_diseno
      FROM diseno d
@@ -206,6 +212,7 @@ export interface AnticipoPendiente {
   no_pedido: string;
   cliente: string;
   empresa: string | null;
+  impresion: string | null;
   anticipo: number;
   abono: number;
   saldo: number;
@@ -236,7 +243,7 @@ export async function obtenerUsuariosConReportesActivos(): Promise<UsuarioConRep
 export async function obtenerAnticiposPendientes(hoy = new Date()): Promise<AnticipoPendiente[]> {
   const desde = inicioSemanaAnterior(hoy);
   const { rows } = await pool.query(
-    `SELECT v.idventas, s.no_pedido, c.razon_social AS cliente, c.empresa,
+    `SELECT v.idventas, s.no_pedido, c.razon_social AS cliente, c.empresa, c.impresion,
             v.anticipo, v.abono, v.saldo,
             s.fecha_aprobacion AS fecha_aprobacion_pedido,
             ea.nombre AS estado_anticipo

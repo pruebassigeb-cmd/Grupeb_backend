@@ -110,16 +110,17 @@ export function contenidoProduccion(nuevas: OrdenHabilitadaNueva[], sinAvance: O
     <h3 style="margin: 0 0 4px; font-size:16px;">${ICONO_POR_REPORTE.produccion} ${TITULO_POR_REPORTE.produccion}</h3>
     ${seccionTitulo("🆕", `Órdenes habilitadas nuevas (${nuevas.length})`)}
     ${tabla(
-      ["N° Orden", "N° Pedido", "Cliente", "Fecha habilitación"],
-      nuevas.map((o) => [o.no_produccion, o.no_pedido, o.cliente || "—", fmtFecha(o.fecha_habilitacion)]),
+      ["N° Orden", "N° Pedido", "Cliente", "Impresión", "Fecha habilitación"],
+      nuevas.map((o) => [o.no_produccion, o.no_pedido, o.cliente || "—", o.impresion || "—", fmtFecha(o.fecha_habilitacion)]),
     )}
     ${seccionTitulo("⏱️", `Con más de 5 días hábiles sin avance (${sinAvance.length})`)}
     ${tabla(
-      ["N° Orden", "N° Pedido", "Cliente", "Días sin avance", "Último avance"],
+      ["N° Orden", "N° Pedido", "Cliente", "Impresión", "Días sin avance", "Último avance"],
       sinAvance.map((o) => [
         o.no_produccion,
         o.no_pedido,
         o.cliente || "—",
+        o.impresion || "—",
         `<strong style="color:${o.dias_habiles_sin_avance > 15 ? "#c0392b" : "#b8860b"}">${o.dias_habiles_sin_avance}</strong>`,
         o.ultimo_avance ? fmtFecha(o.ultimo_avance) : "Nunca (desde habilitación)",
       ]),
@@ -133,15 +134,16 @@ export function contenidoCotizaciones(nuevas: CotizacionNueva[], sinAvance: Coti
     <h3 style="margin: 0 0 4px; font-size:16px;">${ICONO_POR_REPORTE.cotizaciones} ${TITULO_POR_REPORTE.cotizaciones}</h3>
     ${seccionTitulo("🆕", `Cotizaciones nuevas (${nuevas.length})`)}
     ${tabla(
-      ["N° Cotización", "Cliente", "Fecha"],
-      nuevas.map((c) => [c.no_cotizacion, c.cliente || "—", fmtFecha(c.fecha)]),
+      ["N° Cotización", "Cliente", "Impresión", "Fecha"],
+      nuevas.map((c) => [c.no_cotizacion, c.cliente || "—", c.impresion || "—", fmtFecha(c.fecha)]),
     )}
     ${seccionTitulo("⏱️", `Con más de 5 días hábiles sin aprobación (${sinAvance.length})`)}
     ${tabla(
-      ["N° Cotización", "Cliente", "Días sin avance", "Fecha creación"],
+      ["N° Cotización", "Cliente", "Impresión", "Días sin avance", "Fecha creación"],
       sinAvance.map((c) => [
         c.no_cotizacion,
         c.cliente || "—",
+        c.impresion || "—",
         `<strong style="color:${c.dias_habiles_sin_avance > 15 ? "#c0392b" : "#b8860b"}">${c.dias_habiles_sin_avance}</strong>`,
         fmtFecha(c.fecha),
       ]),
@@ -155,8 +157,8 @@ export function contenidoPedidos(nuevos: PedidoNuevo[]): string {
     <h3 style="margin: 0 0 4px; font-size:16px;">${ICONO_POR_REPORTE.pedidos} ${TITULO_POR_REPORTE.pedidos}</h3>
     ${seccionTitulo("🆕", `Pedidos nuevos (${nuevos.length})`)}
     ${tabla(
-      ["N° Pedido", "N° Cotización", "Cliente", "Fecha aprobación"],
-      nuevos.map((p) => [p.no_pedido, p.no_cotizacion || "—", p.cliente || "—", fmtFecha(p.fecha_aprobacion)]),
+      ["N° Pedido", "N° Cotización", "Cliente", "Impresión", "Fecha aprobación"],
+      nuevos.map((p) => [p.no_pedido, p.no_cotizacion || "—", p.cliente || "—", p.impresion || "—", fmtFecha(p.fecha_aprobacion)]),
     )}
     ${botonDeepLink("pedidos")}
   `;
@@ -167,8 +169,8 @@ export function contenidoDiseno(pendientes: DisenoPendiente[]): string {
     <h3 style="margin: 0 0 4px; font-size:16px;">${ICONO_POR_REPORTE.diseno} ${TITULO_POR_REPORTE.diseno}</h3>
     ${seccionTitulo("🎨", `Pendientes de aprobación — pedidos nuevos (${pendientes.length})`)}
     ${tabla(
-      ["N° Pedido", "Cliente", "Estado diseño", "Fecha pedido"],
-      pendientes.map((d) => [d.no_pedido, d.cliente || "—", d.estado_diseno || "Pendiente", fmtFecha(d.fecha_aprobacion_pedido)]),
+      ["N° Pedido", "Cliente", "Impresión", "Estado diseño", "Fecha pedido"],
+      pendientes.map((d) => [d.no_pedido, d.cliente || "—", d.impresion || "—", d.estado_diseno || "Pendiente", fmtFecha(d.fecha_aprobacion_pedido)]),
     )}
     ${botonDeepLink("diseno")}
   `;
@@ -179,10 +181,11 @@ export function contenidoAnticipos(pendientes: AnticipoPendiente[]): string {
     <h3 style="margin: 0 0 4px; font-size:16px;">${ICONO_POR_REPORTE.anticipos} ${TITULO_POR_REPORTE.anticipos}</h3>
     ${seccionTitulo("💰", `Pendientes de aprobación — pedidos nuevos (${pendientes.length})`)}
     ${tabla(
-      ["N° Pedido", "Cliente", "Anticipo", "Abono", "Saldo", "Estado", "Fecha pedido"],
+      ["N° Pedido", "Cliente", "Impresión", "Anticipo", "Abono", "Saldo", "Estado", "Fecha pedido"],
       pendientes.map((a) => [
         a.no_pedido,
         a.cliente || "—",
+        a.impresion || "—",
         fmtMoneda(a.anticipo),
         fmtMoneda(a.abono),
         fmtMoneda(a.saldo),

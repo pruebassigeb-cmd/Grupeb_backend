@@ -128,23 +128,24 @@ function seccionProduccion(doc: PDFKit.PDFDocument, nuevas: OrdenHabilitadaNueva
   subtitulo(doc, `Órdenes habilitadas nuevas (${nuevas.length})`);
   tabla(
     doc,
-    ["N° Orden", "N° Pedido", "Cliente", "Fecha habilitación"],
-    nuevas.map((o) => [o.no_produccion, o.no_pedido, o.cliente || "—", fmtFecha(o.fecha_habilitacion)]),
-    [90, 90, 190, 145],
+    ["N° Orden", "N° Pedido", "Cliente", "Impresión", "Fecha habilitación"],
+    nuevas.map((o) => [o.no_produccion, o.no_pedido, o.cliente || "—", o.impresion || "—", fmtFecha(o.fecha_habilitacion)]),
+    [80, 80, 140, 90, 125],
   );
 
   subtitulo(doc, `Con más de 5 días hábiles sin avance (${sinAvance.length})`);
   tabla(
     doc,
-    ["N° Orden", "N° Pedido", "Cliente", "Días", "Último avance"],
+    ["N° Orden", "N° Pedido", "Cliente", "Impresión", "Días", "Último avance"],
     sinAvance.map((o) => [
       o.no_produccion,
       o.no_pedido,
       o.cliente || "—",
+      o.impresion || "—",
       { texto: String(o.dias_habiles_sin_avance), color: o.dias_habiles_sin_avance > 15 ? "#c0392b" : "#b8860b" },
       o.ultimo_avance ? fmtFecha(o.ultimo_avance) : "Nunca",
     ]),
-    [80, 80, 165, 50, 140],
+    [70, 70, 120, 80, 45, 130],
   );
 }
 
@@ -154,22 +155,23 @@ function seccionCotizaciones(doc: PDFKit.PDFDocument, nuevas: CotizacionNueva[],
   subtitulo(doc, `Cotizaciones nuevas (${nuevas.length})`);
   tabla(
     doc,
-    ["N° Cotización", "Cliente", "Fecha"],
-    nuevas.map((c) => [c.no_cotizacion, c.cliente || "—", fmtFecha(c.fecha)]),
-    [140, 250, 125],
+    ["N° Cotización", "Cliente", "Impresión", "Fecha"],
+    nuevas.map((c) => [c.no_cotizacion, c.cliente || "—", c.impresion || "—", fmtFecha(c.fecha)]),
+    [120, 180, 90, 125],
   );
 
   subtitulo(doc, `Con más de 5 días hábiles sin aprobación (${sinAvance.length})`);
   tabla(
     doc,
-    ["N° Cotización", "Cliente", "Días", "Fecha creación"],
+    ["N° Cotización", "Cliente", "Impresión", "Días", "Fecha creación"],
     sinAvance.map((c) => [
       c.no_cotizacion,
       c.cliente || "—",
+      c.impresion || "—",
       { texto: String(c.dias_habiles_sin_avance), color: c.dias_habiles_sin_avance > 15 ? "#c0392b" : "#b8860b" },
       fmtFecha(c.fecha),
     ]),
-    [120, 220, 50, 125],
+    [100, 170, 80, 40, 125],
   );
 }
 
@@ -178,9 +180,9 @@ function seccionPedidos(doc: PDFKit.PDFDocument, nuevos: PedidoNuevo[]) {
   subtitulo(doc, `Pedidos nuevos (${nuevos.length})`);
   tabla(
     doc,
-    ["N° Pedido", "N° Cotización", "Cliente", "Fecha aprobación"],
-    nuevos.map((p) => [p.no_pedido, p.no_cotizacion || "—", p.cliente || "—", fmtFecha(p.fecha_aprobacion)]),
-    [100, 110, 170, 135],
+    ["N° Pedido", "N° Cotización", "Cliente", "Impresión", "Fecha aprobación"],
+    nuevos.map((p) => [p.no_pedido, p.no_cotizacion || "—", p.cliente || "—", p.impresion || "—", fmtFecha(p.fecha_aprobacion)]),
+    [90, 100, 140, 80, 105],
   );
 }
 
@@ -189,9 +191,9 @@ function seccionDiseno(doc: PDFKit.PDFDocument, pendientes: DisenoPendiente[]) {
   subtitulo(doc, `Pendientes de aprobación — pedidos nuevos (${pendientes.length})`);
   tabla(
     doc,
-    ["N° Pedido", "Cliente", "Estado", "Fecha pedido"],
-    pendientes.map((d) => [d.no_pedido, d.cliente || "—", d.estado_diseno || "Pendiente", fmtFecha(d.fecha_aprobacion_pedido)]),
-    [100, 200, 100, 115],
+    ["N° Pedido", "Cliente", "Impresión", "Estado", "Fecha pedido"],
+    pendientes.map((d) => [d.no_pedido, d.cliente || "—", d.impresion || "—", d.estado_diseno || "Pendiente", fmtFecha(d.fecha_aprobacion_pedido)]),
+    [90, 160, 80, 90, 95],
   );
 }
 
@@ -200,16 +202,17 @@ function seccionAnticipos(doc: PDFKit.PDFDocument, pendientes: AnticipoPendiente
   subtitulo(doc, `Pendientes de aprobación — pedidos nuevos (${pendientes.length})`);
   tabla(
     doc,
-    ["N° Pedido", "Cliente", "Anticipo", "Abono", "Saldo", "Fecha"],
+    ["N° Pedido", "Cliente", "Impresión", "Anticipo", "Abono", "Saldo", "Fecha"],
     pendientes.map((a) => [
       a.no_pedido,
       a.cliente || "—",
+      a.impresion || "—",
       fmtMoneda(a.anticipo),
       fmtMoneda(a.abono),
       fmtMoneda(a.saldo),
       fmtFecha(a.fecha_aprobacion_pedido),
     ]),
-    [80, 150, 85, 85, 85, 130],
+    [70, 120, 70, 60, 60, 60, 75],
   );
 }
 

@@ -111,7 +111,7 @@ export async function ejecutarReporteSemanal() {
 
 // ⚠️ TEMPORAL — PRUEBA: lunes 10:45am, en vez del horario real.
 // Cuando termines de probar, regresa esta línea a: "0 8 * * 1"  (lunes 8:00am)
-const CRON_EXPRESION = "37 14 * * 1"; // lunes 10:45am
+const CRON_EXPRESION = "0 15 * * 1"; // lunes 10:45am
 
 export function iniciarCronReporteSemanal() {
   cron.schedule(CRON_EXPRESION, () => {
