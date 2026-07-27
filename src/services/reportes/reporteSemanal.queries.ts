@@ -2,6 +2,8 @@
 import { pool } from "../../config/db";
 import { contarDiasHabiles } from "../../utils/diasHabiles";
 
+export type TipoReporte = "produccion" | "cotizaciones" | "pedidos" | "diseno" | "anticipos";
+
 const UMBRAL_DIAS_SIN_AVANCE = 5;
 const ESTADO_ADMIN = { PENDIENTE: 1, EN_PROCESO: 2, APROBADO: 3, RECHAZADO: 4 } as const;
 const ESTADO_PROD_TERMINADO = 3; // ESTADO_PROD.TERMINADO en procesosController.ts
@@ -209,6 +211,26 @@ export interface AnticipoPendiente {
   saldo: number;
   fecha_aprobacion_pedido: Date;
   estado_anticipo: string;
+}
+
+// ============================================================
+// 8. USUARIOS con sus reportes activos — para armar el correo
+//    combinado personalizado (cada quien ve solo lo que marcó)
+// ============================================================
+export interface UsuarioConReportes {
+  correo: string;
+  reportes: TipoReporte[];
+}
+
+export async function obtenerUsuariosConReportesActivos(): Promise<UsuarioConReportes[]> {
+  const { rows } = await pool.query(`
+    SELECT u.correo, array_agg(pcr.reporte) AS reportes
+    FROM usuarios u
+    JOIN preferencia_correo_reporte pcr ON pcr.usuarios_idusuario = u.idusuario
+    WHERE u.activo = true
+    GROUP BY u.correo
+  `);
+  return rows.map((r) => ({ correo: r.correo, reportes: r.reportes as TipoReporte[] }));
 }
 
 export async function obtenerAnticiposPendientes(hoy = new Date()): Promise<AnticipoPendiente[]> {

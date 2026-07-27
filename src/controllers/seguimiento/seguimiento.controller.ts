@@ -442,6 +442,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         ap.pzs_caja                     AS cantidad_por_caja,
 
         sd.cantidad                     AS cantidad_orden,
+        sd.kilogramos                   AS kilogramos_orden,
         sd.modo_cantidad,
 
         od.idorden_diseno,
@@ -770,6 +771,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         cantidad_por_caja: row.cantidad_por_caja != null ? Number(row.cantidad_por_caja) : null,
 
         cantidad_orden: row.cantidad_orden ? Number(row.cantidad_orden) : null,
+        kilogramos_orden: row.kilogramos_orden ? Number(row.kilogramos_orden) : null,
+        modo_cantidad: row.modo_cantidad || "unidad",
         fecha_entrega: null,
 
         idorden_diseno: row.idorden_diseno ?? null,
