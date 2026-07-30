@@ -632,11 +632,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
       WHERE s.no_cotizacion IS NOT NULL
         AND (
           s.estado = 'cotizacion'
-          OR (
-            s.estado = 'pedido'
-            AND s.visible_hasta IS NOT NULL
-            AND s.visible_hasta >= NOW()
-          )
+          OR s.estado = 'pedido'
         )
 
       ORDER BY s.no_cotizacion DESC, sp.idsolicitud_producto, sd.idsolicitud_detalle
@@ -955,6 +951,11 @@ export const actualizarEstadoCotizacion = async (
              estado = 'pedido',
              no_pedido = $2,
              fecha_aprobacion = NOW(),
+             -- NOTA: visible_hasta ya NO se usa para filtrar getCotizaciones
+             -- (antes hacía que la cotización aprobada desapareciera del todo,
+             -- incluso del buscador, pasados 5 días). Se deja el campo por si
+             -- algo más lo consulta, pero el ocultamiento ahora es solo en el
+             -- frontend (Cotizar.tsx) y siempre es encontrable con el buscador.
              visible_hasta = NOW() + INTERVAL '5 days'
          WHERE no_cotizacion = $3`,
         [estadoId, folioPedidoAsignado, id],
@@ -1193,7 +1194,7 @@ export const actualizarCotizacionProductos = async (
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    const { productos, productos_nuevos = [] } = req.body;
+    const { productos, productos_nuevos = [], sin_iva } = req.body;
 
     const { rows: docRows } = await client.query(
       `SELECT idsolicitud, estado, no_pedido
@@ -1214,6 +1215,15 @@ export const actualizarCotizacionProductos = async (
     const solicitudId: number = doc.idsolicitud;
 
     await client.query("BEGIN");
+
+    // sin_iva es una bandera de cabecera; sólo se actualiza si el front la
+    // envía explícitamente como booleano, para no pisar el valor guardado.
+    if (typeof sin_iva === "boolean") {
+      await client.query(
+        `UPDATE solicitud SET sin_iva = $1 WHERE idsolicitud = $2`,
+        [sin_iva, solicitudId],
+      );
+    }
 
     for (const prod of productos as any[]) {
       // ── PAPEL ──────────────────────────────────────────────────────────

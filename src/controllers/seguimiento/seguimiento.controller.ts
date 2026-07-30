@@ -1024,6 +1024,11 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ap.base_medida,
         cemp.nombre AS tipo_caja,
         ap.pzs_caja,
+        -- Rollo y desarrollo de laminado registrados al dar de alta el
+        -- producto (acabados_papel): si el producto los tiene capturados,
+        -- suplantan el cálculo automático desde las medidas del pliego.
+        ap.desarrollo_laminado,
+        rl.medida_ancho AS rollo_lam_medida_ancho,
 
         suj.numero AS suaje,
         suj.tamano AS suaje_tamano,
@@ -1123,6 +1128,8 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ON ca.id_color = sp.id_color
       LEFT JOIN acabados_papel ap
         ON ap.idproducto_papel = pp.idproducto_papel
+      LEFT JOIN rollo_lam rl
+        ON rl.idrollo_lam = ap.idrollo_lam
       LEFT JOIN cat_tipo_pegado ctpgo
         ON ctpgo.idcat_tipo_pegado = ap.idcat_tipo_pegado
       LEFT JOIN cat_pegamento cpeg
@@ -1240,14 +1247,28 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
     }));
 
     const productosPapelFormateados = productosPapel.map((r: any) => {
-      const pliegosCalculados = calcularPliegosPorRendimiento(r.cantidad, r.rendimiento);
+      // Pliegos/bolsas se calculan con el rendimiento de HOJEADO (cómo se
+      // tiene que cortar el material), no con el rendimiento general del
+      // material — son dos campos distintos capturados en el alta.
+      const pliegosCalculados = calcularPliegosPorRendimiento(r.cantidad, r.hoj_rendimiento);
       const pliegoHojeado = r.hoj_corte || r.pliego || r.medida || null;
-      const bobinaCm = primeraMedidaCm(r.hoj_corte, r.pliego, r.medida);
-      const desarrolloMm = calcularDesarrolloMm(r.hoj_corte, r.pliego, r.medida);
+
+      // Rollo y desarrollo de laminado: si el producto los tiene registrados
+      // desde su alta (acabados_papel.idrollo_lam / desarrollo_laminado),
+      // esos valores fijos suplantan el cálculo automático desde las medidas
+      // del pliego — y con ellos, todo lo que se deriva del desarrollo
+      // (metros y rollos de laminación estimados).
+      const rolloLamRegistradoCm = r.rollo_lam_medida_ancho != null ? Number(r.rollo_lam_medida_ancho) : null;
+      const desarrolloLaminadoRegistradoCm = r.desarrollo_laminado != null ? Number(r.desarrollo_laminado) : null;
+
+      const bobinaCm = rolloLamRegistradoCm ?? primeraMedidaCm(r.hoj_corte, r.pliego, r.medida);
+      const desarrolloMm = desarrolloLaminadoRegistradoCm != null
+        ? round2(desarrolloLaminadoRegistradoCm * 10)
+        : calcularDesarrolloMm(r.hoj_corte, r.pliego, r.medida);
       const ctesMod = calcularCtesMod(r.hoj_corte, r.pliego, r.medida);
       const metrosLaminacion = calcularMetrosLaminacion(pliegosCalculados, desarrolloMm);
       const rollosLaminacion = metrosLaminacion === null ? null : round2(metrosLaminacion / 3000);
-      const bolsasArmadas = calcularBolsasPorRendimiento(pliegosCalculados, r.rendimiento);
+      const bolsasArmadas = calcularBolsasPorRendimiento(pliegosCalculados, r.hoj_rendimiento);
       const refuerzoTexto = [r.refuerzo_material, r.refuerzo_medida]
         .filter(Boolean)
         .join(" ");
@@ -1261,10 +1282,15 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       // ahora siempre es NULL — esto se decide físicamente en producción,
       // no en el sistema). Ambos procesos aplican siempre para un producto
       // de papel, igual que en procesosOrdenPapelPdf.ts en el frontend.
+      // Impresión, en cambio, sí depende de si el producto lleva tintas:
+      // se puede cotizar "Sin tintas" (frente) y sin tintas por dentro, y
+      // en ese caso no hay nada que imprimir.
+      const tieneTintas = (Number(r.tintas) || 0) > 0 || (Number(r.tintas_dentro) || 0) > 0;
+
       const procesosAplican = [
         "hojeado_papel",
         "guillotina_papel",
-        "impresion_papel",
+        tieneTintas ? "impresion_papel" : null,
         r.laminado_nombre ? "laminacion_papel" : null,
         r.uv === true ? "barniz_uv_papel" : null,
         r.foil_nombre ? "hot_stamping_papel" : null,

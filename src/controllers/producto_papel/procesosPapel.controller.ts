@@ -237,10 +237,14 @@ async function getProcesosDeOrdenPapel(client: any, idproduccion: number): Promi
       spp.idfoil,
       spp.idcat_textura,
       spp.alto_relieve,
-      spp.lleva_armado
+      spp.lleva_armado,
+      t.cantidad       AS tintas,
+      tdentro.cantidad AS tintas_dentro
     FROM orden_produccion op
     JOIN solicitud_producto sp ON sp.idsolicitud_producto = op.idsolicitud_producto
     JOIN solicitud_producto_papel spp ON spp.idsolicitud_producto = sp.idsolicitud_producto
+    LEFT JOIN tintas t ON t.idtintas = sp.tintas_idtintas
+    LEFT JOIN tintas tdentro ON tdentro.idtintas = spp.tintas_dentro_idtintas
     WHERE op.idproduccion = $1
     `,
     [idproduccion]
@@ -254,8 +258,11 @@ async function getProcesosDeOrdenPapel(client: any, idproduccion: number): Promi
   if (r.metodo_hojeado === "hojeado") clavesAplican.push("HOJEADO");
   if (r.metodo_hojeado === "guillotina") clavesAplican.push("GUILLOTINA");
 
-  // Impresión, Suaje y Empaque son obligatorios siempre (confirmado).
-  clavesAplican.push("IMPRESION");
+  // Impresión solo aplica si el producto lleva tintas (frente o dentro) —
+  // se puede cotizar "Sin tintas" y en ese caso no hay nada que imprimir.
+  // Suaje y Empaque sí son obligatorios siempre.
+  const tieneTintas = (Number(r.tintas) || 0) > 0 || (Number(r.tintas_dentro) || 0) > 0;
+  if (tieneTintas) clavesAplican.push("IMPRESION");
 
   if (r.idcat_laminado != null) clavesAplican.push("LAMINACION");
   if (r.uv === true) clavesAplican.push("BARNIZ_UV");

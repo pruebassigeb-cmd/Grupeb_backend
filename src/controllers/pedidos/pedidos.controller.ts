@@ -251,7 +251,35 @@ export const getPedidos = async (req: Request, res: Response) => {
           h.id_herramental,
           h.herramental_descripcion,
           h.herramental_precio,
-          h.aprobado         AS herramental_aprobado
+          h.aprobado         AS herramental_aprobado,
+
+          -- ── Orden de producción + envío (mismo criterio que seguimiento_controller.ts) ──
+          -- Se agrega para poder saber, por cada producto del pedido, si ya
+          -- se envió por completo (sin parcialidades). Un pedido con varios
+          -- productos solo se puede considerar "enviado" cuando TODOS los
+          -- suyos lo estén.
+          op.idproduccion,
+          op.no_produccion,
+          op.es_parcialidad,
+          (
+            SELECT COUNT(DISTINCT b.idbulto)
+            FROM bultos b
+            WHERE op.idproduccion IS NOT NULL AND (
+              b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
+              OR
+              b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+            )
+          ) AS envio_total_bultos,
+          (
+            SELECT COUNT(DISTINCT eb.bultos_idbulto)
+            FROM envio_bulto eb
+            JOIN bultos b ON b.idbulto = eb.bultos_idbulto
+            WHERE op.idproduccion IS NOT NULL AND (
+              b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
+              OR
+              b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+            )
+          ) AS envio_bultos_enviados
 
       FROM solicitud s
       LEFT JOIN clientes cli
@@ -307,6 +335,8 @@ export const getPedidos = async (req: Request, res: Response) => {
           ON sd.solicitud_producto_id = sp.idsolicitud_producto
       LEFT JOIN herramental h
           ON h.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN orden_produccion op
+          ON op.idsolicitud_producto = sp.idsolicitud_producto
 
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
@@ -491,6 +521,13 @@ const nombreCompleto =
             };
           }
 
+          // ── Orden de producción / envío — común a papel y plástico ──
+          producto.idproduccion = row.idproduccion ?? null;
+          producto.no_produccion = row.no_produccion ?? null;
+          producto.es_parcialidad = Boolean(row.es_parcialidad ?? false);
+          producto.envio_total_bultos = Number(row.envio_total_bultos ?? 0);
+          producto.envio_bultos_enviados = Number(row.envio_bultos_enviados ?? 0);
+
           agrupados[noPedido].productos.push(producto);
         }
 
@@ -538,7 +575,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
     // proyecto; lo normalizamos una sola vez para poder pasarlo a funciones
     // que exigen `string` estricto (registrarProductoNuevoEnDiseno).
     const noPedidoParam: string = Array.isArray(id) ? id[0] : id;
-    const { productos } = req.body;
+    const { productos, prioridad, sin_iva } = req.body;
 
     const { rows: pedRows } = await client.query(
       `SELECT idsolicitud FROM solicitud
@@ -551,6 +588,23 @@ export const actualizarPedido = async (req: Request, res: Response) => {
     const solicitudId: number = pedRows[0].idsolicitud;
 
     await client.query("BEGIN");
+
+    // Urgente (prioridad) y sin_iva son banderas de cabecera de la
+    // solicitud; sólo se actualizan si el front las envía explícitamente
+    // como booleano, para no pisar el valor guardado si no vienen en el payload.
+    if (typeof prioridad === "boolean" || typeof sin_iva === "boolean") {
+      await client.query(
+        `UPDATE solicitud SET
+           prioridad = COALESCE($1, prioridad),
+           sin_iva   = COALESCE($2, sin_iva)
+         WHERE idsolicitud = $3`,
+        [
+          typeof prioridad === "boolean" ? prioridad : null,
+          typeof sin_iva === "boolean" ? sin_iva : null,
+          solicitudId,
+        ]
+      );
+    }
 
     for (const prod of (productos as any[])) {
       const {

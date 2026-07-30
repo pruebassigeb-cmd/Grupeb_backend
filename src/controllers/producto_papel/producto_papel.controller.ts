@@ -954,48 +954,141 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
       idusuario, id,
     ]);
 
-    // ── 2. Grupos y materiales ────────────────────────────────────────────
-    await client.query(`DELETE FROM grupo_papel WHERE idproducto_papel = $1`, [id]);
+    // ── 2. Grupos y materiales — actualizar en vez de recrear ──────────────
+    // Antes esto borraba TODOS los grupo_papel/detalle_material_papel del
+    // producto y los volvía a insertar con ids nuevos. El problema: un
+    // pedido ya creado guarda una referencia fija a esos ids
+    // (solicitud_producto.grupo_papel_idgrupo_papel), y la consulta que
+    // arma la orden de producción/PDF (getOrdenProduccion) hace JOIN por
+    // ese id. Si el id ya no existe, ese JOIN no encuentra nada y el PDF
+    // sale con pliego/rendimiento/corte/hojeado/material/calibre en blanco
+    // — aunque el pedido nunca haya cambiado, solo por haber editado el
+    // producto después. Ahora se actualiza cada grupo/material por su id
+    // (si el formulario lo trae, porque ya existía) y solo se crean/borran
+    // los que de verdad se agregaron/quitaron en esta edición.
+    const { rows: existentesRows } = await client.query(`
+      SELECT g.idgrupo_papel, dm.iddetalle_material
+      FROM grupo_papel g
+      LEFT JOIN detalle_material_papel dm ON dm.idgrupo_papel = g.idgrupo_papel
+      WHERE g.idproducto_papel = $1
+    `, [id]);
+    const idsGrupoExistentes = new Set<number>(existentesRows.map((r: any) => r.idgrupo_papel));
+    const idsDetalleExistentes = new Set<number>(
+      existentesRows
+        .filter((r: any) => r.iddetalle_material != null)
+        .map((r: any) => r.iddetalle_material)
+    );
+
+    const idsGrupoConservados = new Set<number>();
+    const idsDetalleConservados = new Set<number>();
 
     for (let gi = 0; gi < grupos.length; gi++) {
       const grupo = grupos[gi];
+      const idGrupoEntrante = Number(grupo.idgrupo_papel) || null;
 
-      const { rows: grupoRows } = await client.query(`
-        INSERT INTO grupo_papel (idproducto_papel, precio_sugerido, orden, creado_por, actualizado_por)
-        VALUES ($1, $2, $3, $4, $4)
-        RETURNING idgrupo_papel
-      `, [id, grupo.precio_sugerido ?? null, gi + 1, idusuario]);
-
-      const idgrupo_papel = grupoRows[0].idgrupo_papel;
+      let idgrupo_papel: number;
+      if (idGrupoEntrante && idsGrupoExistentes.has(idGrupoEntrante)) {
+        await client.query(`
+          UPDATE grupo_papel SET
+            precio_sugerido = $1, orden = $2, actualizado_por = $3
+          WHERE idgrupo_papel = $4 AND idproducto_papel = $5
+        `, [grupo.precio_sugerido ?? null, gi + 1, idusuario, idGrupoEntrante, id]);
+        idgrupo_papel = idGrupoEntrante;
+      } else {
+        const { rows: grupoRows } = await client.query(`
+          INSERT INTO grupo_papel (idproducto_papel, precio_sugerido, orden, creado_por, actualizado_por)
+          VALUES ($1, $2, $3, $4, $4)
+          RETURNING idgrupo_papel
+        `, [id, grupo.precio_sugerido ?? null, gi + 1, idusuario]);
+        idgrupo_papel = grupoRows[0].idgrupo_papel;
+      }
+      idsGrupoConservados.add(idgrupo_papel);
 
       const materiales = grupo.materiales ?? [];
       for (let mi = 0; mi < materiales.length; mi++) {
         const mat = materiales[mi];
-        await client.query(`
-          INSERT INTO detalle_material_papel (
+        const idDetalleEntrante = Number(mat.iddetalle_material) || null;
+
+        if (idDetalleEntrante && idsDetalleExistentes.has(idDetalleEntrante)) {
+          await client.query(`
+            UPDATE detalle_material_papel SET
+              idgrupo_papel = $1,
+              idcat_tipo_papel = $2, idcat_calibre = $3,
+              pliego = $4, rendimiento = $5, corte = $6,
+              hoj_bobina = $7, hoj_corte = $8, hoj_rendimiento = $9,
+              hoj_guillotina = $10, hoj_hilo = $11, hoj_bobina_extra = $12,
+              orden = $13, actualizado_por = $14
+            WHERE iddetalle_material = $15
+          `, [
             idgrupo_papel,
-            idcat_tipo_papel, idcat_calibre,
-            pliego, rendimiento, corte,
-            hoj_bobina, hoj_corte, hoj_rendimiento, hoj_guillotina, hoj_hilo, hoj_bobina_extra,
-            orden, creado_por, actualizado_por
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
-        `, [
-          idgrupo_papel,
-          mat.idcat_tipo_papel ?? null,
-          mat.idcat_calibre    ?? null,
-          mat.pliego           ?? null,
-          mat.rendimiento      ?? null,
-          mat.corte            ?? null,
-          mat.hojeado?.bobina       ?? null,
-          mat.hojeado?.corte        ?? null,
-          mat.hojeado?.rendimiento  ?? null,
-          mat.hojeado?.guillotina   ?? null,
-          mat.hojeado?.hilo         ?? null,
-          mat.hojeado?.bobina_extra ?? null,
-          mi + 1,
-          idusuario,
-        ]);
+            mat.idcat_tipo_papel ?? null,
+            mat.idcat_calibre    ?? null,
+            mat.pliego           ?? null,
+            mat.rendimiento      ?? null,
+            mat.corte            ?? null,
+            mat.hojeado?.bobina       ?? null,
+            mat.hojeado?.corte        ?? null,
+            mat.hojeado?.rendimiento  ?? null,
+            mat.hojeado?.guillotina   ?? null,
+            mat.hojeado?.hilo         ?? null,
+            mat.hojeado?.bobina_extra ?? null,
+            mi + 1,
+            idusuario,
+            idDetalleEntrante,
+          ]);
+          idsDetalleConservados.add(idDetalleEntrante);
+        } else {
+          const { rows: detalleRows } = await client.query(`
+            INSERT INTO detalle_material_papel (
+              idgrupo_papel,
+              idcat_tipo_papel, idcat_calibre,
+              pliego, rendimiento, corte,
+              hoj_bobina, hoj_corte, hoj_rendimiento, hoj_guillotina, hoj_hilo, hoj_bobina_extra,
+              orden, creado_por, actualizado_por
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
+            RETURNING iddetalle_material
+          `, [
+            idgrupo_papel,
+            mat.idcat_tipo_papel ?? null,
+            mat.idcat_calibre    ?? null,
+            mat.pliego           ?? null,
+            mat.rendimiento      ?? null,
+            mat.corte            ?? null,
+            mat.hojeado?.bobina       ?? null,
+            mat.hojeado?.corte        ?? null,
+            mat.hojeado?.rendimiento  ?? null,
+            mat.hojeado?.guillotina   ?? null,
+            mat.hojeado?.hilo         ?? null,
+            mat.hojeado?.bobina_extra ?? null,
+            mi + 1,
+            idusuario,
+          ]);
+          idsDetalleConservados.add(detalleRows[0].iddetalle_material);
+        }
       }
+    }
+
+    // Solo se borran los grupos/materiales que de verdad se quitaron en
+    // esta edición (los que no llegaron con su id). Los materiales primero,
+    // por si la FK de detalle_material_papel no tiene ON DELETE CASCADE.
+    const idsGrupoAEliminar = [...idsGrupoExistentes].filter(gid => !idsGrupoConservados.has(gid));
+    if (idsGrupoAEliminar.length > 0) {
+      await client.query(
+        `DELETE FROM detalle_material_papel WHERE idgrupo_papel = ANY($1::int[])`,
+        [idsGrupoAEliminar]
+      );
+      await client.query(
+        `DELETE FROM grupo_papel WHERE idgrupo_papel = ANY($1::int[])`,
+        [idsGrupoAEliminar]
+      );
+    }
+
+    const idsDetalleAEliminar = [...idsDetalleExistentes].filter(did => !idsDetalleConservados.has(did));
+    if (idsDetalleAEliminar.length > 0) {
+      await client.query(
+        `DELETE FROM detalle_material_papel WHERE iddetalle_material = ANY($1::int[])`,
+        [idsDetalleAEliminar]
+      );
     }
 
     // ── 3. Suaje — upsert ─────────────────────────────────────────────────
