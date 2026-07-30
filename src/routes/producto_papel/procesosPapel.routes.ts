@@ -19,6 +19,7 @@ import {
   registrarAvancePapel,
   finalizarProcesoPapel,
   editarProcesoPapel,
+  reiniciarProcesoPreparacionPapel,
 } from "../../controllers/producto_papel/procesosPapel.controller";
 
 const router = Router();
@@ -28,6 +29,10 @@ router.post("/procesos-papel/:idproduccion/iniciar", iniciarProcesoPapel);
 router.post("/procesos-papel/:idproduccion/avance", registrarAvancePapel);
 router.put("/procesos-papel/:idproduccion/finalizar", finalizarProcesoPapel);
 router.put("/procesos-papel/:idproduccion/editar/:tabla", editarProcesoPapel);
+
+// Único endpoint destructivo: reiniciar Hojeado o Guillotina cuando el
+// operador eligió la máquina equivocada (ver comentario en el controller).
+router.delete("/procesos-papel/:idproduccion/reiniciar/:tabla", reiniciarProcesoPreparacionPapel);
 
 export default router;
 
@@ -47,6 +52,7 @@ export default router;
 //   POST /api/procesos-papel/:idproduccion/avance
 //   PUT  /api/procesos-papel/:idproduccion/finalizar
 //   PUT  /api/procesos-papel/:idproduccion/editar/:tabla
+//   DELETE /api/procesos-papel/:idproduccion/reiniciar/:tabla  (solo hojeado_papel/guillotina_papel)
 //
 // Si tu authMiddleware/checkPermiso se aplican globalmente antes de este
 // punto en app.ts, ya cubren estas rutas también. Si no, y quieres

@@ -231,7 +231,6 @@ async function getProcesosDeOrdenPapel(client: any, idproduccion: number): Promi
   const { rows } = await client.query(
     `
     SELECT
-      spp.metodo_hojeado,
       spp.idcat_laminado,
       spp.uv,
       spp.idfoil,
@@ -255,8 +254,24 @@ async function getProcesosDeOrdenPapel(client: any, idproduccion: number): Promi
 
   const clavesAplican: ClaveProcesoPapel[] = [];
 
-  if (r.metodo_hojeado === "hojeado") clavesAplican.push("HOJEADO");
-  if (r.metodo_hojeado === "guillotina") clavesAplican.push("GUILLOTINA");
+  // CORREGIDO: metodo_hojeado está DEPRECADO (ver ordenProduccionPapel.types.ts)
+  // y siempre llega null desde que se decide físicamente en producción, no en
+  // el sistema. Antes esta condición nunca era verdadera para ninguno de los
+  // dos, así que Hojeado y Guillotina JAMÁS entraban a la cascada -> el
+  // backend nunca los devolvía -> el frontend los mostraba como N/A siempre,
+  // sin importar qué llevara la orden en realidad.
+  //
+  // Hojeado y Guillotina ahora aplican SIEMPRE a toda orden de papel, y NO
+  // son mutuamente excluyentes: el operador decide en planta (con el PDF
+  // físico en mano) cuál usar, y puede ser uno, el otro, o incluso ambos
+  // (parcialidades repartidas entre las dos máquinas). Son un "par
+  // intercambiable": ambos quedan disponibles hasta que uno de los dos
+  // reciba el primer registro/avance, momento en el cual el otro se oculta
+  // (ver override de estado en getProcesosOrdenPapel más abajo). El
+  // desbloqueo de Impresión también los trata como un solo escalón lógico
+  // (ver getSiguienteEfectivoPapel / resolverAnteriorEfectivoPapel).
+  clavesAplican.push("HOJEADO");
+  clavesAplican.push("GUILLOTINA");
 
   // Impresión solo aplica si el producto lleva tintas (frente o dentro) —
   // se puede cotizar "Sin tintas" y en ese caso no hay nada que imprimir.
@@ -310,10 +325,120 @@ async function getMaquinaElegidaPapel(
   return { id: Number(maquina.id), nombre: String(maquina.nombre ?? "") };
 }
 
+// NOTA: superseded por getSiguienteEfectivoPapel (más abajo), que además
+// salta al hermano no usado del par Hojeado/Guillotina. Se deja aquí solo
+// como referencia interna; el motor ya no la llama en ningún flujo.
 function getSiguienteProcesoPapel(procesos: number[], procesoActual: number): number | null {
   const idx = procesos.indexOf(procesoActual);
   if (idx === -1) return null;
   return procesos[idx + 1] ?? null;
+}
+
+// ── Par intercambiable Hojeado/Guillotina ──────────────────────────────
+// Ninguna función de cascada de aquí en adelante debe tratar a Hojeado y
+// Guillotina como una secuencia estricta entre sí. Estos helpers permiten
+// que el resto del motor (iniciar/avance/finalizar/límite de avance) los
+// trate como UN SOLO escalón lógico: "el que el operador haya elegido".
+async function getParPreparacionPapel(): Promise<{ idHojeado: number; idGuillotina: number }> {
+  const { claveAId } = await getMapaProcesoCatPapel();
+  return {
+    idHojeado: claveAId.get("HOJEADO")!,
+    idGuillotina: claveAId.get("GUILLOTINA")!,
+  };
+}
+
+async function esProcesoDePreparacionPapel(procesoCat: number): Promise<boolean> {
+  const { idHojeado, idGuillotina } = await getParPreparacionPapel();
+  return procesoCat === idHojeado || procesoCat === idGuillotina;
+}
+
+/**
+ * Da el idproceso_cat + tabla del proceso "efectivamente siguiente" a
+ * `procesoActual`. Igual que getSiguienteProcesoPapel para cualquier
+ * proceso normal, pero si `procesoActual` es Hojeado o Guillotina y el
+ * array trae al hermano justo después, lo salta y regresa lo que sigue
+ * después del par (normalmente Impresión) — el hermano NUNCA se
+ * autoinicializa como "siguiente paso obligatorio".
+ */
+async function getSiguienteEfectivoPapel(
+  procesos: number[],
+  procesoActual: number
+): Promise<number | null> {
+  const { idHojeado, idGuillotina } = await getParPreparacionPapel();
+  const idx = procesos.indexOf(procesoActual);
+  if (idx === -1) return null;
+
+  const esPreparacion = procesoActual === idHojeado || procesoActual === idGuillotina;
+  const siguienteInmediato = procesos[idx + 1] ?? null;
+
+  if (esPreparacion && siguienteInmediato != null &&
+      (siguienteInmediato === idHojeado || siguienteInmediato === idGuillotina)) {
+    return procesos[idx + 2] ?? null;
+  }
+  return siguienteInmediato;
+}
+
+/**
+ * Resuelve cuál de los dos procesos de preparación (Hojeado/Guillotina)
+ * es el que realmente se usó en esta orden (tiene fecha_inicio o algún
+ * avance registrado). Devuelve null si ninguno de los dos ha arrancado
+ * todavía — en ese caso, Impresión (o lo que siga) NO debe desbloquearse.
+ */
+async function getPreparacionUsadaPapel(
+  client: any,
+  idproduccion: number
+): Promise<{ cat: number; tabla: string } | null> {
+  const { idHojeado, idGuillotina } = await getParPreparacionPapel();
+
+  for (const cat of [idHojeado, idGuillotina]) {
+    const tabla = await getTablaPorIdProcesoCat(cat);
+    if (!tabla) continue;
+
+    const { rows } = await client.query(
+      `SELECT fecha_inicio, estado_produccion_cat_idestado_produccion_cat AS estado
+       FROM ${tabla} WHERE orden_produccion_idproduccion = $1`,
+      [idproduccion]
+    );
+    if (rows.length > 0 && rows[0].fecha_inicio) return { cat, tabla };
+
+    const { rows: avRows } = await client.query(
+      `SELECT 1 FROM avance_proceso
+       WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2 LIMIT 1`,
+      [idproduccion, tabla]
+    );
+    if (avRows.length > 0) return { cat, tabla };
+  }
+  return null;
+}
+
+/**
+ * Resuelve el "anterior efectivo" de `procesoActualCat` dentro de la
+ * cascada: igual que procesos[idx-1] para cualquier proceso normal, pero
+ * si lo inmediato anterior es Hojeado o Guillotina, en vez de asumir uno
+ * fijo, busca cuál de los dos realmente se usó (getPreparacionUsadaPapel).
+ * Devuelve null si se requiere un anterior y ninguno calza (proceso
+ * bloqueado) o si de plano no hay anterior (primer proceso real).
+ */
+async function resolverAnteriorEfectivoPapel(
+  client: any,
+  idproduccion: number,
+  procesos: number[],
+  procesoActualCat: number
+): Promise<{ cat: number; tabla: string } | null> {
+  const idx = procesos.indexOf(procesoActualCat);
+  if (idx <= 0) return null;
+
+  const { idHojeado, idGuillotina } = await getParPreparacionPapel();
+  const catInmediatoAnterior = procesos[idx - 1];
+  const inmediatoEsPreparacion =
+    catInmediatoAnterior === idHojeado || catInmediatoAnterior === idGuillotina;
+
+  if (!inmediatoEsPreparacion) {
+    const tabla = await getTablaPorIdProcesoCat(catInmediatoAnterior);
+    return tabla ? { cat: catInmediatoAnterior, tabla } : null;
+  }
+
+  return getPreparacionUsadaPapel(client, idproduccion);
 }
 
 async function getProcesoActualOrdenPapel(
@@ -369,13 +494,16 @@ async function procesoAnteriorTieneAvanceOTerminadoPapel(
   const idx = procesos.indexOf(procesoActualCat);
   if (idx <= 0) return true; // primer proceso, no tiene anterior
 
-  const catAnterior = procesos[idx - 1];
-  const tablaAnterior = await getTablaPorIdProcesoCat(catAnterior);
-  if (!tablaAnterior) return true;
+  // Hojeado y Guillotina nunca dependen entre sí ni de nada anterior: son
+  // el par de entrada de la cascada, decidido manualmente en planta.
+  if (await esProcesoDePreparacionPapel(procesoActualCat)) return true;
+
+  const anterior = await resolverAnteriorEfectivoPapel(client, idproduccion, procesos, procesoActualCat);
+  if (!anterior) return false;
 
   const { rows: estadoRows } = await client.query(
     `SELECT estado_produccion_cat_idestado_produccion_cat AS estado
-     FROM ${tablaAnterior} WHERE orden_produccion_idproduccion = $1`,
+     FROM ${anterior.tabla} WHERE orden_produccion_idproduccion = $1`,
     [idproduccion]
   );
   if (estadoRows.length > 0 && Number(estadoRows[0].estado) === ESTADO_PROD.TERMINADO) return true;
@@ -383,7 +511,7 @@ async function procesoAnteriorTieneAvanceOTerminadoPapel(
   const { rows: avanceRows } = await client.query(
     `SELECT 1 FROM avance_proceso
      WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2 LIMIT 1`,
-    [idproduccion, tablaAnterior]
+    [idproduccion, anterior.tabla]
   );
   return avanceRows.length > 0;
 }
@@ -397,13 +525,14 @@ async function procesoAnteriorEstaTerminadoPapel(
   const idx = procesos.indexOf(procesoActualCat);
   if (idx <= 0) return true;
 
-  const catAnterior = procesos[idx - 1];
-  const tablaAnterior = await getTablaPorIdProcesoCat(catAnterior);
-  if (!tablaAnterior) return true;
+  if (await esProcesoDePreparacionPapel(procesoActualCat)) return true;
+
+  const anterior = await resolverAnteriorEfectivoPapel(client, idproduccion, procesos, procesoActualCat);
+  if (!anterior) return false;
 
   const { rows } = await client.query(
     `SELECT estado_produccion_cat_idestado_produccion_cat AS estado
-     FROM ${tablaAnterior} WHERE orden_produccion_idproduccion = $1`,
+     FROM ${anterior.tabla} WHERE orden_produccion_idproduccion = $1`,
     [idproduccion]
   );
   return rows.length > 0 && Number(rows[0].estado) === ESTADO_PROD.TERMINADO;
@@ -425,19 +554,23 @@ async function getLimiteAvanceAnteriorPapel(
   const catActual = await getIdProcesoCatPorTabla(tablaProceso);
   if (!catActual) return null;
 
+  // Hojeado y Guillotina no tienen límite previo: son el punto de entrada
+  // de la cascada de papel, sin importar en qué posición del array quede
+  // cada uno.
+  if (await esProcesoDePreparacionPapel(catActual)) return null;
+
   const idx = procesos.indexOf(catActual);
-  if (idx <= 0) return null; // primer proceso de la cascada, no tiene límite previo
+  if (idx <= 0) return null;
 
-  const catAnterior = procesos[idx - 1];
-  const tablaAnterior = await getTablaPorIdProcesoCat(catAnterior);
-  if (!tablaAnterior) return null;
+  const anterior = await resolverAnteriorEfectivoPapel(client, idproduccion, procesos, catActual);
+  if (!anterior) return null;
 
-  const campoSalida = CAMPO_SALIDA_PAPEL[tablaAnterior];
+  const campoSalida = CAMPO_SALIDA_PAPEL[anterior.tabla];
   if (!campoSalida) return null;
 
   const { rows: regRows } = await client.query(
     `SELECT estado_produccion_cat_idestado_produccion_cat AS estado, ${campoSalida} AS campo_final
-     FROM ${tablaAnterior}
+     FROM ${anterior.tabla}
      WHERE orden_produccion_idproduccion = $1`,
     [idproduccion]
   );
@@ -455,7 +588,7 @@ async function getLimiteAvanceAnteriorPapel(
     `SELECT COALESCE(SUM(cantidad), 0) AS total
      FROM avance_proceso
      WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2`,
-    [idproduccion, tablaAnterior]
+    [idproduccion, anterior.tabla]
   );
 
   const total = Number(avRows[0]?.total ?? 0);
@@ -492,7 +625,7 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
 
     if (procesosIds.length === 0) {
       return res.status(400).json({
-        error: "No se pudo determinar los procesos de esta orden de papel. Verifica que solicitud_producto_papel tenga metodo_hojeado capturado.",
+        error: "No se pudo determinar los procesos de esta orden de papel. Verifica que la orden tenga una solicitud_producto_papel asociada.",
       });
     }
 
@@ -535,11 +668,55 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
       };
     }));
 
+    // ── Par intercambiable Hojeado/Guillotina ──────────────────────────
+    // Si uno de los dos ya tiene registro (arrancó o tiene algún avance) y
+    // el otro no, el que no tiene registro se oculta como "no_aplica": la
+    // orden ya se comprometió a una sola máquina de preparación. Si
+    // ninguno tiene registro todavía, ambos quedan visibles/disponibles
+    // para que el operador elija manualmente con el PDF físico en mano.
+    // Si excepcionalmente ambos llegan a tener registro (parcialidades
+    // repartidas entre las dos), ambos se muestran normalmente.
+    const esPrepTabla = (tabla: string) => tabla === "hojeado_papel" || tabla === "guillotina_papel";
+    const idxHojeado = procesosConRegistros.findIndex((p) => p.tabla === "hojeado_papel");
+    const idxGuillotina = procesosConRegistros.findIndex((p) => p.tabla === "guillotina_papel");
+
+    const tieneRegistroReal = (p: (typeof procesosConRegistros)[number]) =>
+      !!p?.registro?.fecha_inicio || (p?.total_avances ?? 0) > 0;
+
+    if (idxHojeado !== -1 && idxGuillotina !== -1) {
+      const hoj = procesosConRegistros[idxHojeado];
+      const gui = procesosConRegistros[idxGuillotina];
+      const hojTiene = tieneRegistroReal(hoj);
+      const guiTiene = tieneRegistroReal(gui);
+
+      if (hojTiene && !guiTiene) {
+        procesosConRegistros[idxGuillotina] = { ...gui, estado: "no_aplica" };
+      } else if (guiTiene && !hojTiene) {
+        procesosConRegistros[idxHojeado] = { ...hoj, estado: "no_aplica" };
+      }
+    }
+
     const procesosConLimite = procesosConRegistros.map((proceso, index) => {
       let limiteAvance: number | null = null;
 
-      if (index > 0) {
-        const anterior = procesosConRegistros[index - 1];
+      // Hojeado y Guillotina nunca tienen límite de un proceso anterior:
+      // son el punto de entrada de la cascada.
+      if (index > 0 && !esPrepTabla(proceso.tabla)) {
+        let anterior = procesosConRegistros[index - 1];
+
+        // Si lo inmediato anterior es del par Hojeado/Guillotina, usar el
+        // que de verdad se usó (el otro ya quedó marcado no_aplica arriba,
+        // o ninguno se usó todavía y no hay límite que propagar).
+        if (esPrepTabla(anterior.tabla)) {
+          const candidatoDosAntes = procesosConRegistros[index - 2];
+          const par = [anterior, candidatoDosAntes].filter(
+            (p): p is (typeof procesosConRegistros)[number] => !!p && esPrepTabla(p.tabla)
+          );
+          const usado = par.find((p) => tieneRegistroReal(p));
+          anterior = usado ?? anterior;
+          if (!usado) anterior = { ...anterior, registro: null }; // ninguno arrancó -> sin límite
+        }
+
         if (anterior?.registro) {
           const estNum = Number(anterior.registro.estado_produccion_cat_idestado_produccion_cat);
           const campoSalida = CAMPO_SALIDA_PAPEL[anterior.tabla];
@@ -558,7 +735,17 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
     });
 
     const procesosFinales = procesosConLimite.map((proceso, index) => {
-      const obsAnterior = index > 0 ? (procesosConLimite[index - 1]?.observaciones || null) : null;
+      let anterior = index > 0 ? procesosConLimite[index - 1] : null;
+
+      if (anterior && esPrepTabla(anterior.tabla)) {
+        const candidatoDosAntes = procesosConLimite[index - 2];
+        const par = [anterior, candidatoDosAntes].filter(
+          (p): p is (typeof procesosConLimite)[number] => !!p && esPrepTabla(p.tabla)
+        );
+        anterior = par.find((p) => tieneRegistroReal(p)) ?? null;
+      }
+
+      const obsAnterior = anterior?.observaciones || null;
       return { ...proceso, observaciones_proceso_anterior: obsAnterior };
     });
 
@@ -566,7 +753,7 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
     if (procesoActual && !idAClave.has(Number(procesoActual))) {
       // El proceso_actual guardado ya no aplica (ej. cambió la config del
       // pedido) — buscar el siguiente válido dentro de los que sí aplican.
-      procesoActual = getSiguienteProcesoPapel(procesosIds, Number(procesoActual)) ?? procesosIds[0];
+      procesoActual = (await getSiguienteEfectivoPapel(procesosIds, Number(procesoActual))) ?? procesosIds[0];
     }
 
     return res.json({
@@ -618,6 +805,20 @@ export const iniciarProcesoPapel = async (req: Request, res: Response) => {
     if (!procesoActualCat || !procesos.includes(procesoActualCat)) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Este proceso no aplica a esta orden de papel" });
+    }
+
+    // Si este es Hojeado o Guillotina y el hermano ya se comprometió
+    // (tiene fecha_inicio), no se puede iniciar este también -- la orden
+    // ya eligió su máquina de preparación. Para cambiarla hay que usar
+    // /reiniciar sobre el hermano primero.
+    if (await esProcesoDePreparacionPapel(procesoActualCat)) {
+      const usado = await getPreparacionUsadaPapel(client, Number(idproduccion));
+      if (usado && usado.tabla !== tabla_proceso) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `Esta orden ya se está preparando con ${usado.tabla === "hojeado_papel" ? "Hojeado" : "Guillotina"}. Reinicia ese proceso primero si necesitas cambiar de máquina.`,
+        });
+      }
     }
 
     const { rows: existeRows } = await client.query(
@@ -793,7 +994,7 @@ export const registrarAvancePapel = async (req: Request, res: Response) => {
     // (sin datos de entrada todavía — la propagación de cantidades reales
     // ocurre al finalizar, igual que en plástico).
     const procesoActualCat = await getIdProcesoCatPorTabla(tabla_proceso);
-    const siguienteCat = procesoActualCat ? getSiguienteProcesoPapel(procesos, procesoActualCat) : null;
+    const siguienteCat = procesoActualCat ? await getSiguienteEfectivoPapel(procesos, procesoActualCat) : null;
 
     if (siguienteCat !== null) {
       const tablaSiguiente = await getTablaPorIdProcesoCat(siguienteCat);
@@ -885,7 +1086,7 @@ export const finalizarProcesoPapel = async (req: Request, res: Response) => {
       values
     );
 
-    const siguienteProceso = getSiguienteProcesoPapel(procesos, procesoActualCat);
+    const siguienteProceso = await getSiguienteEfectivoPapel(procesos, procesoActualCat);
 
     if (siguienteProceso !== null) {
       const tablaSiguiente = await getTablaPorIdProcesoCat(siguienteProceso);
@@ -1016,7 +1217,7 @@ export const editarProcesoPapel = async (req: Request, res: Response) => {
     if (campoSalida && datos[campoSalida] != null && datos[campoSalida] !== "") {
       const procesos = await getProcesosDeOrdenPapel(client, Number(idproduccion));
       const catActual = await getIdProcesoCatPorTabla(tabla);
-      const siguienteCat = catActual ? getSiguienteProcesoPapel(procesos, catActual) : null;
+      const siguienteCat = catActual ? await getSiguienteEfectivoPapel(procesos, catActual) : null;
       const tablaSiguiente = siguienteCat ? await getTablaPorIdProcesoCat(siguienteCat) : null;
       const campoEntradaSig = tablaSiguiente ? CAMPO_ENTRADA_PAPEL[tablaSiguiente] : null;
 
@@ -1043,5 +1244,123 @@ export const editarProcesoPapel = async (req: Request, res: Response) => {
     await client.query("ROLLBACK");
     console.error("EDITAR PROCESO PAPEL ERROR:", error.message);
     return res.status(500).json({ error: "Error al editar proceso de papel" });
+  } finally { client.release(); }
+};
+
+// ════════════════════════════════════════════════════════════════════════
+// DELETE /procesos-papel/:idproduccion/reiniciar/:tabla
+//
+// Único endpoint destructivo del orquestador de papel, y a propósito
+// limitado SOLO a hojeado_papel / guillotina_papel: son el único par de
+// procesos que se elige manualmente en planta (con el PDF físico), así
+// que es el único caso donde "me equivoqué de proceso" es un escenario
+// esperado y no un error de flujo. El resto de la cascada es secuencial
+// y su reversión debe manejarse con /editar, no con un borrado.
+//
+// Bloquea el reinicio si el proceso efectivamente siguiente (normalmente
+// Impresión) ya arrancó -- en ese punto ya consumió la salida de este
+// proceso como su entrada, y borrar dejaría datos huérfanos.
+// ════════════════════════════════════════════════════════════════════════
+const PROCESOS_INTERCAMBIABLES_PAPEL = ["hojeado_papel", "guillotina_papel"];
+
+export const reiniciarProcesoPreparacionPapel = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const { idproduccion, tabla } = req.params as { idproduccion: string; tabla: string };
+
+    if (!PROCESOS_INTERCAMBIABLES_PAPEL.includes(tabla)) {
+      return res.status(400).json({
+        error: "Solo se puede reiniciar Hojeado o Guillotina — son el único par intercambiable.",
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const procesos = await getProcesosDeOrdenPapel(client, Number(idproduccion));
+    const catActual = await getIdProcesoCatPorTabla(tabla);
+    if (!catActual) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Proceso inválido" });
+    }
+
+    const { rows: existeRows } = await client.query(
+      `SELECT fecha_inicio FROM ${tabla} WHERE orden_produccion_idproduccion = $1`, [idproduccion]
+    );
+    if (existeRows.length === 0 || !existeRows[0].fecha_inicio) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Este proceso no tiene nada que reiniciar" });
+    }
+
+    const siguienteCat = await getSiguienteEfectivoPapel(procesos, catActual);
+    if (siguienteCat !== null) {
+      const tablaSiguiente = await getTablaPorIdProcesoCat(siguienteCat);
+      if (tablaSiguiente) {
+        // CORREGIDO: antes bloqueaba con solo que el siguiente proceso
+        // tuviera fecha_inicio -- pero "iniciado sin avances" no significa
+        // que ya haya consumido nada de este proceso (la propagación real
+        // de cantidades ocurre al registrar avance o al finalizar, igual
+        // que en el resto de la cascada). Usar el mismo criterio de
+        // "avance o terminado" que usa procesoAnteriorTieneAvanceOTerminadoPapel
+        // evita bloquear reinicios legítimos por filas que solo se
+        // "abrieron" sin capturar nada todavía.
+        const { rows: sigRows } = await client.query(
+          `SELECT estado_produccion_cat_idestado_produccion_cat AS estado
+           FROM ${tablaSiguiente} WHERE orden_produccion_idproduccion = $1`,
+          [idproduccion]
+        );
+        const siguienteTerminado =
+          sigRows.length > 0 && Number(sigRows[0].estado) === ESTADO_PROD.TERMINADO;
+
+        const { rows: avRows } = await client.query(
+          `SELECT 1 FROM avance_proceso
+           WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2 LIMIT 1`,
+          [idproduccion, tablaSiguiente]
+        );
+        const siguienteTieneAvance = avRows.length > 0;
+
+        if (siguienteTerminado || siguienteTieneAvance) {
+          const { idAClave } = await getMapaProcesoCatPapel();
+          const claveSiguiente = idAClave.get(siguienteCat);
+          const nombreSiguiente = claveSiguiente
+            ? NOMBRE_PROCESO_CAT_PAPEL[claveSiguiente]
+            : tablaSiguiente;
+
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `No se puede reiniciar: "${nombreSiguiente}" ya tiene avances registrados o está terminado.`,
+          });
+        }
+      }
+    }
+
+    await client.query(
+      `DELETE FROM avance_proceso WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2`,
+      [idproduccion, tabla]
+    );
+    await client.query(
+      `DELETE FROM ${tabla} WHERE orden_produccion_idproduccion = $1`,
+      [idproduccion]
+    );
+
+    // Si la orden apuntaba a este proceso como el actual, regresa el
+    // puntero al primero de la cascada (vuelve a quedar "en selección"
+    // entre Hojeado/Guillotina) y el estado general a PENDIENTE.
+    await client.query(
+      `UPDATE orden_produccion SET proceso_actual = $1, idestado_produccion_cat = $2
+       WHERE idproduccion = $3 AND proceso_actual = $4`,
+      [procesos[0], ESTADO_PROD.PENDIENTE, idproduccion, catActual]
+    );
+
+    await client.query("COMMIT");
+    return res.json({
+      message: `Proceso ${tabla} reiniciado — vuelve a estar disponible para elegir de nuevo`,
+      idproduccion: Number(idproduccion),
+      tabla,
+    });
+
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    console.error("REINICIAR PROCESO PREPARACION PAPEL ERROR:", error.message);
+    return res.status(500).json({ error: "Error al reiniciar el proceso" });
   } finally { client.release(); }
 };

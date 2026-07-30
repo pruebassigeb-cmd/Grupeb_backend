@@ -57,11 +57,18 @@ const ultimaMedidaCm = (...values: unknown[]): number | null => {
   return null;
 };
 
+// CORREGIDO: la fórmula multiplicaba (cantidad x rendimiento) cuando en
+// realidad rendimiento es "bolsas que rinde cada pliego", así que los
+// pliegos que hacen falta son cantidad / rendimiento -- ej. cantidad=2000
+// y rendimiento=0.5 (cada pliego rinde media bolsa, o sea hacen falta 2
+// pliegos por bolsa) => 2000 / 0.5 = 4000 pliegos, no 1000. Comparte esta
+// función con el cálculo del PDF (getOrdenProduccion), así que el mismo
+// arreglo aplica ahí también.
 const calcularPliegosPorRendimiento = (cantidad: unknown, rendimiento: unknown): number | null => {
   const cantidadNum = toNumberOrNull(cantidad);
   const rendimientoNum = toNumberOrNull(rendimiento);
   if (cantidadNum === null || rendimientoNum === null || rendimientoNum <= 0) return null;
-  return round2(cantidadNum * rendimientoNum);
+  return round2(cantidadNum / rendimientoNum);
 };
 
 const calcularBolsasPorRendimiento = (pliegos: unknown, rendimiento: unknown): number | null => {
@@ -404,6 +411,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         dmp.hoj_corte,
         dmp.hoj_rendimiento,
         dmp.hoj_bobina_extra,
+        dmp.hoj_guillotina,
 
         -- ── Specs de la solicitud (lo que el cliente eligió) ──
         t.cantidad                      AS tintas_frente,
@@ -674,6 +682,14 @@ export const getSeguimiento = async (req: Request, res: Response) => {
     });
 
     const resultadoPapel = rowsPapel.map((row: any) => {
+      // Pliegos estimados (informativo, cantidad x rendimiento) -- mismo
+      // cálculo que ya se usaba solo para el PDF (calcularPliegosPorRendimiento),
+      // ahora también disponible aquí para mostrarlo en el modal de
+      // Hojeado/Guillotina ANTES de que existan avances reales. Cada uno
+      // usa su propio rendimiento -- no son intercambiables.
+      const pliegosHojeadoCalculado = calcularPliegosPorRendimiento(row.cantidad_orden, row.hoj_rendimiento);
+      const pliegosGuillotinaCalculado = calcularPliegosPorRendimiento(row.cantidad_orden, row.rendimiento);
+
       const resumen = row.idproduccion != null
         ? resumenPorIdproduccion.get(Number(row.idproduccion))
         : undefined;
@@ -742,11 +758,13 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         tipo_pegue: row.tipo_pegue || null,
         suaje: null, // referencia visual del PDF -- el folio real vive en suaje_papel, no en la ficha
         rendimiento: row.rendimiento || null,
+        corte: row.corte || null,
 
         hoj_bobina: row.hoj_bobina || null,
         hoj_bobina_extra: row.hoj_bobina_extra || null,
         hoj_corte: row.hoj_corte || null,
         hoj_rendimiento: row.hoj_rendimiento || null,
+        hoj_guillotina: row.hoj_guillotina || null,
         pliego: row.pliego || null,
 
         tintas_frente: row.tintas_frente != null ? Number(row.tintas_frente) : null,
@@ -774,6 +792,13 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         kilogramos_orden: row.kilogramos_orden ? Number(row.kilogramos_orden) : null,
         modo_cantidad: row.modo_cantidad || "unidad",
         fecha_entrega: null,
+
+        // Informativos, NO son un límite real (ese es limite_avance, que
+        // sale de avances/registro ya capturados) -- son la estimación de
+        // cuántos pliegos hacen falta según cantidad_orden x rendimiento,
+        // útil como referencia mientras el proceso todavía no arranca.
+        pliegos_hojeado_calculado: pliegosHojeadoCalculado,
+        pliegos_guillotina_calculado: pliegosGuillotinaCalculado,
 
         idorden_diseno: row.idorden_diseno ?? null,
         od_estado: row.od_estado ?? null,
