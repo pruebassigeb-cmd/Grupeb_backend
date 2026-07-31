@@ -7,6 +7,7 @@ import {
   generalLimiter,
   approvalLimiter,
   loginLimiter,
+  cotizadorLibrePrecioLimiter,
 } from "./config/security.config";
 import { optionalAuth } from "./middlewares/auth.middleware";
 import reportesDestinatariosRoutes from "./routes/reportes/reportesDestinatarios.routes";
@@ -19,6 +20,7 @@ import usuariosRoutes from "./routes/usuarios/usuarios.routes";
 import catalogosRoutes from "./routes/catalogos_fiscales/catalogos.routes";
 import clientesRoutes from "./routes/clientes/clientes.routes";
 import tarifasRoutes from "./routes/tarifas/tarifas.routes";
+import tipoCambioRoutes from "./routes/tipoCambio/tipoCambio.routes";
 import catalogosProductosRoutes from "./routes/productos/catalogos-productos.routes";
 import productosPlasticoRoutes from "./routes/productos/productos-plastico.routes";
 import catalogosPlasticoAdminRoutes from "./routes/productos/catalogosPlasticoAdmin.routes";
@@ -61,6 +63,9 @@ import whatsappRoutes from "./routes/whatsapp/whatsapp.routes";
 import catalogosPapelInsumoRoutes from "./routes/producto_papel/catalogosPapelInsumo.routes";
 import preciosAcabadosPapelRoutes from "./routes/producto_papel/precios_acabados_papel.routes";
 import calculadorPrecioPapelRoutes from "./routes/producto_papel/calculadorPrecioPapel.routes";
+import cotizadorLibreClientesRoutes from "./routes/cotizadorLibre/cotizadorLibreClientes.routes";
+import cotizadorLibrePrecioRoutes from "./routes/cotizadorLibre/cotizadorLibrePrecio.routes";
+import cotizadorLibreCatalogoRoutes from "./routes/cotizadorLibre/cotizadorLibreCatalogo.routes";
 
 const app = express();
 
@@ -116,6 +121,7 @@ app.use(optionalAuth);
 app.use("/api/cotizaciones/detalle", approvalLimiter);
 app.use("/api/cotizaciones/herramental", approvalLimiter);
 app.use("/api/auth/login", loginLimiter);
+app.use("/api/cotizador-libre/calcular-precio", cotizadorLibrePrecioLimiter);
 app.use("/api", generalLimiter);
 
 // ==========================
@@ -128,6 +134,7 @@ app.use("/api/usuarios", usuariosRoutes);
 app.use("/api/catalogos", catalogosRoutes);
 app.use("/api/clientes", clientesRoutes);
 app.use("/api/tarifas", tarifasRoutes);
+app.use("/api/tipo-cambio", tipoCambioRoutes);
 app.use("/api/catalogos-productos", catalogosProductosRoutes);
 app.use("/api/productos-plastico", productosPlasticoRoutes);
 app.use("/api/catalogos-productos/plastico/admin", catalogosPlasticoAdminRoutes);
@@ -172,6 +179,13 @@ app.use("/api/push", pushRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/catalogos-papel/insumo", catalogosPapelInsumoRoutes);
 app.use("/api/reportes", reportesDestinatariosRoutes);
+
+// Cotizador Interactivo (público, cuenta compartida + staff) — se monta bajo
+// /api como el resto del sistema, para que la instancia de axios del
+// frontend (baseURL ya incluye /api) resuelva las rutas correctamente.
+app.use("/api/cotizador-libre/clientes", cotizadorLibreClientesRoutes);
+app.use("/api/cotizador-libre/catalogo", cotizadorLibreCatalogoRoutes);
+app.use("/api/cotizador-libre", cotizadorLibrePrecioRoutes);
 
 // ==========================
 // HEALTH CHECK

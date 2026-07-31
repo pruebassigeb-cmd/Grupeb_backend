@@ -105,6 +105,8 @@ export const SECURITY_CONSTANTS = {
   CREATE_USER_MAX_ATTEMPTS: 10,
   GENERAL_MAX_REQUESTS:    500,
   APPROVAL_MAX_REQUESTS:   1000,
+  COTIZADOR_LIBRE_PRECIO_WINDOW_MS: 60 * 1000,
+  COTIZADOR_LIBRE_PRECIO_MAX_REQUESTS: 60,
   JWT_EXPIRATION:          "16h",
   COOKIE_MAX_AGE:          16 * 60 * 60 * 1000,
   BCRYPT_ROUNDS:           12,
@@ -152,4 +154,22 @@ export const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders:  false,
   message:        { error: "Demasiados intentos de inicio de sesión. Intenta más tarde." },
+});
+
+/**
+ * Rate limiter para el cálculo de precio del Cotizador Interactivo — ventana
+ * mucho más corta que el resto (1 minuto, no 15) porque cada llamada dispara
+ * una consulta real contra el motor de precios (papel o plástico), no una
+ * lectura simple, y el frontend la va a disparar seguido mientras el cliente
+ * configura su producto en vivo. 60/min por usuario es suficiente para uso
+ * normal sin dejar la puerta abierta a sondear la tabla de precios a fuerza
+ * bruta probando combinaciones.
+ */
+export const cotizadorLibrePrecioLimiter = rateLimit({
+  windowMs:       SECURITY_CONSTANTS.COTIZADOR_LIBRE_PRECIO_WINDOW_MS,
+  max:            SECURITY_CONSTANTS.COTIZADOR_LIBRE_PRECIO_MAX_REQUESTS,
+  standardHeaders: true,
+  legacyHeaders:  false,
+  keyGenerator:   generarClaveLimitador,
+  message:        { error: "Demasiadas solicitudes de cálculo de precio. Espera un momento." },
 });

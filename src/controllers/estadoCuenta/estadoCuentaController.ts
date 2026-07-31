@@ -1,18 +1,15 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
+import {
+  calcularTotalesVenta,
+  calcularUmbralAnticipo,
+  determinarEstadoVenta,
+} from "../../services/ventas/totalesVenta.service";
 
 export const getEstadoCuenta = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const { noPedido } = req.params;
-    const IVA = 0.16;
-
-    const ESTADO_PENDIENTE       = 1;
-    const ESTADO_ANTICIPO_PAGADO = 2;
-    const ESTADO_PAGADO          = 6;
-
-    // Umbral mínimo para considerar anticipo cubierto (40% del total)
-    const ANTICIPO_VALIDACION_MIN = 0.40;
 
     await client.query("BEGIN");
 
@@ -25,6 +22,8 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
         cli.empresa, cli.telefono, cli.correo,
         cli.impresion,
         v.idventas,
+        v.moneda,
+        v.tipo_cambio,
         v.subtotal  AS subtotal_original,
         v.iva       AS iva_original,
         v.total     AS total_original,
@@ -361,8 +360,10 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     nuevoSubtotal = Number(nuevoSubtotal.toFixed(2));
 
     // ── FIX: si el pedido es sin IVA, el IVA real también es 0 ───────────────
-    const nuevoIva   = sinIva ? 0 : Number((nuevoSubtotal * IVA).toFixed(2));
-    const nuevoTotal = Number((nuevoSubtotal + nuevoIva).toFixed(2));
+    const { iva: nuevoIva, total: nuevoTotal } = calcularTotalesVenta({
+      subtotal: nuevoSubtotal,
+      sinIva,
+    });
 
     const abonoActual     = Number(pedido.abono);
     const nuevoSaldo      = Number(Math.max(nuevoTotal - abonoActual, 0).toFixed(2));
@@ -372,19 +373,17 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     // ─────────────────────────────────────────────────────────────────────────
     // REGLA DE ESTADO
     // ─────────────────────────────────────────────────────────────────────────
-    const umbralActivacion  = Number((totalOriginal * ANTICIPO_VALIDACION_MIN).toFixed(2));
+    const umbralActivacion  = calcularUmbralAnticipo(totalOriginal);
     const anticipoYaCubierto =
       abonoActual >= umbralActivacion ||
       pedido.es_credito_anticipo === true;
 
-    let nuevoEstado: number;
-    if (nuevoSaldo <= 0) {
-      nuevoEstado = ESTADO_PAGADO;
-    } else if (anticipoYaCubierto) {
-      nuevoEstado = ESTADO_ANTICIPO_PAGADO;
-    } else {
-      nuevoEstado = ESTADO_PENDIENTE;
-    }
+    const nuevoEstado = determinarEstadoVenta(
+      abonoActual,
+      nuevoSaldo,
+      umbralActivacion,
+      pedido.es_credito_anticipo === true,
+    );
 
     console.log(
       `   sinIva=${sinIva} | umbral40%=${umbralActivacion} | abono=${abonoActual} | anticipoYaCubierto=${anticipoYaCubierto}` +
@@ -415,6 +414,8 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       telefono:      pedido.telefono,
       correo:        pedido.correo,
       sin_iva:       sinIva,
+      moneda:        pedido.moneda ?? "MXN",
+      tipo_cambio:   pedido.tipo_cambio ?? null,
 
       productos,
 
@@ -464,6 +465,7 @@ export const getListaEstadoCuenta = async (req: Request, res: Response) => {
         s.no_pedido, s.no_cotizacion, s.fecha,
         s.sin_iva,
         cli.razon_social AS cliente, cli.empresa,
+        v.moneda,
         v.total, v.abono, v.saldo, v.anticipo,
         v.total_real, v.diferencia_total,
         COUNT(DISTINCT op.idproduccion) AS total_ordenes,
@@ -487,7 +489,7 @@ export const getListaEstadoCuenta = async (req: Request, res: Response) => {
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
       GROUP BY s.no_pedido, s.no_cotizacion, s.fecha, s.sin_iva,
-               cli.razon_social, cli.empresa,
+               cli.razon_social, cli.empresa, v.moneda,
                v.total, v.abono, v.saldo, v.anticipo,
                v.total_real, v.diferencia_total
       HAVING COUNT(DISTINCT op.idproduccion) > 0

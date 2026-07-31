@@ -6,6 +6,11 @@ import {
   clavesMaquinariaRequeridasPapel,
   insertarProductoPapel,
 } from "./cotizacionPapel.helper";
+import { calcularTotalesVenta } from "../../services/ventas/totalesVenta.service";
+import {
+  type Moneda,
+  validarMonedaYTipoCambio,
+} from "../../utils/moneda.utils";
 
 const ESTADO = {
   PENDIENTE: 1,
@@ -13,9 +18,6 @@ const ESTADO = {
   APROBADO: 3,
   RECHAZADO: 4,
 } as const;
-
-const IVA_PORCENTAJE = 0.16;
-const ANTICIPO_PORCENTAJE = 0.5;
 
 type TipoDocumento = "cotizacion" | "pedido";
 
@@ -90,20 +92,24 @@ async function crearVentaYDiseno(
   folioPedido: string,
   subtotal: number,
   sinIva: boolean = false,
+  moneda: Moneda = "MXN",
+  tipoCambio: number | null = null,
 ): Promise<void> {
-  const iva = sinIva ? 0 : Number((subtotal * IVA_PORCENTAJE).toFixed(2));
-  const total = Number((subtotal + iva).toFixed(2));
-  const anticipo = Number((total * ANTICIPO_PORCENTAJE).toFixed(2));
+  const { iva, total, anticipo } = calcularTotalesVenta({ subtotal, sinIva });
 
   const { rows: ventaRows } = await client.query(
     `INSERT INTO ventas (
       solicitud_idsolicitud,
       estado_administrativo_cat_idestado_administrativo_cat,
       subtotal, iva, total, anticipo, saldo, abono,
+      moneda, tipo_cambio,
       fecha_creacion
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
     RETURNING idventas`,
-    [solicitudId, ESTADO.PENDIENTE, subtotal, iva, total, anticipo, total, 0],
+    [
+      solicitudId, ESTADO.PENDIENTE, subtotal, iva, total, anticipo, total, 0,
+      moneda, tipoCambio,
+    ],
   );
   console.log(
     `✅ Venta creada: idventas=${ventaRows[0].idventas} | pedido=${folioPedido} | sinIva=${sinIva} | anticipo=${anticipo}`,
@@ -174,6 +180,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
       tipo = "cotizacion",
       prioridad = false,
       sin_iva = false,
+      moneda: monedaRaw,
+      tipoCambio: tipoCambioRaw,
     } = req.body;
 
     console.log(
@@ -186,6 +194,17 @@ export const crearCotizacion = async (req: Request, res: Response) => {
     const tipoDocumento: TipoDocumento =
       tipo === "pedido" ? "pedido" : "cotizacion";
     const sinIvaBool = sin_iva === true || sin_iva === "true";
+
+    let moneda: Moneda;
+    let tipoCambio: number | null;
+    try {
+      ({ moneda, tipoCambio } = validarMonedaYTipoCambio(
+        monedaRaw,
+        tipoCambioRaw,
+      ));
+    } catch (e: any) {
+      return res.status(400).json({ error: e.message });
+    }
 
     if (!clienteId)
       return res.status(400).json({ error: "Se requiere clienteId" });
@@ -212,8 +231,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         `INSERT INTO solicitud (
           clientes_idclientes,
           estado_administrativo_cat_idestado_administrativo_cat,
-          estado, no_cotizacion, sin_iva
-        ) VALUES ($1, $2, $3, $4, $5)
+          estado, no_cotizacion, sin_iva, moneda, tipo_cambio
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING idsolicitud, no_cotizacion, no_pedido, estado`,
         [
           clienteId,
@@ -221,6 +240,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
           tipoDocumento,
           folioCotizacion,
           sinIvaBool,
+          moneda,
+          tipoCambio,
         ],
       ));
     } else {
@@ -228,8 +249,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         `INSERT INTO solicitud (
           clientes_idclientes,
           estado_administrativo_cat_idestado_administrativo_cat,
-          estado, no_pedido, prioridad, sin_iva
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+          estado, no_pedido, prioridad, sin_iva, moneda, tipo_cambio
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING idsolicitud, no_cotizacion, no_pedido, estado`,
         [
           clienteId,
@@ -238,6 +259,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
           folioPedido,
           prioridad,
           sinIvaBool,
+          moneda,
+          tipoCambio,
         ],
       ));
     }
@@ -414,6 +437,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         folioPedidoGuardado,
         subtotalTotal,
         sinIvaBool,
+        moneda,
+        tipoCambio,
       );
     }
 
@@ -456,6 +481,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           s.estado          AS tipo_documento,
           s.fecha,
           s.sin_iva,
+          s.moneda,
+          s.tipo_cambio,
           s.origen_expo,
           s.clientes_idclientes,
           s.estado_administrativo_cat_idestado_administrativo_cat,
@@ -866,7 +893,7 @@ export const actualizarEstadoCotizacion = async (
     await client.query("BEGIN");
 
     const { rows: docRows } = await client.query(
-      `SELECT idsolicitud, estado, no_pedido, sin_iva
+      `SELECT idsolicitud, estado, no_pedido, sin_iva, moneda, tipo_cambio
        FROM solicitud
        WHERE no_cotizacion = $1`,
       [id],
@@ -1011,6 +1038,8 @@ export const actualizarEstadoCotizacion = async (
         folioPedidoAsignado,
         subtotalTotal,
         sinIva,
+        doc.moneda ?? "MXN",
+        doc.tipo_cambio ?? null,
       );
     } else {
       await client.query(

@@ -1,47 +1,12 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
-
-const ESTADO = {
-  PENDIENTE:       1,
-  EN_PROCESO:      2,
-  APROBADO:        3,
-  RECHAZADO:       4,
-  ANTICIPO_PAGADO: 2,
-  PAGADO:          6,
-} as const;
-
-// ── Porcentajes de anticipo ────────────────────────────────────────────────────
-const ANTICIPO_PORCENTAJE_VISIBLE = 0.50; // referencia documental
-const ANTICIPO_VALIDACION_MIN     = 0.40; // umbral para producción Y estado EN_PROCESO
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: determina el nuevo estado respetando es_credito_anticipo.
-// Se usa en registrarPago, eliminarPago y cualquier otro lugar que recalcule.
-// ─────────────────────────────────────────────────────────────────────────────
-function determinarEstado(
-  nuevoAbono:          number,
-  nuevoSaldo:          number,
-  umbralActivacion:    number,
-  esCreditoAnticipo:   boolean
-): number {
-  if (nuevoSaldo <= 0)                             return ESTADO.PAGADO;
-  if (nuevoAbono >= umbralActivacion)              return ESTADO.ANTICIPO_PAGADO;
-  if (esCreditoAnticipo)                           return ESTADO.ANTICIPO_PAGADO; // ← FIX
-  return ESTADO.PENDIENTE;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: consulta si la venta tiene un registro de crédito en venta_pago
-// ─────────────────────────────────────────────────────────────────────────────
-async function ventaTieneCredito(client: any, ventaId: number): Promise<boolean> {
-  const { rows } = await client.query(
-    `SELECT 1 FROM venta_pago
-     WHERE ventas_idventas = $1 AND es_credito_anticipo = true
-     LIMIT 1`,
-    [ventaId]
-  );
-  return rows.length > 0;
-}
+import {
+  ESTADO_VENTA as ESTADO,
+  calcularUmbralAnticipo,
+  determinarEstadoVenta as determinarEstado,
+} from "../../services/ventas/totalesVenta.service";
+import { ventaTieneCredito } from "../../services/ventas/pagos.service";
+import { type Moneda, resolverMontoPago } from "../../utils/moneda.utils";
 
 async function generarNoProduccion(client: any): Promise<string> {
   const anio = new Date().getFullYear().toString().slice(-2);
@@ -319,6 +284,7 @@ export const getVentas = async (req: Request, res: Response) => {
       SELECT
         v.idventas, v.solicitud_idsolicitud,
         v.subtotal, v.iva, v.total, v.anticipo, v.saldo, v.abono,
+        v.moneda, v.tipo_cambio,
         v.fecha_creacion, v.fecha_liquidacion,
         v.estado_administrativo_cat_idestado_administrativo_cat AS estado_id,
         est.nombre AS estado_nombre,
@@ -356,6 +322,7 @@ export const getVentaById = async (req: Request, res: Response) => {
       SELECT
         v.idventas, v.solicitud_idsolicitud,
         v.subtotal, v.iva, v.total, v.anticipo, v.saldo, v.abono,
+        v.moneda, v.tipo_cambio,
         v.fecha_creacion, v.fecha_liquidacion,
         v.estado_administrativo_cat_idestado_administrativo_cat AS estado_id,
         est.nombre AS estado_nombre,
@@ -381,6 +348,7 @@ export const getVentaById = async (req: Request, res: Response) => {
     const { rows: pagos } = await pool.query(`
       SELECT vp.idventa_pago, vp.monto, vp.es_anticipo, vp.es_credito_anticipo,
              vp.observacion, vp.fecha,
+             vp.moneda, vp.tipo_cambio_aplicado, vp.monto_moneda_venta,
              mp.tipo_pago AS metodo_pago, mp.idmetodo_pago
       FROM venta_pago vp
       JOIN metodo_pago mp ON mp.idmetodo_pago = vp.metodo_pago_idmetodo_pago
@@ -405,6 +373,7 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
       SELECT
         v.idventas, v.solicitud_idsolicitud,
         v.subtotal, v.iva, v.total, v.anticipo, v.saldo, v.abono,
+        v.moneda, v.tipo_cambio,
         v.fecha_creacion, v.fecha_liquidacion,
         v.estado_administrativo_cat_idestado_administrativo_cat AS estado_id,
         est.nombre AS estado_nombre,
@@ -430,6 +399,7 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
     const { rows: pagos } = await pool.query(`
       SELECT vp.idventa_pago, vp.monto, vp.es_anticipo, vp.es_credito_anticipo,
              vp.observacion, vp.fecha,
+             vp.moneda, vp.tipo_cambio_aplicado, vp.monto_moneda_venta,
              mp.tipo_pago AS metodo_pago, mp.idmetodo_pago
       FROM venta_pago vp
       JOIN metodo_pago mp ON mp.idmetodo_pago = vp.metodo_pago_idmetodo_pago
@@ -451,7 +421,10 @@ export const registrarPago = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    const { metodoPagoId, monto, observacion = null, fecha = null } = req.body;
+    const {
+      metodoPagoId, monto, observacion = null, fecha = null,
+      moneda: monedaPagoRaw, tipoCambioAplicado: tipoCambioAplicadoRaw,
+    } = req.body;
 
     if (!metodoPagoId) return res.status(400).json({ error: "Se requiere metodoPagoId" });
     if (!monto || Number(monto) <= 0) return res.status(400).json({ error: "El monto debe ser mayor a 0" });
@@ -471,7 +444,7 @@ export const registrarPago = async (req: Request, res: Response) => {
     await client.query("BEGIN");
 
     const { rows: ventaRows } = await client.query(
-      `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud
+      `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud, v.moneda
        FROM ventas v WHERE v.idventas = $1`,
       [id]
     );
@@ -484,12 +457,23 @@ export const registrarPago = async (req: Request, res: Response) => {
     const venta       = ventaRows[0];
     const solicitudId = venta.solicitud_idsolicitud;
     const montoNum    = Number(monto);
+    const monedaVenta: Moneda = venta.moneda ?? "MXN";
+
+    let resuelto;
+    try {
+      resuelto = resolverMontoPago(montoNum, monedaPagoRaw, monedaVenta, tipoCambioAplicadoRaw);
+    } catch (e: any) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: e.message });
+    }
+    const { moneda: monedaPago, tipoCambioAplicado, montoMonedaVenta } = resuelto;
+
     const abonoAntes  = Number(venta.abono);
-    const nuevoAbono  = Number((abonoAntes + montoNum).toFixed(2));
+    const nuevoAbono  = Number((abonoAntes + montoMonedaVenta).toFixed(2));
     const totalVenta  = Number(venta.total);
     const nuevoSaldo  = Number((totalVenta - nuevoAbono).toFixed(2));
 
-    const umbralActivacion = Number((totalVenta * ANTICIPO_VALIDACION_MIN).toFixed(2));
+    const umbralActivacion = calcularUmbralAnticipo(totalVenta);
 
     const anticipoAntesNoCubierto = abonoAntes  < umbralActivacion;
     const anticipoAhoraCubierto   = nuevoAbono >= umbralActivacion;
@@ -500,14 +484,18 @@ export const registrarPago = async (req: Request, res: Response) => {
     const esCreditoAnticipo = await ventaTieneCredito(client, Number(id));
     const nuevoEstado       = determinarEstado(nuevoAbono, nuevoSaldo, umbralActivacion, esCreditoAnticipo);
 
-    console.log(`💳 Pago: abono=${nuevoAbono} | umbral=${umbralActivacion} | credito=${esCreditoAnticipo} | estado=${nuevoEstado}`);
+    console.log(`💳 Pago: abono=${nuevoAbono} | umbral=${umbralActivacion} | credito=${esCreditoAnticipo} | estado=${nuevoEstado} | moneda=${monedaPago}${tipoCambioAplicado ? ` (tc=${tipoCambioAplicado} → ${montoMonedaVenta} ${monedaVenta})` : ""}`);
 
     await client.query(
       `INSERT INTO venta_pago (
         ventas_idventas, metodo_pago_idmetodo_pago,
-        monto, es_anticipo, es_credito_anticipo, observacion, fecha
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [id, metodoPagoId, montoNum, esAnticipoReal, false, observacion, fechaPago ?? new Date()]
+        monto, es_anticipo, es_credito_anticipo, observacion, fecha,
+        moneda, tipo_cambio_aplicado, monto_moneda_venta
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        id, metodoPagoId, montoNum, esAnticipoReal, false, observacion, fechaPago ?? new Date(),
+        monedaPago, tipoCambioAplicado, montoMonedaVenta,
+      ]
     );
 
     await client.query(
@@ -537,6 +525,9 @@ export const registrarPago = async (req: Request, res: Response) => {
       es_anticipo:       esAnticipoReal,
       liquidado:         esLiquidacion,
       ordenes_generadas: ordenesGeneradas,
+      moneda:              monedaPago,
+      tipo_cambio_aplicado: tipoCambioAplicado,
+      monto_moneda_venta:   montoMonedaVenta,
     });
 
   } catch (error: any) {
@@ -569,7 +560,7 @@ export const eliminarPago = async (req: Request, res: Response) => {
     await client.query(`DELETE FROM venta_pago WHERE idventa_pago = $1`, [id]);
 
     const { rows: sumaRows } = await client.query(
-      `SELECT COALESCE(SUM(monto), 0) AS total_abonado FROM venta_pago WHERE ventas_idventas = $1`,
+      `SELECT COALESCE(SUM(monto_moneda_venta), 0) AS total_abonado FROM venta_pago WHERE ventas_idventas = $1`,
       [ventaId]
     );
     const nuevoAbono = Number(sumaRows[0].total_abonado);
@@ -581,7 +572,7 @@ export const eliminarPago = async (req: Request, res: Response) => {
     const nuevoSaldo    = Number((total - nuevoAbono).toFixed(2));
     const estaLiquidado = nuevoSaldo <= 0;
 
-    const umbralActivacion = Number((total * ANTICIPO_VALIDACION_MIN).toFixed(2));
+    const umbralActivacion = calcularUmbralAnticipo(total);
 
     // FIX: verificar si aún queda algún registro de crédito DESPUÉS de eliminar
     // (el DELETE ya ocurrió, así que si el pago eliminado era el de crédito,
@@ -629,7 +620,7 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
     await client.query("BEGIN");
 
     const { rows: ventaRows } = await client.query(
-      `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud
+      `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud, v.moneda
        FROM ventas v WHERE v.idventas = $1`,
       [id]
     );
@@ -642,8 +633,9 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
     const venta = ventaRows[0];
     const total = Number(venta.total);
     const abono = Number(venta.abono);
+    const monedaVenta: Moneda = venta.moneda ?? "MXN";
 
-    const umbralActivacion = Number((total * ANTICIPO_VALIDACION_MIN).toFixed(2));
+    const umbralActivacion = calcularUmbralAnticipo(total);
 
     if (abono >= umbralActivacion) {
       await client.query("ROLLBACK");
@@ -660,9 +652,10 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
     await client.query(
       `INSERT INTO venta_pago (
         ventas_idventas, metodo_pago_idmetodo_pago,
-        monto, es_anticipo, es_credito_anticipo, observacion, fecha
-      ) VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-      [id, 1, 0, true, true, "Anticipo autorizado por crédito"]
+        monto, es_anticipo, es_credito_anticipo, observacion, fecha,
+        moneda, tipo_cambio_aplicado, monto_moneda_venta
+      ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)`,
+      [id, 1, 0, true, true, "Anticipo autorizado por crédito", monedaVenta, null, 0]
     );
 
     const ordenesGeneradas = await generarOrdenesPendientes(client, venta.solicitud_idsolicitud);

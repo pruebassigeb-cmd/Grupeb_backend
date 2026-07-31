@@ -1144,6 +1144,23 @@ export const finalizarProcesoPapel = async (req: Request, res: Response) => {
   } catch (error: any) {
     await client.query("ROLLBACK");
     console.error("FINALIZAR PROCESO PAPEL ERROR:", error.message);
+
+    // Código 23503 = violación de llave foránea en Postgres. Si es
+    // justo sobre orden_produccion_proceso_actual_fkey, casi siempre es la
+    // caché en memoria de proceso_cat desactualizada: un id que era válido
+    // cuando el servidor cargó la caché pero que ya no existe en la tabla
+    // real (por ejemplo, si proceso_cat se truncó/recargó sin reiniciar el
+    // proceso de Node). Limpiar la caché fuerza a releerla del catálogo
+    // real en la siguiente petición, sin necesitar un reinicio manual.
+    if (error?.code === "23503" && error?.constraint === "orden_produccion_proceso_actual_fkey") {
+      cacheClaveAId = null;
+      cacheIdAClave = null;
+      return res.status(409).json({
+        error: "El catálogo de procesos de papel cambió después de que el servidor inició su caché. " +
+               "Ya se limpió esa caché -- intenta finalizar el proceso de nuevo.",
+      });
+    }
+
     return res.status(500).json({ error: "Error al finalizar proceso de papel" });
   } finally { client.release(); }
 };

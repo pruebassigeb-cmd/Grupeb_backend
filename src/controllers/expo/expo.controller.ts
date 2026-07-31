@@ -10,6 +10,11 @@ import {
   listarCatalogoPapelSistema,
   obtenerProductoPapelCatalogoExpoPorId,
 } from "../../services/expo/catalogoPapelExpo.service";
+import { calcularTotalesVenta } from "../../services/ventas/totalesVenta.service";
+import {
+  type Moneda,
+  validarMonedaYTipoCambio,
+} from "../../utils/moneda.utils";
 
 const ESTADO = { PENDIENTE: 1, EN_PROCESO: 2, APROBADO: 3, RECHAZADO: 4 } as const;
 
@@ -55,16 +60,15 @@ async function generarIdentificador(client: any): Promise<string> {
 
 async function crearVentaYDiseno(
   client: any, solicitudId: number, folioPedido: string,
-  subtotal: number, sinIva = false
+  subtotal: number, sinIva = false,
+  moneda: Moneda = "MXN", tipoCambio: number | null = null,
 ): Promise<void> {
-  const iva = sinIva ? 0 : Number((subtotal * 0.16).toFixed(2));
-  const total = Number((subtotal + iva).toFixed(2));
-  const anticipo = Number((total * 0.50).toFixed(2));
+  const { iva, total, anticipo } = calcularTotalesVenta({ subtotal, sinIva });
   const { rows: vr } = await client.query(
     `INSERT INTO ventas (solicitud_idsolicitud,estado_administrativo_cat_idestado_administrativo_cat,
-       subtotal,iva,total,anticipo,saldo,abono,fecha_creacion)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW()) RETURNING idventas`,
-    [solicitudId, ESTADO.PENDIENTE, subtotal, iva, total, anticipo, total, 0]
+       subtotal,iva,total,anticipo,saldo,abono,moneda,tipo_cambio,fecha_creacion)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW()) RETURNING idventas`,
+    [solicitudId, ESTADO.PENDIENTE, subtotal, iva, total, anticipo, total, 0, moneda, tipoCambio]
   );
   console.log(`✅ [EXPO] Venta #${vr[0].idventas}`);
   const { rows: dr } = await client.query(
@@ -1658,18 +1662,26 @@ export const getSiguienteFolioExpo = async (_req: Request, res: Response) => {
 export const crearCotizacionExpo = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    const { clienteId, productos, comentarios } = req.body;
+    const { clienteId, productos, comentarios, moneda: monedaRaw, tipoCambio: tipoCambioRaw } = req.body;
     if (!clienteId) return res.status(400).json({ error: "Se requiere clienteId" });
     if (!productos?.length) return res.status(400).json({ error: "Se requiere al menos un producto" });
+
+    let moneda: Moneda;
+    let tipoCambio: number | null;
+    try {
+      ({ moneda, tipoCambio } = validarMonedaYTipoCambio(monedaRaw, tipoCambioRaw));
+    } catch (e: any) {
+      return res.status(400).json({ error: e.message });
+    }
 
     await client.query("BEGIN");
     const folioCotizacion = await obtenerSiguienteFolioCotizacion(client);
     const { rows: solRows } = await client.query(`
       INSERT INTO solicitud (clientes_idclientes,estado_administrativo_cat_idestado_administrativo_cat,
-        estado,no_cotizacion,origen_expo,sin_iva)
-      VALUES ($1,$2,'cotizacion',$3,true,false)
+        estado,no_cotizacion,origen_expo,sin_iva,moneda,tipo_cambio)
+      VALUES ($1,$2,'cotizacion',$3,true,false,$4,$5)
       RETURNING idsolicitud,no_cotizacion`,
-      [clienteId, ESTADO.PENDIENTE, folioCotizacion]
+      [clienteId, ESTADO.PENDIENTE, folioCotizacion, moneda, tipoCambio]
     );
     const solicitudId = solRows[0].idsolicitud;
     const noCotizacion = solRows[0].no_cotizacion;
@@ -2696,7 +2708,7 @@ export const aprobarCotizacionExpo = async (req: Request, res: Response) => {
     if (!itemsAprobados?.length) return res.status(400).json({ error: "Selecciona al menos un producto" });
     await client.query("BEGIN");
     const { rows: solRows } = await client.query(
-      `SELECT idsolicitud,estado,no_pedido,sin_iva FROM solicitud
+      `SELECT idsolicitud,estado,no_pedido,sin_iva,moneda,tipo_cambio FROM solicitud
        WHERE no_cotizacion=$1 AND origen_expo=true`, [folio]
     );
     if (!solRows.length) {
@@ -2757,7 +2769,10 @@ export const aprobarCotizacionExpo = async (req: Request, res: Response) => {
       LEFT JOIN solicitud_detalle sd ON sd.solicitud_producto_id=sp.idsolicitud_producto
       WHERE sp.solicitud_idsolicitud=$1`, [sol.idsolicitud]
     );
-    await crearVentaYDiseno(client, sol.idsolicitud, folioPedido, Number(stRows[0].subtotal), sol.sin_iva);
+    await crearVentaYDiseno(
+      client, sol.idsolicitud, folioPedido, Number(stRows[0].subtotal), sol.sin_iva,
+      sol.moneda ?? "MXN", sol.tipo_cambio ?? null,
+    );
     await client.query("COMMIT");
     return res.json({
       message: "Cotización aprobada y convertida a pedido",

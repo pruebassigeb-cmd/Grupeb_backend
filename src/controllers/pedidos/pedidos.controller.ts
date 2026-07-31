@@ -4,6 +4,12 @@ import {
   guardarMaquinariaSeleccionadaPapel,
   validarMaquinariaSeleccionadaPapel,
 } from "../cotizaciones/cotizacionPapel.helper";
+import {
+  calcularTotalesVenta,
+  calcularUmbralAnticipo,
+  determinarEstadoVenta,
+} from "../../services/ventas/totalesVenta.service";
+import { ventaTieneCredito } from "../../services/ventas/pagos.service";
 
 function normalizarNombreEstado(nombre: string): string {
   if (!nombre) return "Pendiente";
@@ -148,6 +154,8 @@ export const getPedidos = async (req: Request, res: Response) => {
           s.fecha,
           s.prioridad,
           s.sin_iva,
+          s.moneda,
+          s.tipo_cambio,
           s.clientes_idclientes,
           s.estado_administrativo_cat_idestado_administrativo_cat,
 
@@ -1271,30 +1279,15 @@ export const actualizarPedido = async (req: Request, res: Response) => {
         Number(sumRows[0].subtotal_prods) +
         Number(sumRows[0].subtotal_herr) +
         Number(sumRows[0].subtotal_cargo_adicional);
-      const ivaNuevo = sinIva ? 0 : Math.round(subtotalNuevo * 0.16 * 100) / 100;
-      const totalNuevo = Math.round((subtotalNuevo + ivaNuevo) * 100) / 100;
-
-      // anticipo documental = 50% del nuevo total
-      const anticipoNuevo = Math.round(totalNuevo * 0.50 * 100) / 100;
+      const { iva: ivaNuevo, total: totalNuevo, anticipo: anticipoNuevo } =
+        calcularTotalesVenta({ subtotal: subtotalNuevo, sinIva });
       // saldo = lo que falta pagar (nunca negativo)
-      const saldoNuevo = Math.max(Math.round((totalNuevo - abono) * 100) / 100, 0);
+      const saldoNuevo = Math.max(Number((totalNuevo - abono).toFixed(2)), 0);
 
       // Recalcular estado según nuevo total y abono actual
-      const ANTICIPO_VALIDACION_MIN = 0.40;
-      const umbral = Math.round(totalNuevo * ANTICIPO_VALIDACION_MIN * 100) / 100;
-
-      const { rows: creditoRows } = await client.query(
-        `SELECT 1 FROM venta_pago
-         WHERE ventas_idventas = $1 AND es_credito_anticipo = true LIMIT 1`,
-        [ventaId]
-      );
-      const tieneCredito = creditoRows.length > 0;
-      const anticipoCubierto = abono >= umbral || tieneCredito;
-
-      let nuevoEstado: number;
-      if (saldoNuevo <= 0) nuevoEstado = 6; // PAGADO
-      else if (anticipoCubierto) nuevoEstado = 2; // ANTICIPO_PAGADO / EN_PROCESO
-      else nuevoEstado = 1; // PENDIENTE
+      const umbral = calcularUmbralAnticipo(totalNuevo);
+      const tieneCredito = await ventaTieneCredito(client, ventaId);
+      const nuevoEstado = determinarEstadoVenta(abono, saldoNuevo, umbral, tieneCredito);
 
       await client.query(
         `UPDATE ventas SET

@@ -4,6 +4,7 @@ import app from "./app";
 import cron from "node-cron";
 import { pool } from "./config/db";
 import { iniciarCronReporteSemanal } from "./jobs/reporteSemanal.cron";
+import { iniciarCronTipoCambio } from "./jobs/tipoCambio.cron";
 
 const PORT = process.env.PORT || 3000;
 
@@ -21,6 +22,12 @@ app.listen(PORT, () => {
 // Corre todos los lunes a las 8:00 AM
 // ============================================================
 iniciarCronReporteSemanal();
+
+// ============================================================
+// CRON JOB — Sincronización diaria del tipo de cambio (Banxico)
+// Corre todos los días a las 2:00 PM, más una sincronización al arrancar
+// ============================================================
+iniciarCronTipoCambio();
 
 // ============================================================
 // CRON JOB — Limpieza de chats aprobados hace más de 30 días
