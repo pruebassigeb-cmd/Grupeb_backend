@@ -114,25 +114,3 @@ export async function obtenerHistorialTipoCambio(
   );
   return rows;
 }
-
-export async function registrarTipoCambioManual(
-  valor: number,
-  usuarioId: number,
-): Promise<TipoCambioActual> {
-  if (!valor || valor <= 0) {
-    throw new Error("El valor del tipo de cambio debe ser mayor a 0");
-  }
-
-  const hoy = new Date().toISOString().slice(0, 10);
-
-  const { rows } = await pool.query(
-    `INSERT INTO tipo_cambio (fecha, valor, origen, capturado_por)
-     VALUES ($1, $2, 'manual', $3)
-     ON CONFLICT (fecha) DO UPDATE
-       SET valor = EXCLUDED.valor, origen = 'manual', capturado_por = EXCLUDED.capturado_por
-     RETURNING idtipo_cambio, fecha, valor, origen, capturado_por, created_at`,
-    [hoy, valor, usuarioId],
-  );
-
-  return rows[0];
-}

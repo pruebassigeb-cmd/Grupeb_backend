@@ -10,6 +10,7 @@ import {
   aprobarDetalle,
   actualizarObservacion,
   aprobarHerramental,
+  cambiarMonedaCotizacion,
 } from "../../controllers/cotizaciones/cotizaciones.controller";
 import { getColoresAsa }     from "../../controllers/cotizaciones/coloresAsa.controller";
 import { getMedidasTroquel } from "../../controllers/cotizaciones/medidasTroquel.controller";
@@ -135,6 +136,14 @@ router.delete(
   checkPermiso(PERMISO),
   writeLimiter,
   eliminarCotizacion
+);
+
+router.put(
+  "/:id/moneda",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  writeLimiter,
+  cambiarMonedaCotizacion
 );
 
 router.post(

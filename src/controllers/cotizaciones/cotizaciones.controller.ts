@@ -7,6 +7,7 @@ import {
   insertarProductoPapel,
 } from "./cotizacionPapel.helper";
 import { calcularTotalesVenta } from "../../services/ventas/totalesVenta.service";
+import { cambiarMonedaSolicitud } from "../../services/ventas/cambioMoneda.service";
 import {
   type Moneda,
   validarMonedaYTipoCambio,
@@ -54,8 +55,7 @@ async function obtenerSiguienteNumeroCotizacion(client: any): Promise<number> {
   `);
   return rows[0].siguiente;
 }
-
-async function obtenerSiguienteFolioCotizacion(client: any): Promise<string> {
+export async function obtenerSiguienteFolioCotizacion(client: any): Promise<string> {
   const numero = await obtenerSiguienteNumeroCotizacion(client);
   return generarFolioCotizacion(numero);
 }
@@ -69,7 +69,7 @@ async function obtenerSiguienteFolioCotizacion(client: any): Promise<string> {
 // hasta que Expo intentaba aprobar y chocaba con un folio "P26XXX" que el
 // otro mecanismo ya había asignado (violación de ux_solicitud_no_pedido).
 // Unificado para que ambos módulos compartan el mismo contador atómico.
-async function obtenerSiguienteFolioPedido(client: any): Promise<string> {
+export async function obtenerSiguienteFolioPedido(client: any): Promise<string> {
   const { rows } = await client.query(`SELECT public.generar_folio_pedido() AS folio`);
   return String(rows[0].folio);
 }
@@ -86,7 +86,7 @@ async function generarFolioOrdenDiseno(client: any): Promise<string> {
   return `OD${yy}${String(rows[0].siguiente).padStart(3, "0")}`;
 }
 
-async function crearVentaYDiseno(
+export async function crearVentaYDiseno(
   client: any,
   solicitudId: number,
   folioPedido: string,
@@ -96,7 +96,7 @@ async function crearVentaYDiseno(
   tipoCambio: number | null = null,
 ): Promise<void> {
   const { iva, total, anticipo } = calcularTotalesVenta({ subtotal, sinIva });
-
+  
   const { rows: ventaRows } = await client.query(
     `INSERT INTO ventas (
       solicitud_idsolicitud,
@@ -677,6 +677,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           tipo_documento: row.tipo_documento ?? "cotizacion",
           fecha: row.fecha,
           sin_iva: row.sin_iva ?? false,
+          moneda: row.moneda ?? "MXN",
+          tipo_cambio: row.tipo_cambio != null ? Number(row.tipo_cambio) : null,
           origen_expo: row.origen_expo === true,
           estado_id: row.estado_administrativo_cat_idestado_administrativo_cat,
           estado: normalizarNombreEstado(row.estado_nombre || ""),
@@ -1070,6 +1072,30 @@ export const actualizarEstadoCotizacion = async (
     });
   } finally {
     client.release();
+  }
+};
+
+// ============================================================
+// CAMBIAR MONEDA (cotización, aún sin pagos si ya es pedido)
+// ============================================================
+export const cambiarMonedaCotizacion = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { moneda } = req.body;
+
+    const { rows: solRows } = await pool.query(
+      `SELECT idsolicitud FROM solicitud WHERE no_cotizacion = $1`,
+      [id],
+    );
+    if (solRows.length === 0) {
+      return res.status(404).json({ error: "Cotización no encontrada" });
+    }
+
+    const resultado = await cambiarMonedaSolicitud(solRows[0].idsolicitud, moneda);
+    return res.json(resultado);
+  } catch (error: any) {
+    console.error("❌ CAMBIAR MONEDA COTIZACIÓN ERROR:", error.message);
+    return res.status(400).json({ error: error.message || "Error al cambiar la moneda" });
   }
 };
 

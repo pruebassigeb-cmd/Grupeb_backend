@@ -3,7 +3,6 @@ import { AuthRequest } from "../../middlewares/auth.middleware";
 import {
   obtenerTipoCambioActual,
   obtenerHistorialTipoCambio,
-  registrarTipoCambioManual,
 } from "../../services/tipoCambio/tipoCambio.service";
 
 // ============================================================
@@ -37,26 +36,5 @@ export const getTipoCambioHistorial = async (req: AuthRequest, res: Response) =>
     return res
       .status(500)
       .json({ error: "Error al obtener el historial de tipo de cambio" });
-  }
-};
-
-// ============================================================
-// CAPTURA / CORRECCIÓN MANUAL
-// ============================================================
-export const putTipoCambioManual = async (req: AuthRequest, res: Response) => {
-  try {
-    const { valor } = req.body;
-    if (!valor || Number(valor) <= 0) {
-      return res.status(400).json({ error: "Se requiere un valor mayor a 0" });
-    }
-
-    const usuarioId = req.user!.id;
-    const actualizado = await registrarTipoCambioManual(Number(valor), usuarioId);
-    return res.json(actualizado);
-  } catch (error: any) {
-    console.error("❌ PUT TIPO DE CAMBIO MANUAL ERROR:", error.message);
-    return res
-      .status(500)
-      .json({ error: "Error al registrar el tipo de cambio" });
   }
 };

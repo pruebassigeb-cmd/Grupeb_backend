@@ -10,6 +10,7 @@ import {
   determinarEstadoVenta,
 } from "../../services/ventas/totalesVenta.service";
 import { ventaTieneCredito } from "../../services/ventas/pagos.service";
+import { cambiarMonedaSolicitud } from "../../services/ventas/cambioMoneda.service";
 
 function normalizarNombreEstado(nombre: string): string {
   if (!nombre) return "Pendiente";
@@ -365,6 +366,8 @@ export const getPedidos = async (req: Request, res: Response) => {
           fecha: row.fecha,
           prioridad: row.prioridad ?? false,
           sin_iva: row.sin_iva ?? false,
+          moneda: row.moneda ?? "MXN",
+          tipo_cambio: row.tipo_cambio != null ? Number(row.tipo_cambio) : null,
           estado_id: row.estado_administrativo_cat_idestado_administrativo_cat,
           estado: normalizarNombreEstado(row.estado_nombre || ""),
           diseno_estado_id: row.diseno_estado_id ?? 1,
@@ -1327,6 +1330,29 @@ export const actualizarPedido = async (req: Request, res: Response) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // DELETE /pedidos/:id
 // ═══════════════════════════════════════════════════════════════════════════════
+// ============================================================
+// CAMBIAR MONEDA (bloqueado si el pedido ya tiene pagos registrados)
+// ============================================================
+export const cambiarMonedaPedido = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { moneda } = req.body;
+
+    const { rows: pedRows } = await pool.query(
+      `SELECT idsolicitud FROM solicitud WHERE no_pedido = $1`, [id]
+    );
+    if (pedRows.length === 0) {
+      return res.status(404).json({ error: "Pedido no encontrado" });
+    }
+
+    const resultado = await cambiarMonedaSolicitud(pedRows[0].idsolicitud, moneda);
+    return res.json(resultado);
+  } catch (error: any) {
+    console.error("❌ CAMBIAR MONEDA PEDIDO ERROR:", error.message);
+    return res.status(400).json({ error: error.message || "Error al cambiar la moneda" });
+  }
+};
+
 export const eliminarPedido = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {

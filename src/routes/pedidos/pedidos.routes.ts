@@ -8,7 +8,8 @@ import {
   eliminarPedido,
   actualizarPedido,       // ← nuevo
   eliminarPedidoCompleto,
-  getHistorialPedidosPorCliente
+  getHistorialPedidosPorCliente,
+  cambiarMonedaPedido,
 } from "../../controllers/pedidos/pedidos.controller";
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 
@@ -55,6 +56,13 @@ router.delete(
   authMiddleware,
   checkPermiso(PERMISO),
   eliminarPedido
+);
+
+router.put(
+  "/:id/moneda",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  cambiarMonedaPedido
 );
 
 router.delete(

@@ -75,3 +75,45 @@ export function determinarEstadoVenta(
   if (esCreditoAnticipo) return ESTADO_VENTA.ANTICIPO_PAGADO;
   return ESTADO_VENTA.PENDIENTE;
 }
+
+// Suma detalle + herramental aprobado + cargo adicional de papel para una
+// solicitud — el mismo cálculo que ya vivía copiado en
+// actualizarEstadoCotizacion (cotizaciones.controller.ts) y actualizarPedido
+// (pedidos.controller.ts). Usado por cambioMoneda.service.ts para no
+// agregar una tercera copia.
+export async function calcularSubtotalSolicitud(
+  client: any,
+  idsolicitud: number,
+): Promise<number> {
+  const { rows } = await client.query(
+    `SELECT
+       (SELECT COALESCE(SUM(sd.precio_total), 0)
+        FROM solicitud_detalle sd
+        JOIN solicitud_producto sp ON sp.idsolicitud_producto = sd.solicitud_producto_id
+        WHERE sp.solicitud_idsolicitud = $1) AS subtotal_detalles,
+       (SELECT COALESCE(SUM(h.herramental_precio), 0)
+        FROM herramental h
+        JOIN solicitud_producto sp ON sp.idsolicitud_producto = h.idsolicitud_producto
+        WHERE sp.solicitud_idsolicitud = $1
+          AND h.aprobado = true
+          AND EXISTS (
+            SELECT 1 FROM solicitud_detalle sd
+            WHERE sd.solicitud_producto_id = sp.idsolicitud_producto AND sd.aprobado = true
+          )) AS subtotal_herramental,
+       (SELECT COALESCE(SUM(spp.cargo_adicional_precio), 0)
+        FROM solicitud_producto_papel spp
+        JOIN solicitud_producto sp ON sp.idsolicitud_producto = spp.idsolicitud_producto
+        WHERE sp.solicitud_idsolicitud = $1
+          AND EXISTS (
+            SELECT 1 FROM solicitud_detalle sd
+            WHERE sd.solicitud_producto_id = sp.idsolicitud_producto AND sd.aprobado = true
+          )) AS subtotal_cargo_adicional`,
+    [idsolicitud],
+  );
+
+  return (
+    Number(rows[0].subtotal_detalles) +
+    Number(rows[0].subtotal_herramental) +
+    Number(rows[0].subtotal_cargo_adicional)
+  );
+}
