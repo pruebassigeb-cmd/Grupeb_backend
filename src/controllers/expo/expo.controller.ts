@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 // src/controllers/expo/expo.controller.ts
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
@@ -679,7 +680,7 @@ export const getCatalogoSistema = async (req: Request, res: Response) => {
     const papel = await papelPromise;
 
     const { rows: coloresAsa } = await pool.query(
-      `SELECT id_color AS id, INITCAP(color) AS nombre FROM color_asa ORDER BY id_color`
+      `SELECT id_color AS id, INITCAP(color) AS nombre FROM color_asa WHERE activo = true ORDER BY color`
     );
     const { rows: suajesPlast } = await pool.query(
       `SELECT idsuaje AS id, tipo FROM asa_suaje WHERE idproductos = 1 ORDER BY idsuaje`
@@ -903,7 +904,7 @@ export const crearProductoCatalogo = async (req: Request, res: Response) => {
     const num = (v: any) => (v != null && v !== "") ? Number(v) : null;
     const bool = (v: any) => v === true || v === "true";
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     if (categoria === "plastico") {
       let tipoId: number | null = null;
@@ -1339,7 +1340,7 @@ export const actualizarProductoCatalogo = async (req: Request, res: Response) =>
     const num = (v: any) => (v != null && v !== "") ? Number(v) : null;
     const bool = (v: any) => v === true || v === "true";
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     if (categoria === "plastico") {
       await actualizarConfiguracionPlasticoEnLugar(client, Number(id), {
@@ -1510,14 +1511,14 @@ export const eliminarProductoCatalogo = async (req: Request, res: Response) => {
     const categoria = String(req.query.categoria || req.body?.categoria || "");
 
     if (categoria === "plastico") {
-      const { rowCount } = await pool.query(
+      const { rowCount } = await qAudit(req)(
         `UPDATE configuracion_plastico SET activo=false WHERE idconfiguracion_plastico=$1 AND origen_expo=true`, [id]
       );
       if (!rowCount) return res.status(404).json({ error: "Producto no encontrado (o no fue creado desde Expo)" });
       return res.json({ message: "Producto eliminado" });
     }
 
-    const { rowCount } = await pool.query(
+    const { rowCount } = await qAudit(req)(
       `UPDATE producto_papel SET activo=false, updated_at=NOW() WHERE idproducto_papel=$1 AND origen_expo=true`, [id]
     );
     if (!rowCount) return res.status(404).json({ error: "Producto no encontrado (o no fue creado desde Expo)" });
@@ -1535,7 +1536,7 @@ export const crearClienteExpo = async (req: Request, res: Response) => {
   try {
     const { nombre, celular, correo, impresion, ciudad, estado, clase, intereses, observaciones } = req.body;
     if (!nombre?.trim()) return res.status(400).json({ error: "El nombre es requerido" });
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     const identificar = await generarIdentificador(client);
     const { rows } = await client.query(`
       INSERT INTO clientes (atencion,celular,correo,impresion,origen_expo,clasificacion_expo,
@@ -1588,7 +1589,7 @@ export const actualizarClienteExpo = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { nombre, celular, correo, impresion, ciudad, estado, clase, intereses, observaciones } = req.body;
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     await client.query(`
       UPDATE clientes SET atencion=$1,celular=$2,correo=$3,impresion=$4,
         clasificacion_expo=$5,intereses_expo=$6,observaciones_expo=$7
@@ -1622,7 +1623,7 @@ export const eliminarClienteExpo = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     const { rows } = await client.query(
       `SELECT COUNT(*) AS total FROM solicitud WHERE clientes_idclientes=$1`, [id]
     );
@@ -1674,7 +1675,7 @@ export const crearCotizacionExpo = async (req: Request, res: Response) => {
       return res.status(400).json({ error: e.message });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     const folioCotizacion = await obtenerSiguienteFolioCotizacion(client);
     const { rows: solRows } = await client.query(`
       INSERT INTO solicitud (clientes_idclientes,estado_administrativo_cat_idestado_administrativo_cat,
@@ -2706,7 +2707,7 @@ export const aprobarCotizacionExpo = async (req: Request, res: Response) => {
     const { folio } = req.params;
     const { itemsAprobados } = req.body;
     if (!itemsAprobados?.length) return res.status(400).json({ error: "Selecciona al menos un producto" });
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     const { rows: solRows } = await client.query(
       `SELECT idsolicitud,estado,no_pedido,sin_iva,moneda,tipo_cambio FROM solicitud
        WHERE no_cotizacion=$1 AND origen_expo=true`, [folio]
@@ -2790,7 +2791,7 @@ export const eliminarCotizacionExpo = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const { folio } = req.params;
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     const { rows: solRows } = await client.query(
       `SELECT idsolicitud,estado FROM solicitud WHERE no_cotizacion=$1 AND origen_expo=true`, [folio]
     );

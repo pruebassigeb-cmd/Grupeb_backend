@@ -1,3 +1,4 @@
+import { qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -62,7 +63,7 @@ export const createPaqueteria = async (req: Request, res: Response) => {
     if ((existeNombre.rowCount ?? 0) > 0)
       return res.status(400).json({ error: "Ya existe una paquetería con ese nombre" });
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `INSERT INTO paqueteria (nombre, telefono, sitioweb, calle, numero, colonia, cp, poblacion, estado)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        RETURNING idpaqueteria, nombre, telefono, sitioweb,
@@ -111,7 +112,7 @@ export const updatePaqueteria = async (req: Request, res: Response) => {
     if ((existeNombre.rowCount ?? 0) > 0)
       return res.status(400).json({ error: "Ya existe una paquetería con ese nombre" });
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE paqueteria
        SET nombre   = $1, activo   = $2,
            telefono = $3, sitioweb = $4,
@@ -162,7 +163,7 @@ export const deletePaqueteria = async (req: Request, res: Response) => {
     if ((tieneEnvios.rowCount ?? 0) > 0)
       return res.status(400).json({ error: "No se puede eliminar una paquetería que tiene envíos registrados" });
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       "DELETE FROM paqueteria WHERE idpaqueteria = $1 RETURNING idpaqueteria",
       [id]
     );

@@ -22,12 +22,18 @@ export const CARPETAS = {
   usuarios_ine: "usuarios-ine",
   suaje: "suaje",
   catalogo_productos: "catalogoproductos",   // ← fotos del catálogo de productos (expo)
+  // ✅ NUEVO — fotos de referencia de los catálogos administrativos de papel
+  // (tipo de producto, tipo de asa, textura, tipo de papel, laminado, foil,
+  // HS/AR y UV globales, color de asa). No confundir con catalogo_productos,
+  // que es para las fotos de producto de expo.
+  catalogos_admin: "catalogos-admin",
 } as const;
 
 export const SUBCARPETAS_PDF = [
   "cotizaciones",
   "pedidos",
   "ordenes-produccion",
+  "ordenes-diseno",
   "estados-cuenta-detallado",
   "estados-cuenta-simple",
   "historial-pagos",

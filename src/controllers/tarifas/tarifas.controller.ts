@@ -1,3 +1,4 @@
+import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -50,7 +51,7 @@ export const updateTarifasBatch = async (req: Request, res: Response) => {
 
     console.log(`📝 Actualizando ${tarifas.length} tarifas en lote...`);
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     for (const tarifa of tarifas) {
       const { id, precio, merma_porcentaje } = tarifa;

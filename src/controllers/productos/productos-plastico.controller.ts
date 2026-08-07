@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import { getPresignedUrl } from "../../config/multer";
@@ -119,7 +120,7 @@ export const createProductoPlastico = async (req: Request, res: Response) => {
 
     console.log("📝 Creando nuevo producto plástico:", { medida, por_kilo });
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const [tipoProducto, material, calibre] = await Promise.all([
       client.query(
@@ -413,7 +414,7 @@ export const updateProductoPlastico = async (req: Request, res: Response) => {
 
     console.log("📝 Actualizando producto plástico:", id);
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const productoExiste = await client.query(
       "SELECT 1 FROM configuracion_plastico WHERE idconfiguracion_plastico = $1 AND activo = true",
@@ -605,7 +606,7 @@ export const registrarProductoPlasticoEnBlancoExpo = async (req: Request, res: R
     // por_kilo ahora se deja en NULL de verdad si no se puede calcular
     // (antes se forzaba a 0 como parche porque la columna no aceptaba NULL
     // en la práctica sin material/tipo/calibre resueltos — ya no hace falta).
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `INSERT INTO configuracion_plastico (
         material_plastico_plastico_idmaterial_plastico,
         tipo_producto_plastico_plastico_idtipo_producto_plastico,
@@ -640,7 +641,7 @@ export const deleteProductoPlastico = async (req: Request, res: Response) => {
     const { id } = req.params;
     console.log("🗑️ Desactivando producto plástico:", id);
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows } = await client.query(
       `UPDATE configuracion_plastico SET activo = false
@@ -681,7 +682,7 @@ export const reactivarProductoPlastico = async (req: Request, res: Response) => 
     const { id } = req.params;
     console.log("♻️ Reactivando producto plástico:", id);
 
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE configuracion_plastico SET activo = true
        WHERE idconfiguracion_plastico = $1 AND activo = false
        RETURNING idconfiguracion_plastico, medida`,

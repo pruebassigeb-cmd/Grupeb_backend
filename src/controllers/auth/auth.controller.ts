@@ -111,6 +111,7 @@ export const login = async (req: Request, res: Response) => {
        LEFT JOIN roles r    ON u.roles_idroles = r.idroles
        LEFT JOIN archivos a ON a.id_archivo = u.foto_id_archivo
        WHERE LOWER(u.correo) = LOWER($1)
+         AND u.eliminado_at IS NULL
        LIMIT 1`,
       [correoSanitizado]
     );
@@ -288,6 +289,7 @@ export const verificarOperador = async (req: Request, res: Response) => {
        FROM usuarios u
        LEFT JOIN roles r ON u.roles_idroles = r.idroles
        WHERE LOWER(u.correo) = LOWER($1)
+         AND u.eliminado_at IS NULL
        LIMIT 1`,
       [correoSanitizado]
     );

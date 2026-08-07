@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -8,7 +9,7 @@ import { pool } from "../../config/db";
 export const crearNotaMulti = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { envios_ids, tipo_entrega, chofer_idusuario, unidad_idunidad, observaciones } = req.body;
 
@@ -215,7 +216,7 @@ export const marcarSalidaLocalNota = async (req: Request, res: Response) => {
   try {
     const { idnota } = req.params;
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE nota_remision
        SET local_hora_salida = NOW()
        WHERE idnota = $1
@@ -228,7 +229,7 @@ export const marcarSalidaLocalNota = async (req: Request, res: Response) => {
     if (!result.rowCount)
       return res.status(400).json({ error: "Nota no encontrada o salida ya registrada" });
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE envio SET estado = 'en_camino'
        WHERE idenvio IN (
          SELECT envio_idenvio FROM nota_remision_envio
@@ -257,7 +258,7 @@ export const marcarEntregadoLocalNota = async (req: Request, res: Response) => {
     if (observacion && !observacionesValidas.includes(observacion))
       return res.status(400).json({ error: "Observación inválida. Valores: E, RA, RD, PD" });
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE nota_remision
        SET estado                  = 'entregado',
            local_hora_llegada      = COALESCE($1::timestamp, NOW()),
@@ -278,7 +279,7 @@ export const marcarEntregadoLocalNota = async (req: Request, res: Response) => {
     if (!result.rowCount)
       return res.status(404).json({ error: "Nota no encontrada" });
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE envio SET estado = 'entregado'
        WHERE idenvio IN (
          SELECT envio_idenvio FROM nota_remision_envio
@@ -313,7 +314,7 @@ export const marcarRecolectadoNota = async (req: Request, res: Response) => {
     if (!nombre_quien_recogio?.trim())
       return res.status(400).json({ error: "El nombre de quien recogió es requerido" });
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE nota_remision
        SET recoleccion_nombre_quien_recogio  = $1,
            recoleccion_empresa               = $2,
@@ -339,7 +340,7 @@ export const marcarRecolectadoNota = async (req: Request, res: Response) => {
     if (!result.rowCount)
       return res.status(404).json({ error: "Nota no encontrada" });
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE envio SET estado = 'entregado'
        WHERE idenvio IN (
          SELECT envio_idenvio FROM nota_remision_envio
@@ -526,7 +527,7 @@ export const getOrCreateNota = async (req: Request, res: Response) => {
 
       no_nota = `${prefijo}${String(consecutivo).padStart(3, "0")}`;
 
-      const nueva = await pool.query(
+      const nueva = await qAudit(req)(
         `INSERT INTO nota_remision (no_nota, envio_idenvio) VALUES ($1, $2)
          RETURNING idnota, no_nota, created_at`,
         [no_nota, idenvio]

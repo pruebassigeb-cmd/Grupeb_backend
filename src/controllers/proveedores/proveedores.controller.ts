@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import {
@@ -176,7 +177,7 @@ export const crearProveedor = async (req: Request, res: Response) => {
     if (!nombre?.trim())
       return res.status(400).json({ error: "El nombre es requerido" });
 
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `INSERT INTO proveedor
          (nombre, contacto, telefono, correo, direccion, notas,
           rfc_proveedor, regimen_fiscal_idregimen_fiscal)
@@ -214,7 +215,7 @@ export const actualizarProveedor = async (req: Request, res: Response) => {
     if (!nombre?.trim())
       return res.status(400).json({ error: "El nombre es requerido" });
 
-    const { rowCount, rows } = await pool.query(
+    const { rowCount, rows } = await qAudit(req)(
       `UPDATE proveedor SET
          nombre                          = $1,
          contacto                        = $2,
@@ -256,7 +257,7 @@ export const eliminarProveedor = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const { rowCount } = await pool.query(
+    const { rowCount } = await qAudit(req)(
       `UPDATE proveedor SET activo = false WHERE idproveedor = $1`,
       [id]
     );
@@ -395,7 +396,7 @@ export const buscarInsumos = async (req: Request, res: Response) => {
 export const crearProductoProveedor = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     const { id } = req.params;
     const {
       tipo_insumo_id, nombre, codigo, precio, notas,
@@ -494,7 +495,7 @@ export const crearProductoProveedor = async (req: Request, res: Response) => {
 export const actualizarProductoProveedor = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     const { idProducto } = req.params; // = idinsumo_proveedor
     const {
       tipo_insumo_id, nombre, codigo, precio, notas, activo,
@@ -580,7 +581,7 @@ export const actualizarProductoProveedor = async (req: Request, res: Response) =
 export const eliminarProductoProveedor = async (req: Request, res: Response) => {
   try {
     const { idProducto } = req.params; // = idinsumo_proveedor
-    const { rowCount } = await pool.query(
+    const { rowCount } = await qAudit(req)(
       `UPDATE insumo_proveedor SET activo = false WHERE idinsumo_proveedor = $1`,
       [idProducto]
     );
@@ -603,7 +604,7 @@ export const eliminarProductoProveedor = async (req: Request, res: Response) => 
 export const desactivarInsumo = async (req: Request, res: Response) => {
   try {
     const { idinsumo } = req.params;
-    const resultado = await desactivarInsumoCompleto(Number(idinsumo));
+    const resultado = await desactivarInsumoCompleto(req, Number(idinsumo));
     if (!resultado) return res.status(404).json({ error: "Insumo no encontrado" });
     console.log(`✅ Insumo desactivado: ${resultado.idinsumo} — ${resultado.nombre}`);
     return res.json({ message: "Insumo desactivado", insumo: resultado });
@@ -617,7 +618,7 @@ export const desactivarInsumo = async (req: Request, res: Response) => {
 export const reactivarInsumo = async (req: Request, res: Response) => {
   try {
     const { idinsumo } = req.params;
-    const resultado = await reactivarInsumoCompleto(Number(idinsumo));
+    const resultado = await reactivarInsumoCompleto(req, Number(idinsumo));
     if (!resultado) return res.status(404).json({ error: "Insumo no encontrado o ya está activo" });
     console.log(`✅ Insumo reactivado: ${resultado.idinsumo} — ${resultado.nombre}`);
     return res.json({ message: "Insumo reactivado", insumo: resultado });
@@ -634,7 +635,7 @@ export const reactivarInsumo = async (req: Request, res: Response) => {
 export const registrarInsumoRapido = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     const {
       tipo_insumo_id, nombre, codigo, proveedores_ids,
       precio, notas, clave_producto, minimo_compra, unidad,
@@ -776,7 +777,7 @@ export const crearTipoInsumo = async (req: Request, res: Response) => {
         existente: existe[0],
       });
 
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `INSERT INTO tipo_insumo (nombre, activo) VALUES ($1, true) RETURNING *`,
       [nombre.trim()]
     );
@@ -850,7 +851,7 @@ export const upsertDomicilioProveedor = async (req: Request, res: Response) => {
 
     let result;
     if (existe.length > 0) {
-      result = await pool.query(
+      result = await qAudit(req)(
         `UPDATE proveedor_domicilio SET
            codigo_postal = $1, colonia = $2, domicilio = $3, municipio = $4, estado = $5
          WHERE proveedor_idproveedor = $6
@@ -858,7 +859,7 @@ export const upsertDomicilioProveedor = async (req: Request, res: Response) => {
         [codigo_postal || null, colonia || null, domicilio || null, municipio || null, estado || null, id]
       );
     } else {
-      result = await pool.query(
+      result = await qAudit(req)(
         `INSERT INTO proveedor_domicilio
            (proveedor_idproveedor, codigo_postal, colonia, domicilio, municipio, estado)
          VALUES ($1,$2,$3,$4,$5,$6)
@@ -894,7 +895,7 @@ export const crearFacturacionProveedor = async (req: Request, res: Response) => 
     const { id } = req.params;
     const { banco, cuenta, clabe, convenio, nombre_cuenta, condicion_compra, dias_credito } = req.body;
 
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `INSERT INTO proveedor_facturacion
   (proveedor_idproveedor, banco, cuenta, clabe, convenio, nombre_cuenta, condicion_compra, dias_credito)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -913,7 +914,7 @@ export const actualizarFacturacionProveedor = async (req: Request, res: Response
     const { idFact } = req.params;
     const { banco, cuenta, clabe, convenio, nombre_cuenta, condicion_compra, activo, dias_credito } = req.body;
 
-    const { rowCount, rows } = await pool.query(
+    const { rowCount, rows } = await qAudit(req)(
       `UPDATE proveedor_facturacion SET
   banco=$1, cuenta=$2, clabe=$3, convenio=$4,
   nombre_cuenta=$5, condicion_compra=$6, activo=$7, dias_credito=$8
@@ -934,7 +935,7 @@ WHERE idproveedor_facturacion=$9
 export const eliminarFacturacionProveedor = async (req: Request, res: Response) => {
   try {
     const { idFact } = req.params;
-    await pool.query(
+    await qAudit(req)(
       `UPDATE proveedor_facturacion SET activo = false WHERE idproveedor_facturacion = $1`,
       [idFact]
     );
@@ -948,7 +949,7 @@ export const eliminarFacturacionProveedor = async (req: Request, res: Response) 
 export const guardarProveedorCompleto = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     const { id } = req.params;
     const { general, domicilio, facturacion } = req.body;
 
@@ -1019,7 +1020,7 @@ export const guardarProveedorCompleto = async (req: Request, res: Response) => {
 export const crearFoil = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
  
     const { id } = req.params; // idproveedor "principal" (compatibilidad con la ruta actual)
     const {

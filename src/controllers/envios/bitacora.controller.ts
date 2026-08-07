@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import { uploadToS3, MulterFile, CARPETAS } from "../../config/multer";
@@ -268,7 +269,7 @@ export const registrarHoraSalida = async (req: Request, res: Response) => {
     const { id } = req.params;
     const ahora = new Date();
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE bitacora_reparto SET hora_salida = $1, updated_at = NOW()
        WHERE idbitacora = $2 RETURNING idbitacora, hora_salida`,
       [ahora, id],
@@ -277,7 +278,7 @@ export const registrarHoraSalida = async (req: Request, res: Response) => {
     if (!result.rowCount)
       return res.status(404).json({ error: "Registro no encontrado" });
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE envio SET estado = 'en_camino'
        WHERE idenvio = (SELECT envio_idenvio FROM bitacora_reparto WHERE idbitacora = $1)`,
       [id],
@@ -302,7 +303,7 @@ export const registrarHoraLlegada = async (req: Request, res: Response) => {
     const { id } = req.params;
     const ahora = new Date();
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE bitacora_reparto SET hora_llegada = $1, updated_at = NOW()
        WHERE idbitacora = $2 RETURNING idbitacora, hora_llegada`,
       [ahora, id],
@@ -311,7 +312,7 @@ export const registrarHoraLlegada = async (req: Request, res: Response) => {
     if (!result.rowCount)
       return res.status(404).json({ error: "Registro no encontrado" });
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE envio SET estado = 'entregado'
        WHERE idenvio = (SELECT envio_idenvio FROM bitacora_reparto WHERE idbitacora = $1)`,
       [id],
@@ -350,14 +351,14 @@ export const updateBitacora = async (req: Request, res: Response) => {
         .json({ error: "Observación inválida. Valores: E, RA, RD, PD" });
 
     if (numero_guia !== undefined) {
-      await pool.query(
+      await qAudit(req)(
         `UPDATE envio SET numero_guia = $1
          WHERE idenvio = (SELECT envio_idenvio FROM bitacora_reparto WHERE idbitacora = $2)`,
         [numero_guia || null, id],
       );
     }
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE bitacora_reparto
        SET hora_salida       = COALESCE($1, hora_salida),
            hora_llegada      = COALESCE($2, hora_llegada),
@@ -515,7 +516,7 @@ export const marcarRecolectado = async (
 
     const idbitacora = brRows[0].idbitacora;
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE bitacora_reparto
        SET recoleccion_nombre_quien_recogio = $1,
            recoleccion_empresa              = $2,
@@ -539,7 +540,7 @@ export const marcarRecolectado = async (
       ],
     );
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE envio SET estado = 'entregado' WHERE idenvio = $1`,
       [idenvio],
     );
@@ -595,7 +596,7 @@ export const marcarSalidaEnvio = async (req: Request, res: Response) => {
   try {
     const { idenvio } = req.params;
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const envio = await client.query(
       `SELECT idenvio, tipo, usuarios_idusuario, unidades_idunidad
@@ -663,7 +664,7 @@ export const marcarEntregaEnvio = async (req: RequestConArchivo, res: Response) 
       return res.status(400).json({ error: "Observación inválida. Valores: E, RA, RD, PD" });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const envio = await client.query(
       `SELECT idenvio, tipo FROM envio WHERE idenvio = $1 LIMIT 1`,

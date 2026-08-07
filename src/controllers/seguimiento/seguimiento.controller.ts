@@ -153,6 +153,19 @@ export const getSeguimiento = async (req: Request, res: Response) => {
              THEN d.fecha ELSE NULL END                                     AS diseno_fecha_estado,
         CASE WHEN od.estado != 'aprobado'
              THEN od.created_at ELSE NULL END                               AS od_fecha_estado,
+        -- ✅ NUEVO: fecha real de aprobación de la orden de diseño (para
+        -- mostrarla debajo del badge de OD, no solo usarla para colorear).
+        od.autorizado_at                                                    AS od_fecha_aprobacion,
+        -- ✅ NUEVO: fecha en que quedó habilitado el PDF de orden de
+        -- producción — el mayor entre (anticipo/pago cubierto) y (diseño
+        -- aprobado), que son las dos condiciones de puede_pdf.
+        CASE WHEN (v.abono >= v.anticipo OR v.estado_administrativo_cat_idestado_administrativo_cat IN (2, 6))
+              AND dp.estado_administrativo_cat_idestado_administrativo_cat = 3
+             THEN GREATEST(
+               COALESCE(fap.fecha, v.fecha_creacion),
+               COALESCE(dp.fecha_aprobacion, d.fecha_aprobacion_general)
+             )
+             ELSE NULL END                                                  AS op_fecha_aprobacion,
 
         -- ── Envío: calculado por orden de producción (op.idproduccion), no por solicitud ──
         -- (antes venía de un JOIN a nivel solicitud que duplicaba filas si
@@ -264,6 +277,19 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           ON pr.idproductos = tpp.productos_idproductos
       LEFT JOIN ventas v
           ON v.solicitud_idsolicitud = s.idsolicitud
+      -- ✅ NUEVO: fecha en que el acumulado de venta_pago alcanzó el
+      -- anticipo requerido (para mostrar debajo del PDF de orden de
+      -- producción cuándo quedó "aprobado" el pago que la desbloqueó).
+      LEFT JOIN LATERAL (
+        SELECT MIN(x.fecha) AS fecha
+        FROM (
+          SELECT vp.fecha,
+                 SUM(vp.monto_moneda_venta) OVER (ORDER BY vp.fecha, vp.idventa_pago) AS acumulado
+          FROM venta_pago vp
+          WHERE vp.ventas_idventas = v.idventas AND vp.eliminado_at IS NULL
+        ) x
+        WHERE x.acumulado >= v.anticipo
+      ) fap ON true
       LEFT JOIN diseno d
           ON d.solicitud_idsolicitud = s.idsolicitud
       LEFT JOIN diseno_producto dp
@@ -357,6 +383,19 @@ export const getSeguimiento = async (req: Request, res: Response) => {
              THEN d.fecha ELSE NULL END                                     AS diseno_fecha_estado,
         CASE WHEN od.estado != 'aprobado'
              THEN od.created_at ELSE NULL END                               AS od_fecha_estado,
+        -- ✅ NUEVO: fecha real de aprobación de la orden de diseño (para
+        -- mostrarla debajo del badge de OD, no solo usarla para colorear).
+        od.autorizado_at                                                    AS od_fecha_aprobacion,
+        -- ✅ NUEVO: fecha en que quedó habilitado el PDF de orden de
+        -- producción — el mayor entre (anticipo/pago cubierto) y (diseño
+        -- aprobado), que son las dos condiciones de puede_pdf.
+        CASE WHEN (v.abono >= v.anticipo OR v.estado_administrativo_cat_idestado_administrativo_cat IN (2, 6))
+              AND dp.estado_administrativo_cat_idestado_administrativo_cat = 3
+             THEN GREATEST(
+               COALESCE(fap.fecha, v.fecha_creacion),
+               COALESCE(dp.fecha_aprobacion, d.fecha_aprobacion_general)
+             )
+             ELSE NULL END                                                  AS op_fecha_aprobacion,
 
         -- ── Envío: mismo criterio que plástico (subquery por orden). Para
         -- papel hoy siempre da 0 bultos porque los bultos aún no se ligan
@@ -477,6 +516,19 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           ON cc.idcat_calibre = dmp.idcat_calibre
       LEFT JOIN ventas v
           ON v.solicitud_idsolicitud = s.idsolicitud
+      -- ✅ NUEVO: fecha en que el acumulado de venta_pago alcanzó el
+      -- anticipo requerido (para mostrar debajo del PDF de orden de
+      -- producción cuándo quedó "aprobado" el pago que la desbloqueó).
+      LEFT JOIN LATERAL (
+        SELECT MIN(x.fecha) AS fecha
+        FROM (
+          SELECT vp.fecha,
+                 SUM(vp.monto_moneda_venta) OVER (ORDER BY vp.fecha, vp.idventa_pago) AS acumulado
+          FROM venta_pago vp
+          WHERE vp.ventas_idventas = v.idventas AND vp.eliminado_at IS NULL
+        ) x
+        WHERE x.acumulado >= v.anticipo
+      ) fap ON true
       LEFT JOIN diseno d
           ON d.solicitud_idsolicitud = s.idsolicitud
       LEFT JOIN diseno_producto dp
@@ -637,6 +689,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         pago_fecha_estado: row.pago_fecha_estado ?? null,
         diseno_fecha_estado: row.diseno_fecha_estado ?? null,
         od_fecha_estado: row.od_fecha_estado ?? null,
+        od_fecha_aprobacion: row.od_fecha_aprobacion ?? null,
+        op_fecha_aprobacion: row.op_fecha_aprobacion ?? null,
         envio_fecha_estado: row.envio_fecha_estado ?? null,
         estado_envio: mapEstadoEnvio(
           Number(row.envio_total_bultos ?? 0),
@@ -737,6 +791,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         pago_fecha_estado: row.pago_fecha_estado ?? null,
         diseno_fecha_estado: row.diseno_fecha_estado ?? null,
         od_fecha_estado: row.od_fecha_estado ?? null,
+        od_fecha_aprobacion: row.od_fecha_aprobacion ?? null,
+        op_fecha_aprobacion: row.op_fecha_aprobacion ?? null,
         envio_fecha_estado: row.envio_fecha_estado ?? null,
         estado_envio: mapEstadoEnvio(
           Number(row.envio_total_bultos ?? 0),

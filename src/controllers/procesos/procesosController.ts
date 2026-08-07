@@ -1,3 +1,4 @@
+import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -391,7 +392,7 @@ export const iniciarProceso = async (req: Request, res: Response) => {
     const { idproduccion } = req.params as { idproduccion: string };
     const { maquina, repeticion } = req.body as { maquina?: string; repeticion?: string };
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const procesos = await getProcesosDeOrden(client, Number(idproduccion));
 
@@ -560,7 +561,7 @@ export const registrarAvance = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Debes indicar el proceso válido (tabla_proceso)" });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: procesoRows } = await client.query(
       `SELECT estado_produccion_cat_idestado_produccion_cat AS estado, fecha_inicio
@@ -714,7 +715,7 @@ export const finalizarProceso = async (req: Request, res: Response) => {
   try {
     const { idproduccion } = req.params as { idproduccion: string };
     const datos = req.body;
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const procesos = await getProcesosDeOrden(client, Number(idproduccion));
 
@@ -905,7 +906,7 @@ export const resagarProceso = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const { idproduccion } = req.params as { idproduccion: string };
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { procesoActualCat } = await getProcesoActualOrden(client, Number(idproduccion));
     if (!procesoActualCat) {
@@ -952,7 +953,7 @@ export const editarProceso = async (req: Request, res: Response) => {
       return res.status(400).json({ error: `Tabla invalida: ${tabla}` });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: procesoRows } = await client.query(
       `SELECT * FROM ${tabla} WHERE orden_produccion_idproduccion = $1`, [idproduccion]

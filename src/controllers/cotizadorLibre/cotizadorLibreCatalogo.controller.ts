@@ -71,7 +71,9 @@ export const getMedidasCotizadorLibre = async (req: Request, res: Response) => {
       const { rows } = await pool.query(
         `SELECT idproducto_papel AS id, medida, ancho, fuelle, altura, descripcion_papel
          FROM producto_papel
-         WHERE activo = true AND idcat_tipo_producto_papel = $1
+         WHERE activo = true
+           AND (origen_expo IS NOT TRUE)
+           AND idcat_tipo_producto_papel = $1
          ORDER BY medida`,
         [idTipo]
       );
@@ -84,6 +86,7 @@ export const getMedidasCotizadorLibre = async (req: Request, res: Response) => {
                 fuelle_fondo, fuelle_latiz, fuelle_latde, por_kilo
          FROM configuracion_plastico
          WHERE activo = true
+           AND (origen_expo IS NOT TRUE)
            AND tipo_producto_plastico_plastico_idtipo_producto_plastico = $1
          ORDER BY medida`,
         [idTipo]
@@ -115,7 +118,7 @@ export const getDetalleProductoPapelCotizadorLibre = async (req: Request, res: R
     const { rows: productoRows } = await pool.query(
       `SELECT idproducto_papel, medida, ancho, fuelle, altura, descripcion_papel, activo
        FROM producto_papel
-       WHERE idproducto_papel = $1 AND activo = true`,
+       WHERE idproducto_papel = $1 AND activo = true AND (origen_expo IS NOT TRUE)`,
       [idproducto_papel]
     );
 
@@ -197,7 +200,7 @@ export const getDetalleProductoPlasticoCotizadorLibre = async (req: Request, res
        LEFT JOIN material_plastico mp
          ON mp.idmaterial_plastico = cp.material_plastico_plastico_idmaterial_plastico
        LEFT JOIN calibre c ON c.idcalibre = cp.calibre_idcalibre
-       WHERE cp.idconfiguracion_plastico = $1 AND cp.activo = true`,
+       WHERE cp.idconfiguracion_plastico = $1 AND cp.activo = true AND (cp.origen_expo IS NOT TRUE)`,
       [idconfiguracion_plastico]
     );
 

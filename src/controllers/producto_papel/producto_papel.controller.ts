@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import { getPresignedUrl } from "../../config/multer";
@@ -693,7 +694,7 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       }
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     // ── 1. Producto padre ─────────────────────────────────────────────────
     // NOTA: origen_expo NO se manda aquí — este endpoint es el alta manual
@@ -811,8 +812,9 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
           idrollo_lam, desarrollo_laminado,
           idcat_refuerzo_material, idcat_refuerzo_medidas,
           idcat_base_material, base_medida,
-          idcat_empaque, pzs_caja
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          idcat_empaque, pzs_caja,
+          lleva_uv, lleva_alto_relieve, lleva_textura, lleva_hot_stamping
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
         RETURNING idacabados_papel
       `, [
         idproducto_papel,
@@ -826,6 +828,10 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
         acabados.base_medida             ?? null,
         acabados.idcat_empaque           ?? null,
         acabados.pzs_caja               ?? null,
+        acabados.lleva_uv               === true,
+        acabados.lleva_alto_relieve     === true,
+        acabados.lleva_textura          === true,
+        acabados.lleva_hot_stamping     === true,
       ]);
 
       const idacabados_papel = acabadosRows[0].idacabados_papel;
@@ -925,7 +931,7 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
       }
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     // ── 1. Producto padre ─────────────────────────────────────────────────
     // origen_expo tampoco se toca aquí — una vez marcado (por la creación
@@ -1185,8 +1191,10 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
             idrollo_lam = $3, desarrollo_laminado = $4,
             idcat_refuerzo_material = $5, idcat_refuerzo_medidas = $6,
             idcat_base_material = $7, base_medida = $8,
-            idcat_empaque = $9, pzs_caja = $10
-          WHERE idacabados_papel = $11
+            idcat_empaque = $9, pzs_caja = $10,
+            lleva_uv = $11, lleva_alto_relieve = $12,
+            lleva_textura = $13, lleva_hot_stamping = $14
+          WHERE idacabados_papel = $15
         `, [
           acabados.idcat_tipo_pegado       ?? null,
           acabados.idcat_pegamento         ?? null,
@@ -1198,6 +1206,10 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
           acabados.base_medida             ?? null,
           acabados.idcat_empaque           ?? null,
           acabados.pzs_caja               ?? null,
+          acabados.lleva_uv               === true,
+          acabados.lleva_alto_relieve     === true,
+          acabados.lleva_textura          === true,
+          acabados.lleva_hot_stamping     === true,
           idacabados_papel,
         ]);
       } else {
@@ -1208,8 +1220,9 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
             idrollo_lam, desarrollo_laminado,
             idcat_refuerzo_material, idcat_refuerzo_medidas,
             idcat_base_material, base_medida,
-            idcat_empaque, pzs_caja
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            idcat_empaque, pzs_caja,
+            lleva_uv, lleva_alto_relieve, lleva_textura, lleva_hot_stamping
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
           RETURNING idacabados_papel
         `, [
           id,
@@ -1223,6 +1236,10 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
           acabados.base_medida             ?? null,
           acabados.idcat_empaque           ?? null,
           acabados.pzs_caja               ?? null,
+          acabados.lleva_uv               === true,
+          acabados.lleva_alto_relieve     === true,
+          acabados.lleva_textura          === true,
+          acabados.lleva_hot_stamping     === true,
         ]);
         idacabados_papel = newAcabados[0].idacabados_papel;
       }
@@ -1309,7 +1326,7 @@ export const actualizarCostoBaseGrupos = async (req: Request, res: Response) => 
 
     const idusuario = (req as any).user?.id ?? null;
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     // Confirma que el producto exista y esté activo antes de tocar sus grupos.
     const { rows: prodRows } = await client.query(
@@ -1405,7 +1422,7 @@ export const actualizarCostoLaminado = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "desarrollo_laminado inválido" });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: prodRows } = await client.query(
       `SELECT idproducto_papel FROM producto_papel WHERE idproducto_papel = $1 AND activo = true`,
@@ -1504,7 +1521,7 @@ export const registrarProductoPapelEnBlancoExpo = async (req: Request, res: Resp
       idcatTipoProductoPapel = tpRows[0]?.idcat_tipo_producto_papel ?? null;
     }
 
-    const { rows: ppRows } = await pool.query(`
+    const { rows: ppRows } = await qAudit(req)(`
       INSERT INTO producto_papel (
         idproductos, idcat_tipo_producto_papel, descripcion_papel,
         ancho, fuelle, altura, medida, precio_500, precio_1000, precio_3000,
@@ -1535,11 +1552,11 @@ export const registrarProductoPapelEnBlancoExpo = async (req: Request, res: Resp
         idcatCalibre = rows[0]?.idcat_calibre ?? null;
       }
       if (idcatTipoPapel || idcatCalibre) {
-        const { rows: gpRows } = await pool.query(
+        const { rows: gpRows } = await qAudit(req)(
           `INSERT INTO grupo_papel (idproducto_papel, precio_sugerido, orden) VALUES ($1,NULL,1) RETURNING idgrupo_papel`,
           [idproducto_papel]
         );
-        await pool.query(
+        await qAudit(req)(
           `INSERT INTO detalle_material_papel (idgrupo_papel, idcat_tipo_papel, idcat_calibre, orden) VALUES ($1,$2,$3,1)`,
           [gpRows[0].idgrupo_papel, idcatTipoPapel, idcatCalibre]
         );
@@ -1562,7 +1579,7 @@ export const eliminarProductoPapel = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows } = await client.query(
       `UPDATE producto_papel SET activo = false, updated_at = NOW()

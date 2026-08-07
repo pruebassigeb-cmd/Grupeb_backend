@@ -30,6 +30,7 @@ import calcularPrecioRoutes from "./routes/cotizaciones/calcular-precio.routes";
 import pedidosRoutes from "./routes/pedidos/pedidos.routes";
 import ventasRoutes from "./routes/ventas/ventas.routes";
 import disenoRoutes from "./routes/diseno/diseno.routes";
+import auditoriaRoutes from "./routes/auditoria/auditoria.routes";
 import suajesRoutes from "./routes/suajes/suajes.routes";
 import seguimientoRoutes from "./routes/seguimiento/seguimiento.routes";
 import rodillosRoutes from "./routes/rodillos/rodillos.routes";
@@ -46,6 +47,7 @@ import archivosRoutes from "./routes/archivos/archivos.routes";
 import formatoCastoresRoutes from "./routes/envios/formatoCastores.routes";
 import formatoTresGuerrasRoutes from "./routes/envios/formatoTresGuerras.routes";
 import ordenDisenoRoutes from "./routes/diseno/ordenDiseno.routes";
+import fichaRoutes from "./routes/diseno/ficha.routes";
 import codigoPostalRouter from "./routes/codigoPostal/codigoPostal.routes";
 import backupRoutes from "./routes/backup/backup.routes";
 import historialRoutes from "./routes/envios/historial.routes";
@@ -66,6 +68,10 @@ import calculadorPrecioPapelRoutes from "./routes/producto_papel/calculadorPreci
 import cotizadorLibreClientesRoutes from "./routes/cotizadorLibre/cotizadorLibreClientes.routes";
 import cotizadorLibrePrecioRoutes from "./routes/cotizadorLibre/cotizadorLibrePrecio.routes";
 import cotizadorLibreCatalogoRoutes from "./routes/cotizadorLibre/cotizadorLibreCatalogo.routes";
+import cotizadorLibreCotizacionesRoutes from "./routes/cotizadorLibre/cotizadorLibreCotizaciones.routes";
+import { contextoAuditoria } from "./middlewares/auditoria";
+import cotizadorLibreCorreoRoutes from "./routes/cotizadorLibre/cotizadorLibreCorreo.routes";
+
 
 const app = express();
 
@@ -113,6 +119,7 @@ app.use((req, res, next) => {
 // security.config.ts. Sin esto, varios usuarios en la misma red (ej. el
 // wifi de un venue) comparten el mismo presupuesto de peticiones.
 app.use(optionalAuth);
+app.use(contextoAuditoria);
 
 // ==========================
 // RATE LIMITERS
@@ -143,6 +150,7 @@ app.use("/api/cotizaciones", cotizacionesRoutes);
 app.use("/api/pedidos", pedidosRoutes);
 app.use("/api/ventas", ventasRoutes);
 app.use("/api/diseno", disenoRoutes);
+app.use("/api/auditoria", auditoriaRoutes);
 app.use("/api", calcularPrecioRoutes);
 app.use("/api", suajesRoutes);
 app.use("/api/seguimiento", seguimientoRoutes);
@@ -161,6 +169,7 @@ app.use("/api/archivos", archivosRoutes);
 app.use("/api/formato-castores", formatoCastoresRoutes);
 app.use("/api/formato-tres-guerras", formatoTresGuerrasRoutes);
 app.use("/api/orden-diseno", ordenDisenoRoutes);
+app.use("/api/ficha", fichaRoutes);
 app.use("/api/codigos-postales", codigoPostalRouter);
 app.use("/api/backup", backupRoutes);
 app.use("/api/historial", historialRoutes);
@@ -186,6 +195,8 @@ app.use("/api/reportes", reportesDestinatariosRoutes);
 app.use("/api/cotizador-libre/clientes", cotizadorLibreClientesRoutes);
 app.use("/api/cotizador-libre/catalogo", cotizadorLibreCatalogoRoutes);
 app.use("/api/cotizador-libre", cotizadorLibrePrecioRoutes);
+app.use("/api/cotizador-libre/cotizaciones", cotizadorLibreCotizacionesRoutes);
+app.use("/api/cotizador-libre/cotizaciones", cotizadorLibreCorreoRoutes);
 
 // ==========================
 // HEALTH CHECK

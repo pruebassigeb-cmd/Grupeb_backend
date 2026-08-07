@@ -3,6 +3,7 @@ import { pool } from "../../config/db";
 import bcrypt from "bcrypt";
 import validator from "validator";
 import { getPresignedUrl, deleteFromS3 } from "../../config/multer";
+import { ErrorHttp, responderError } from "../../utils/errorHttp";
 
 const BCRYPT_ROUNDS      = 12;
 const MAX_USERS_TO_CHECK = 1000;
@@ -67,7 +68,6 @@ function normalizarFecha(valor: any): string | null {
 // CREAR USUARIO
 // ==========================
 export const createUsuario = async (req: Request, res: Response) => {
-  const client = await pool.connect();
   try {
     let { nombre, apellido, correo, telefono, codigo, roles_idroles, privilegios } = req.body;
 
@@ -86,77 +86,76 @@ export const createUsuario = async (req: Request, res: Response) => {
 
     console.log("📝 Creando nuevo usuario:", { nombre, apellido, correo, roles_idroles });
 
-    await client.query("BEGIN");
-
-    const existeCorreo = await client.query(
-      "SELECT 1 FROM usuarios WHERE correo = $1 LIMIT 1", [correo]
-    );
-    if ((existeCorreo.rowCount ?? 0) > 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "El correo ya está registrado" });
-    }
-
-    const hash = await bcrypt.hash(codigo, BCRYPT_ROUNDS);
-
-    const extrasUsuario    = extraerCampos(req.body, CAMPOS_USUARIO_EXTRA);
-    const extraKeys        = Object.keys(extrasUsuario);
-    const extraValues      = Object.values(extrasUsuario);
-    const baseColumns      = ["nombre", "apellido", "correo", "telefono", "codigo", "roles_idroles"];
-    const basePlaceholders = ["$1", "$2", "$3", "$4", "$5", "$6"];
-    const baseValues       = [nombre, apellido, correo, telefono || null, hash, roles_idroles];
-    const allColumns       = [...baseColumns, ...extraKeys];
-    const allPlaceholders  = [...basePlaceholders, ...extraKeys.map((_, i) => `$${i + 7}`)];
-    const allValues        = [...baseValues, ...extraValues];
-
-    const resultUsuario = await client.query(
-      `INSERT INTO usuarios (${allColumns.join(", ")})
-       VALUES (${allPlaceholders.join(", ")})
-       RETURNING idusuario, nombre, apellido, correo, telefono, roles_idroles`,
-      allValues
-    );
-
-    const nuevoUsuario = resultUsuario.rows[0];
-    const uid          = nuevoUsuario.idusuario;
-    console.log("✅ Usuario creado:", { id: uid });
-
-    const camposDireccion = extraerCampos(req.body, CAMPOS_DIRECCION);
-    if (Object.keys(camposDireccion).length > 0)
-      await upsertDetalle(client, "usuarios_direccion", "idusuario", uid, camposDireccion);
-
-    const camposFicha = extraerCampos(req.body, CAMPOS_FICHA);
-    if (Object.keys(camposFicha).length > 0)
-      await upsertDetalle(client, "usuarios_ficha_medica", "idusuario", uid, camposFicha);
-
-    const rol = await client.query(
-      "SELECT acceso_total FROM roles WHERE idroles = $1 LIMIT 1", [roles_idroles]
-    );
-    const tieneAccesoTotal = rol.rows[0]?.acceso_total;
-
-    if (!tieneAccesoTotal && privilegios && Array.isArray(privilegios) && privilegios.length > 0) {
-      const privilegiosValidos = privilegios.every(
-        (id) => Number.isInteger(Number(id)) && Number(id) > 0
+    const nuevoUsuario = await req.tx(async (client) => {
+      const existeCorreo = await client.query(
+        "SELECT 1 FROM usuarios WHERE correo = $1 LIMIT 1", [correo]
       );
-      if (!privilegiosValidos) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({ error: "Datos de privilegios inválidos" });
+      if ((existeCorreo.rowCount ?? 0) > 0) {
+        throw new ErrorHttp(400, "El correo ya está registrado");
       }
-      for (const idPrivilegio of privilegios) {
-        await client.query(
-          `INSERT INTO privilegios_has_usuarios (privilegios_idprivilegios, usuarios_idusuario)
-           VALUES ($1, $2)`,
-          [idPrivilegio, uid]
-        );
-      }
-    }
 
-    await client.query("COMMIT");
+      const hash = await bcrypt.hash(codigo, BCRYPT_ROUNDS);
+
+      const extrasUsuario    = extraerCampos(req.body, CAMPOS_USUARIO_EXTRA);
+      const extraKeys        = Object.keys(extrasUsuario);
+      const extraValues      = Object.values(extrasUsuario);
+      const baseColumns      = ["nombre", "apellido", "correo", "telefono", "codigo", "roles_idroles"];
+      const basePlaceholders = ["$1", "$2", "$3", "$4", "$5", "$6"];
+      const baseValues       = [nombre, apellido, correo, telefono || null, hash, roles_idroles];
+      const allColumns       = [...baseColumns, ...extraKeys];
+      const allPlaceholders  = [...basePlaceholders, ...extraKeys.map((_, i) => `$${i + 7}`)];
+      const allValues        = [...baseValues, ...extraValues];
+
+      const resultUsuario = await client.query(
+        `INSERT INTO usuarios (${allColumns.join(", ")})
+         VALUES (${allPlaceholders.join(", ")})
+         RETURNING idusuario, nombre, apellido, correo, telefono, roles_idroles`,
+        allValues
+      );
+
+      const creado = resultUsuario.rows[0];
+      const uid    = creado.idusuario;
+      console.log("✅ Usuario creado:", { id: uid });
+
+      const camposDireccion = extraerCampos(req.body, CAMPOS_DIRECCION);
+      if (Object.keys(camposDireccion).length > 0)
+        await upsertDetalle(client, "usuarios_direccion", "idusuario", uid, camposDireccion);
+
+      const camposFicha = extraerCampos(req.body, CAMPOS_FICHA);
+      if (Object.keys(camposFicha).length > 0)
+        await upsertDetalle(client, "usuarios_ficha_medica", "idusuario", uid, camposFicha);
+
+      const rol = await client.query(
+        "SELECT acceso_total FROM roles WHERE idroles = $1 LIMIT 1", [roles_idroles]
+      );
+      const tieneAccesoTotal = rol.rows[0]?.acceso_total;
+
+      if (!tieneAccesoTotal && privilegios && Array.isArray(privilegios) && privilegios.length > 0) {
+        const privilegiosValidos = privilegios.every(
+          (id: any) => Number.isInteger(Number(id)) && Number(id) > 0
+        );
+        if (!privilegiosValidos) {
+          throw new ErrorHttp(400, "Datos de privilegios inválidos");
+        }
+        for (const idPrivilegio of privilegios) {
+          await client.query(
+            `INSERT INTO privilegios_has_usuarios (privilegios_idprivilegios, usuarios_idusuario)
+             VALUES ($1, $2)`,
+            [idPrivilegio, uid]
+          );
+        }
+      }
+
+      return creado;
+    });
+
     console.log("✅ Usuario creado exitosamente");
 
     res.status(201).json({
       message: "Usuario creado exitosamente",
       usuario: {
-        id:       uid,
-        idusuario: uid,
+        id:       nuevoUsuario.idusuario,
+        idusuario: nuevoUsuario.idusuario,
         nombre:   nuevoUsuario.nombre,
         apellido: nuevoUsuario.apellido,
         correo:   nuevoUsuario.correo,
@@ -164,12 +163,8 @@ export const createUsuario = async (req: Request, res: Response) => {
         rol:      nuevoUsuario.roles_idroles,
       },
     });
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    console.error("❌ CREATE USUARIO ERROR:", error.message);
-    res.status(500).json({ error: "Error al procesar la solicitud" });
-  } finally {
-    client.release();
+  } catch (error) {
+    responderError(res, error, "Error al procesar la solicitud");
   }
 };
 
@@ -195,6 +190,7 @@ export const getUsuarios = async (req: Request, res: Response) => {
       LEFT JOIN usuarios_direccion d     ON d.idusuario = u.idusuario
       LEFT JOIN usuarios_ficha_medica fm ON fm.idusuario = u.idusuario
       LEFT JOIN archivos a               ON a.id_archivo = u.foto_id_archivo
+      WHERE u.eliminado_at IS NULL
       ORDER BY u.idusuario DESC
       LIMIT 1000
     `);
@@ -240,6 +236,7 @@ export const getUsuarioById = async (req: Request, res: Response) => {
       LEFT JOIN usuarios_ficha_medica fm ON fm.idusuario = u.idusuario
       LEFT JOIN archivos a               ON a.id_archivo = u.foto_id_archivo
       WHERE u.idusuario = $1
+        AND u.eliminado_at IS NULL
       LIMIT 1
     `, [id]);
 
@@ -271,7 +268,6 @@ export const getUsuarioById = async (req: Request, res: Response) => {
 // ACTUALIZAR USUARIO
 // ==========================
 export const updateUsuario = async (req: Request, res: Response) => {
-  const client = await pool.connect();
   try {
     const { id } = req.params;
     let { nombre, apellido, correo, telefono, codigo, roles_idroles, privilegios } = req.body;
@@ -291,124 +287,122 @@ export const updateUsuario = async (req: Request, res: Response) => {
 
     console.log("📝 Actualizando usuario:", id);
 
-    await client.query("BEGIN");
-
-    const existeCorreo = await client.query(
-      "SELECT 1 FROM usuarios WHERE correo = $1 AND idusuario != $2 LIMIT 1", [correo, id]
-    );
-    if ((existeCorreo.rowCount ?? 0) > 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "El correo ya está registrado" });
-    }
-
-    // ── Foto actual ───────────────────────────────────────────────────────────
-    const fotoActualResult = await client.query(
-      `SELECT u.foto_id_archivo, a.public_id AS foto_public_id
-       FROM usuarios u
-       LEFT JOIN archivos a ON a.id_archivo = u.foto_id_archivo
-       WHERE u.idusuario = $1`, [id]
-    );
-    const fotoActual         = fotoActualResult.rows[0];
-    const fotoIdActual       = fotoActual?.foto_id_archivo  ?? null;
-    const fotoPublicIdActual = fotoActual?.foto_public_id   ?? null;
+    // El borrado en S3 se hace DESPUÉS del commit: si la transacción falla,
+    // no queremos haber borrado ya el archivo remoto, que no tiene rollback.
     const publicIdsABorrarDeS3: string[] = [];
 
-    // ── Caso 1: eliminando foto ───────────────────────────────────────────────
-    const eliminandoFoto =
-      req.body.foto_id_archivo === null || req.body.foto_id_archivo === "";
-    if (eliminandoFoto) {
-      if (fotoIdActual) {
-        await client.query("UPDATE usuarios SET foto_id_archivo = NULL WHERE idusuario = $1", [id]);
+    const usuarioActualizado = await req.tx(async (client) => {
+      const existeCorreo = await client.query(
+        "SELECT 1 FROM usuarios WHERE correo = $1 AND idusuario != $2 LIMIT 1", [correo, id]
+      );
+      if ((existeCorreo.rowCount ?? 0) > 0) {
+        throw new ErrorHttp(400, "El correo ya está registrado");
+      }
+
+      // ── Foto actual ─────────────────────────────────────────────────────────
+      const fotoActualResult = await client.query(
+        `SELECT u.foto_id_archivo, a.public_id AS foto_public_id
+         FROM usuarios u
+         LEFT JOIN archivos a ON a.id_archivo = u.foto_id_archivo
+         WHERE u.idusuario = $1`, [id]
+      );
+      const fotoActual         = fotoActualResult.rows[0];
+      const fotoIdActual       = fotoActual?.foto_id_archivo  ?? null;
+      const fotoPublicIdActual = fotoActual?.foto_public_id   ?? null;
+
+      // ── Caso 1: eliminando foto ─────────────────────────────────────────────
+      const eliminandoFoto =
+        req.body.foto_id_archivo === null || req.body.foto_id_archivo === "";
+      if (eliminandoFoto) {
+        if (fotoIdActual) {
+          await client.query("UPDATE usuarios SET foto_id_archivo = NULL WHERE idusuario = $1", [id]);
+          await client.query("DELETE FROM archivos WHERE id_archivo = $1", [fotoIdActual]);
+          if (fotoPublicIdActual) publicIdsABorrarDeS3.push(fotoPublicIdActual);
+        }
+        delete req.body.foto_id_archivo;
+      }
+
+      // ── Caso 2: reemplazando foto ───────────────────────────────────────────
+      const nuevaFotoId = req.body.foto_id_archivo ? Number(req.body.foto_id_archivo) : null;
+      if (nuevaFotoId && fotoIdActual && nuevaFotoId !== fotoIdActual) {
         await client.query("DELETE FROM archivos WHERE id_archivo = $1", [fotoIdActual]);
         if (fotoPublicIdActual) publicIdsABorrarDeS3.push(fotoPublicIdActual);
       }
-      delete req.body.foto_id_archivo;
-    }
 
-    // ── Caso 2: reemplazando foto ─────────────────────────────────────────────
-    const nuevaFotoId = req.body.foto_id_archivo ? Number(req.body.foto_id_archivo) : null;
-    if (nuevaFotoId && fotoIdActual && nuevaFotoId !== fotoIdActual) {
-      await client.query("DELETE FROM archivos WHERE id_archivo = $1", [fotoIdActual]);
-      if (fotoPublicIdActual) publicIdsABorrarDeS3.push(fotoPublicIdActual);
-    }
+      // ── Construir UPDATE ────────────────────────────────────────────────────
+      const extrasUsuario = extraerCampos(req.body, CAMPOS_USUARIO_EXTRA);
+      const extraKeys     = Object.keys(extrasUsuario);
 
-    // ── Construir UPDATE ──────────────────────────────────────────────────────
-    const extrasUsuario = extraerCampos(req.body, CAMPOS_USUARIO_EXTRA);
-    const extraKeys     = Object.keys(extrasUsuario);
-    const extraValues   = Object.values(extrasUsuario);
+      let paramIndex = 5;
+      const setClauses: string[] = [
+        `nombre=$1`, `apellido=$2`, `correo=$3`, `telefono=$4`, `roles_idroles=$5`,
+      ];
+      const updateValues: any[] = [nombre, apellido, correo, telefono || null, roles_idroles];
 
-    let paramIndex = 5;
-    const setClauses: string[] = [
-      `nombre=$1`, `apellido=$2`, `correo=$3`, `telefono=$4`, `roles_idroles=$5`,
-    ];
-    const updateValues: any[] = [nombre, apellido, correo, telefono || null, roles_idroles];
-
-    if (codigo && codigo.trim() !== "") {
-      if (!/^\d{4,8}$/.test(codigo)) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({ error: "El código debe tener entre 4 y 5 dígitos" });
+      if (codigo && codigo.trim() !== "") {
+        if (!/^\d{4,8}$/.test(codigo)) {
+          throw new ErrorHttp(400, "El código debe tener entre 4 y 5 dígitos");
+        }
+        const nuevoHash = await bcrypt.hash(codigo, BCRYPT_ROUNDS);
+        paramIndex++;
+        setClauses.push(`codigo=$${paramIndex}`);
+        updateValues.push(nuevoHash);
       }
-      const nuevoHash = await bcrypt.hash(codigo, BCRYPT_ROUNDS);
+
+      for (const key of extraKeys) {
+        paramIndex++;
+        setClauses.push(`${key}=$${paramIndex}`);
+        updateValues.push(extrasUsuario[key]);
+      }
+
       paramIndex++;
-      setClauses.push(`codigo=$${paramIndex}`);
-      updateValues.push(nuevoHash);
-    }
+      updateValues.push(id);
 
-    for (const key of extraKeys) {
-      paramIndex++;
-      setClauses.push(`${key}=$${paramIndex}`);
-      updateValues.push(extrasUsuario[key]);
-    }
-
-    paramIndex++;
-    updateValues.push(id);
-
-    const resultUsuario = await client.query(
-      `UPDATE usuarios SET ${setClauses.join(", ")}
-       WHERE idusuario = $${paramIndex}
-       RETURNING idusuario, nombre, apellido, correo, telefono, roles_idroles`,
-      updateValues
-    );
-
-    if ((resultUsuario.rowCount ?? 0) === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Usuario no encontrado" });
-    }
-
-    const uid = Number(id);
-
-    const camposDireccion = extraerCampos(req.body, CAMPOS_DIRECCION);
-    if (Object.keys(camposDireccion).length > 0)
-      await upsertDetalle(client, "usuarios_direccion", "idusuario", uid, camposDireccion);
-
-    const camposFicha = extraerCampos(req.body, CAMPOS_FICHA);
-    if (Object.keys(camposFicha).length > 0)
-      await upsertDetalle(client, "usuarios_ficha_medica", "idusuario", uid, camposFicha);
-
-    await client.query("DELETE FROM privilegios_has_usuarios WHERE usuarios_idusuario = $1", [id]);
-
-    const rol = await client.query(
-      "SELECT acceso_total FROM roles WHERE idroles = $1 LIMIT 1", [roles_idroles]
-    );
-    const tieneAccesoTotal = rol.rows[0]?.acceso_total;
-
-    if (!tieneAccesoTotal && privilegios && Array.isArray(privilegios) && privilegios.length > 0) {
-      const privilegiosValidos = privilegios.every(
-        (idPriv) => Number.isInteger(Number(idPriv)) && Number(idPriv) > 0
+      const resultUsuario = await client.query(
+        `UPDATE usuarios SET ${setClauses.join(", ")}
+         WHERE idusuario = $${paramIndex}
+         RETURNING idusuario, nombre, apellido, correo, telefono, roles_idroles`,
+        updateValues
       );
-      if (!privilegiosValidos) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({ error: "Datos de privilegios inválidos" });
-      }
-      for (const idPrivilegio of privilegios) {
-        await client.query(
-          `INSERT INTO privilegios_has_usuarios (privilegios_idprivilegios, usuarios_idusuario)
-           VALUES ($1, $2)`, [idPrivilegio, id]
-        );
-      }
-    }
 
-    await client.query("COMMIT");
+      if ((resultUsuario.rowCount ?? 0) === 0) {
+        throw new ErrorHttp(404, "Usuario no encontrado");
+      }
+
+      const uid = Number(id);
+
+      const camposDireccion = extraerCampos(req.body, CAMPOS_DIRECCION);
+      if (Object.keys(camposDireccion).length > 0)
+        await upsertDetalle(client, "usuarios_direccion", "idusuario", uid, camposDireccion);
+
+      const camposFicha = extraerCampos(req.body, CAMPOS_FICHA);
+      if (Object.keys(camposFicha).length > 0)
+        await upsertDetalle(client, "usuarios_ficha_medica", "idusuario", uid, camposFicha);
+
+      await client.query("DELETE FROM privilegios_has_usuarios WHERE usuarios_idusuario = $1", [id]);
+
+      const rol = await client.query(
+        "SELECT acceso_total FROM roles WHERE idroles = $1 LIMIT 1", [roles_idroles]
+      );
+      const tieneAccesoTotal = rol.rows[0]?.acceso_total;
+
+      if (!tieneAccesoTotal && privilegios && Array.isArray(privilegios) && privilegios.length > 0) {
+        const privilegiosValidos = privilegios.every(
+          (idPriv: any) => Number.isInteger(Number(idPriv)) && Number(idPriv) > 0
+        );
+        if (!privilegiosValidos) {
+          throw new ErrorHttp(400, "Datos de privilegios inválidos");
+        }
+        for (const idPrivilegio of privilegios) {
+          await client.query(
+            `INSERT INTO privilegios_has_usuarios (privilegios_idprivilegios, usuarios_idusuario)
+             VALUES ($1, $2)`, [idPrivilegio, id]
+          );
+        }
+      }
+
+      return resultUsuario.rows[0];
+    });
 
     for (const publicId of publicIdsABorrarDeS3) {
       try {
@@ -420,72 +414,90 @@ export const updateUsuario = async (req: Request, res: Response) => {
     }
 
     console.log("✅ Actualización completada");
-    res.json({ message: "Usuario actualizado exitosamente", usuario: resultUsuario.rows[0] });
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    console.error("❌ UPDATE USUARIO ERROR:", error.message);
-    res.status(500).json({ error: "Error al procesar la solicitud" });
-  } finally {
-    client.release();
+    res.json({ message: "Usuario actualizado exitosamente", usuario: usuarioActualizado });
+  } catch (error) {
+    responderError(res, error, "Error al procesar la solicitud");
   }
 };
 
 // ==========================
 // ELIMINAR USUARIO
 // ==========================
+/**
+ * Da de baja un usuario.
+ *
+ * Es baja LÓGICA, no DELETE. No es una preferencia de estilo: desde que se
+ * activó la auditoría, cada tabla auditada tiene creado_por / actualizado_por
+ * / eliminado_por con llave foránea a usuarios(idusuario). Borrar físicamente
+ * a alguien que alguna vez capturó algo revienta con violación de llave
+ * foránea, y si se pudiera sería peor: dejaría toda su huella sin nombre.
+ *
+ * El usuario deja de aparecer en la lista y no puede entrar (getUsuarios y
+ * el login filtran eliminado_at IS NULL), pero su nombre sigue resolviendo
+ * en cada "creado por" del historial.
+ */
 export const deleteUsuario = async (req: Request, res: Response) => {
-  const client = await pool.connect();
   try {
     const { id } = req.params;
 
     if (!Number.isInteger(Number(id)) || Number(id) < 1)
       return res.status(400).json({ error: "ID inválido" });
 
-    await client.query("BEGIN");
+    if (Number(id) === (req as any).user?.id) {
+      return res.status(400).json({ error: "No puedes darte de baja a ti mismo" });
+    }
 
-    // Foto de perfil
-    const fotoResult = await client.query(
-      "SELECT foto_id_archivo FROM usuarios WHERE idusuario = $1", [id]
-    );
-    const fotoIdArchivo = fotoResult.rows[0]?.foto_id_archivo || null;
-
-    let fotoPublicId: string | null = null;
-    if (fotoIdArchivo) {
-      const archivoResult = await client.query(
-        "SELECT public_id FROM archivos WHERE id_archivo = $1", [fotoIdArchivo]
+    const publicIds = await req.tx(async (client) => {
+      // Foto de perfil
+      const fotoResult = await client.query(
+        "SELECT foto_id_archivo FROM usuarios WHERE idusuario = $1 AND eliminado_at IS NULL", [id]
       );
-      fotoPublicId = archivoResult.rows[0]?.public_id || null;
-    }
+      if (fotoResult.rowCount === 0) {
+        throw new ErrorHttp(404, "Usuario no encontrado");
+      }
+      const fotoIdArchivo = fotoResult.rows[0]?.foto_id_archivo || null;
 
-    // Fotos INE — usar usuario_id
-    const ineResult = await client.query(
-      `SELECT public_id FROM archivos
-       WHERE usuario_id = $1 AND public_id LIKE '%usuarios-ine%'`, [id]
-    );
-    const inePublicIds: string[] = ineResult.rows.map((r: any) => r.public_id).filter(Boolean);
+      let fotoPublicId: string | null = null;
+      if (fotoIdArchivo) {
+        const archivoResult = await client.query(
+          "SELECT public_id FROM archivos WHERE id_archivo = $1", [fotoIdArchivo]
+        );
+        fotoPublicId = archivoResult.rows[0]?.public_id || null;
+      }
 
-    await client.query("DELETE FROM privilegios_has_usuarios WHERE usuarios_idusuario = $1", [id]);
+      // Fotos INE — usar usuario_id
+      const ineResult = await client.query(
+        `SELECT public_id FROM archivos
+         WHERE usuario_id = $1 AND public_id LIKE '%usuarios-ine%'`, [id]
+      );
+      const inePublicIds: string[] = ineResult.rows.map((r: any) => r.public_id).filter(Boolean);
 
-    const result = await client.query(
-      "DELETE FROM usuarios WHERE idusuario = $1 RETURNING idusuario", [id]
-    );
+      // Los permisos sí se retiran de verdad: un usuario dado de baja no debe
+      // conservar accesos. El DELETE queda auditado en la bitácora.
+      await client.query("DELETE FROM privilegios_has_usuarios WHERE usuarios_idusuario = $1", [id]);
 
-    if ((result.rowCount ?? 0) === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Usuario no encontrado" });
-    }
-
-    if (fotoIdArchivo)
-      await client.query("DELETE FROM archivos WHERE id_archivo = $1", [fotoIdArchivo]);
-
-    if (inePublicIds.length > 0)
+      // eliminado_por lo llena el trigger fn_tocar_autoria.
       await client.query(
-        `DELETE FROM archivos WHERE usuario_id = $1 AND public_id LIKE '%usuarios-ine%'`, [id]
+        `UPDATE usuarios SET eliminado_at = now(), activo = false
+          WHERE idusuario = $1 AND eliminado_at IS NULL`,
+        [id]
       );
 
-    await client.query("COMMIT");
+      // La foto sí se borra: es un archivo, no un dato de negocio.
+      if (fotoIdArchivo) {
+        await client.query("UPDATE usuarios SET foto_id_archivo = NULL WHERE idusuario = $1", [id]);
+        await client.query("DELETE FROM archivos WHERE id_archivo = $1", [fotoIdArchivo]);
+      }
 
-    for (const publicId of [fotoPublicId, ...inePublicIds].filter(Boolean) as string[]) {
+      if (inePublicIds.length > 0)
+        await client.query(
+          `DELETE FROM archivos WHERE usuario_id = $1 AND public_id LIKE '%usuarios-ine%'`, [id]
+        );
+
+      return [fotoPublicId, ...inePublicIds].filter(Boolean) as string[];
+    });
+
+    for (const publicId of publicIds) {
       try {
         await deleteFromS3(publicId);
         console.log("🗑️ Archivo eliminado de S3:", publicId);
@@ -494,14 +506,10 @@ export const deleteUsuario = async (req: Request, res: Response) => {
       }
     }
 
-    console.log("✅ Usuario eliminado:", id);
+    console.log("✅ Usuario dado de baja:", id);
     res.json({ message: "Usuario eliminado exitosamente" });
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    console.error("❌ DELETE USUARIO ERROR:", error.message);
-    res.status(500).json({ error: "Error al procesar la solicitud" });
-  } finally {
-    client.release();
+  } catch (error) {
+    responderError(res, error, "Error al procesar la solicitud");
   }
 };
 
@@ -515,21 +523,24 @@ export const toggleActivoUsuario = async (req: Request, res: Response) => {
     if (!Number.isInteger(Number(id)) || Number(id) < 1)
       return res.status(400).json({ error: "ID inválido" });
 
-    const result = await pool.query(
-      `UPDATE usuarios SET activo = NOT activo
-       WHERE idusuario = $1
-       RETURNING idusuario, nombre, apellido, activo`, [id]
-    );
+    // eliminado_at IS NULL evita revivir por aquí a alguien dado de baja.
+    const u = await req.tx(async (client) => {
+      const result = await client.query(
+        `UPDATE usuarios SET activo = NOT activo
+         WHERE idusuario = $1 AND eliminado_at IS NULL
+         RETURNING idusuario, nombre, apellido, activo`, [id]
+      );
 
-    if ((result.rowCount ?? 0) === 0)
-      return res.status(404).json({ error: "Usuario no encontrado" });
+      if ((result.rowCount ?? 0) === 0) {
+        throw new ErrorHttp(404, "Usuario no encontrado");
+      }
+      return result.rows[0];
+    });
 
-    const u = result.rows[0];
     console.log(`✅ Usuario ${u.activo ? "activado" : "desactivado"}:`, id);
     res.json({ message: `Usuario ${u.activo ? "activado" : "desactivado"} exitosamente`, usuario: u });
-  } catch (error: any) {
-    console.error("❌ TOGGLE ACTIVO ERROR:", error.message);
-    res.status(500).json({ error: "Error al procesar la solicitud" });
+  } catch (error) {
+    responderError(res, error, "Error al procesar la solicitud");
   }
 };
 

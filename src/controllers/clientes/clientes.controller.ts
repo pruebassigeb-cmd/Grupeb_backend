@@ -1,3 +1,4 @@
+import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -51,7 +52,7 @@ export const createCliente = async (req: Request, res: Response) => {
 
     console.log("📝 Creando nuevo cliente:", { empresa, correo });
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const identificar = await generarIdentificador(client);
     console.log("🔑 Identificador generado:", identificar);
@@ -410,7 +411,7 @@ export const updateCliente = async (req: Request, res: Response) => {
 
     console.log("📝 Actualizando cliente:", id);
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const clienteActual = await client.query(
       "SELECT idclientes FROM clientes WHERE idclientes = $1 LIMIT 1", [id]
@@ -609,7 +610,7 @@ export const deleteCliente = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const clienteActual = await client.query(
       "SELECT idclientes FROM clientes WHERE idclientes = $1 LIMIT 1", [id]
@@ -648,7 +649,7 @@ export const createClienteLigero = async (req: Request, res: Response) => {
 
     console.log("📝 Creando cliente ligero para cotización:", { nombre, correo });
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const identificar = await generarIdentificador(client);
 

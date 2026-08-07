@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import {
@@ -13,12 +14,13 @@ import {
   validarMonedaYTipoCambio,
 } from "../../utils/moneda.utils";
 
-const ESTADO = {
+export const ESTADO = {
   PENDIENTE: 1,
   EN_PROCESO: 2,
   APROBADO: 3,
   RECHAZADO: 4,
 } as const;
+
 
 type TipoDocumento = "cotizacion" | "pedido";
 
@@ -213,7 +215,7 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         .status(400)
         .json({ error: "Se requiere al menos un producto" });
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     let folioCotizacion: string | null = null;
     let folioPedido: string | null = null;
@@ -484,6 +486,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           s.moneda,
           s.tipo_cambio,
           s.origen_expo,
+          s.origen_cotizador_libre,
           s.clientes_idclientes,
           s.estado_administrativo_cat_idestado_administrativo_cat,
 
@@ -680,6 +683,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           moneda: row.moneda ?? "MXN",
           tipo_cambio: row.tipo_cambio != null ? Number(row.tipo_cambio) : null,
           origen_expo: row.origen_expo === true,
+          origen_cotizador_libre: row.origen_cotizador_libre === true,
           estado_id: row.estado_administrativo_cat_idestado_administrativo_cat,
           estado: normalizarNombreEstado(row.estado_nombre || ""),
           cliente_id: row.clientes_idclientes,
@@ -892,7 +896,7 @@ export const actualizarEstadoCotizacion = async (
     if (!estadoId)
       return res.status(400).json({ error: "Se requiere estadoId" });
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: docRows } = await client.query(
       `SELECT idsolicitud, estado, no_pedido, sin_iva, moneda, tipo_cambio
@@ -1091,7 +1095,7 @@ export const cambiarMonedaCotizacion = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Cotización no encontrada" });
     }
 
-    const resultado = await cambiarMonedaSolicitud(solRows[0].idsolicitud, moneda);
+    const resultado = await cambiarMonedaSolicitud(req, solRows[0].idsolicitud, moneda);
     return res.json(resultado);
   } catch (error: any) {
     console.error("❌ CAMBIAR MONEDA COTIZACIÓN ERROR:", error.message);
@@ -1106,7 +1110,7 @@ export const eliminarCotizacion = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: solRows } = await client.query(
       `SELECT idsolicitud FROM solicitud WHERE no_cotizacion = $1`,
@@ -1172,7 +1176,7 @@ export const aprobarDetalle = async (req: Request, res: Response) => {
         .status(400)
         .json({ error: "El campo aprobado debe ser true o false" });
 
-    const { rowCount } = await pool.query(
+    const { rowCount } = await qAudit(req)(
       `UPDATE solicitud_detalle SET aprobado = $1 WHERE idsolicitud_detalle = $2`,
       [aprobado, idDetalle],
     );
@@ -1194,7 +1198,7 @@ export const actualizarObservacion = async (req: Request, res: Response) => {
     const { idP } = req.params;
     const { observacion } = req.body;
 
-    const { rowCount } = await pool.query(
+    const { rowCount } = await qAudit(req)(
       `UPDATE solicitud_producto SET observacion = $1 WHERE idsolicitud_producto = $2`,
       [observacion || null, idP],
     );
@@ -1221,7 +1225,7 @@ export const aprobarHerramental = async (req: Request, res: Response) => {
         .status(400)
         .json({ error: "El campo aprobado debe ser true o false" });
 
-    const { rowCount } = await pool.query(
+    const { rowCount } = await qAudit(req)(
       `UPDATE herramental SET aprobado = $1 WHERE id_herramental = $2`,
       [aprobado, idH],
     );
@@ -1269,7 +1273,7 @@ export const actualizarCotizacionProductos = async (
     }
     const solicitudId: number = doc.idsolicitud;
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     // sin_iva es una bandera de cabecera; sólo se actualiza si el front la
     // envía explícitamente como booleano, para no pisar el valor guardado.

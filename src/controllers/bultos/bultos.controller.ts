@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -312,7 +313,7 @@ export const agregarBulto = async (req: Request, res: Response): Promise<Respons
           ? "asa_flexible_idasa_flexible"
           : "empaque_papel_idempaque_papel";
 
-    const { rows: inserted } = await pool.query(
+    const { rows: inserted } = await qAudit(req)(
       `INSERT INTO bultos (${columnaFk}, cantidad_unidades, peso_producto, peso, alto, largo, ancho)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING idbulto, cantidad_unidades, fecha_creacion, peso_producto, peso, alto, largo, ancho`,
@@ -420,7 +421,7 @@ export const agregarBultosBatch = async (req: Request, res: Response): Promise<R
 
     const client = await pool.connect();
     try {
-      await client.query("BEGIN");
+      await iniciarTx(req, client);
 
       const insertados: any[] = [];
       for (let i = 0; i < repeticiones; i++) {
@@ -507,7 +508,7 @@ export const eliminarBulto = async (req: Request, res: Response): Promise<Respon
       return res.status(404).json({ error: "Bulto no encontrado" });
     }
 
-    await pool.query(`DELETE FROM bultos WHERE idbulto = $1`, [idbulto]);
+    await req.tx((client) => client.query(`DELETE FROM bultos WHERE idbulto = $1`, [idbulto]));
     return res.json({ message: "Bulto eliminado", idbulto });
   } catch (error: any) {
     console.error("❌ ELIMINAR BULTO ERROR:", error.message);
@@ -586,7 +587,7 @@ export const finalizarBultos = async (req: Request, res: Response): Promise<Resp
       }
     }
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE orden_produccion SET bultos_finalizado = TRUE WHERE idproduccion = $1`,
       [idproduccion]
     );
@@ -816,7 +817,7 @@ export const marcarBultosParcialidad = async (req: Request, res: Response): Prom
       return res.status(400).json({ error: "Algunos bultos no pertenecen a esta orden" });
     }
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE bultos SET numero_parcialidad = $1 WHERE idbulto = ANY($2::int[])`,
       [numero_parcialidad, idbultos]
     );
@@ -881,7 +882,7 @@ export const editarBulto = async (req: Request, res: Response): Promise<Response
       return res.status(404).json({ error: "Bulto no encontrado" });
     }
 
-    const { rows: updated } = await pool.query(
+    const { rows: updated } = await qAudit(req)(
       `UPDATE bultos
        SET cantidad_unidades = $1,
            peso_producto     = $2,

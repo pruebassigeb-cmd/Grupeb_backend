@@ -4,7 +4,7 @@ import { pool } from "../../config/db";
 export const getColoresAsa = async (_req: Request, res: Response) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id_color, color FROM color_asa ORDER BY id_color`
+      `SELECT id_color, color, hex FROM color_asa WHERE activo = true ORDER BY color`
     );
     return res.json(rows);
   } catch (error: any) {

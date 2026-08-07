@@ -1,3 +1,4 @@
+import { qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import {
   uploadToS3,
@@ -65,7 +66,7 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
       ? Number(req.body.idconfiguracion_plastico)
       : null;
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `INSERT INTO archivos 
         (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria, usuario_id, envio_id, nota_id, idproducto_papel, idconfiguracion_plastico)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
@@ -216,7 +217,7 @@ export const eliminarArchivo = async (req: Request, res: Response): Promise<void
     }
 
     await deleteFromS3(archivo.rows[0].public_id);
-    await pool.query("DELETE FROM archivos WHERE id_archivo = $1", [id_archivo]);
+    await req.tx((client) => client.query("DELETE FROM archivos WHERE id_archivo = $1", [id_archivo]));
 
     res.json({ message: "Archivo eliminado" });
   } catch (error) {

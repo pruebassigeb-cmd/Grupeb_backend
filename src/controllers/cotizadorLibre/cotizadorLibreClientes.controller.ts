@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 // src/controllers/cotizadorLibre/cotizadorLibreClientes.controller.ts
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
@@ -137,7 +138,7 @@ export const enviarCodigoVerificacion = async (req: Request, res: Response) => {
       }
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     // Invalida cualquier código previo sin usar de este cliente
     await client.query(
@@ -211,7 +212,7 @@ export const confirmarCodigoVerificacion = async (req: Request, res: Response) =
     const verificacion = rows[0];
 
     if (new Date(verificacion.expira_en).getTime() < Date.now()) {
-      await pool.query(
+      await qAudit(req)(
         `UPDATE verificacion_cotizador_libre SET usado = true WHERE idverificacion_cotizador_libre = $1`,
         [verificacion.idverificacion_cotizador_libre]
       );
@@ -219,7 +220,7 @@ export const confirmarCodigoVerificacion = async (req: Request, res: Response) =
     }
 
     if (verificacion.intentos >= 5) {
-      await pool.query(
+      await qAudit(req)(
         `UPDATE verificacion_cotizador_libre SET usado = true WHERE idverificacion_cotizador_libre = $1`,
         [verificacion.idverificacion_cotizador_libre]
       );
@@ -227,7 +228,7 @@ export const confirmarCodigoVerificacion = async (req: Request, res: Response) =
     }
 
     if (verificacion.codigo !== codigo.trim()) {
-      const { rows: updated } = await pool.query(
+      const { rows: updated } = await qAudit(req)(
         `UPDATE verificacion_cotizador_libre
          SET intentos = intentos + 1
          WHERE idverificacion_cotizador_libre = $1
@@ -238,7 +239,7 @@ export const confirmarCodigoVerificacion = async (req: Request, res: Response) =
       const intentosActuales = updated[0].intentos;
 
       if (intentosActuales >= 5) {
-        await pool.query(
+        await qAudit(req)(
           `UPDATE verificacion_cotizador_libre SET usado = true WHERE idverificacion_cotizador_libre = $1`,
           [verificacion.idverificacion_cotizador_libre]
         );
@@ -252,7 +253,7 @@ export const confirmarCodigoVerificacion = async (req: Request, res: Response) =
       });
     }
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE verificacion_cotizador_libre SET usado = true WHERE idverificacion_cotizador_libre = $1`,
       [verificacion.idverificacion_cotizador_libre]
     );

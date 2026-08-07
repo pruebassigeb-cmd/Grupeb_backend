@@ -9,7 +9,13 @@
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
-    "typeRoots": ["./src/types", "./node_modules/@types"]
+    // typeRoots espera carpetas cuyas SUBCARPETAS son paquetes de tipos
+    // (cada una con su index.d.ts). Por eso apunta a src/@types y NO a
+    // src/types: esta última tiene módulos .types.ts normales, y al listarla
+    // aquí TS trataba cotizadorLibre/, expo/, producto_papel/ y whatsapp/
+    // como paquetes rotos — tumbaba `npm run build` y, peor, alteraba la
+    // resolución de @types/express ocultando errores de tipos reales.
+    "typeRoots": ["./src/@types", "./node_modules/@types"]
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"]

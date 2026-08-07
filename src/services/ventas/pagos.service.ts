@@ -11,6 +11,7 @@ export async function ventaTieneCredito(
   const { rows } = await client.query(
     `SELECT 1 FROM venta_pago
      WHERE ventas_idventas = $1 AND es_credito_anticipo = true
+       AND eliminado_at IS NULL
      LIMIT 1`,
     [ventaId],
   );

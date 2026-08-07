@@ -1,3 +1,4 @@
+import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import {
@@ -11,7 +12,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
   try {
     const { noPedido } = req.params;
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: pedidoRows } = await client.query(`
       SELECT
@@ -38,6 +39,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
           SELECT 1 FROM venta_pago vp
           WHERE vp.ventas_idventas = v.idventas
             AND vp.es_credito_anticipo = true
+            AND vp.eliminado_at IS NULL
         ) AS es_credito_anticipo,
         (
           SELECT vp.monto
@@ -45,6 +47,7 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
           WHERE vp.ventas_idventas = v.idventas
             AND vp.es_anticipo = true
             AND vp.es_credito_anticipo = false
+            AND vp.eliminado_at IS NULL
           ORDER BY vp.fecha ASC
           LIMIT 1
         ) AS primer_pago_anticipo

@@ -1,3 +1,4 @@
+import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import {
@@ -87,7 +88,7 @@ export const crearCatalogoInsumo = async (req: Request, res: Response) => {
       ? `${String(nombre).trim()} ${String(medida).trim()}`
       : String(nombre).trim();
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     const { idinsumo, catRow, yaExistia } = await crearInsumoConEspejo(client, {
       catKey,
       nombreCompleto,
@@ -133,11 +134,11 @@ export const desactivarCatalogoInsumo = async (req: Request, res: Response) => {
     if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
 
     if (rows[0].insumo_idinsumo) {
-      await desactivarInsumoCompleto(rows[0].insumo_idinsumo);
+      await desactivarInsumoCompleto(req, rows[0].insumo_idinsumo);
     } else {
       // Registro histórico sin insumo vinculado (previo a la migración) —
       // se desactiva solo en la tabla cat_* directamente.
-      await pool.query(`UPDATE ${cfg.tabla} SET activo = false WHERE ${cfg.pk} = $1`, [id]);
+      await req.tx((client) => client.query(`UPDATE ${cfg.tabla} SET activo = false WHERE ${cfg.pk} = $1`, [id]));
     }
 
     return res.json({ message: "Desactivado correctamente" });
@@ -165,9 +166,9 @@ export const reactivarCatalogoInsumo = async (req: Request, res: Response) => {
     if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
 
     if (rows[0].insumo_idinsumo) {
-      await reactivarInsumoCompleto(rows[0].insumo_idinsumo);
+      await reactivarInsumoCompleto(req, rows[0].insumo_idinsumo);
     } else {
-      await pool.query(`UPDATE ${cfg.tabla} SET activo = true WHERE ${cfg.pk} = $1`, [id]);
+      await req.tx((client) => client.query(`UPDATE ${cfg.tabla} SET activo = true WHERE ${cfg.pk} = $1`, [id]));
     }
 
     return res.json({ message: "Reactivado correctamente" });

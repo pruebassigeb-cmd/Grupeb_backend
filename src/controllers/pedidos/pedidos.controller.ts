@@ -1,3 +1,4 @@
+import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import {
@@ -11,6 +12,85 @@ import {
 } from "../../services/ventas/totalesVenta.service";
 import { ventaTieneCredito } from "../../services/ventas/pagos.service";
 import { cambiarMonedaSolicitud } from "../../services/ventas/cambioMoneda.service";
+import { ErrorHttp, responderError } from "../../utils/errorHttp";
+
+/**
+ * Borra el árbol de diseño colgado de unos productos de solicitud.
+ *
+ * Existe porque las dos rutas de borrado de pedido lo necesitan y porque el
+ * orden importa: hay llaves foráneas SIN cascada que revientan el DELETE si
+ * se van en el orden equivocado. El grafo real es:
+ *
+ *   ficha_detalle_ubicacion → ficha_detalle, ficha_imagen
+ *   ficha_detalle / ficha_pantone / ficha_imagen / archivos → orden_diseno_ficha
+ *   ficha_imagen → archivos
+ *   orden_diseno_ficha → orden_diseno            (sin cascada: bloquea)
+ *   mensaje_diseno / revision_diseno / orden_diseno_participante → orden_diseno
+ *                                                (con ON DELETE CASCADE)
+ *
+ * Antes de esto, eliminar un pedido que tuviera ficha de diseño tronaba con
+ * "viola la llave foránea orden_diseno_ficha_orden_fkey": las tablas ficha_*
+ * son más nuevas que las rutas de borrado y nunca se agregaron a la secuencia.
+ */
+async function borrarArbolDiseno(client: any, productoIds: number[]): Promise<void> {
+  if (productoIds.length === 0) return;
+
+  const { rows: odRows } = await client.query(
+    `SELECT idorden_diseno FROM orden_diseno WHERE solicitud_producto_id = ANY($1::int[])`,
+    [productoIds]
+  );
+  const ordenIds: number[] = odRows.map((r: any) => r.idorden_diseno);
+  if (ordenIds.length === 0) return;
+
+  const { rows: fichaRows } = await client.query(
+    `SELECT idficha FROM orden_diseno_ficha WHERE orden_diseno_id = ANY($1::int[])`,
+    [ordenIds]
+  );
+  const fichaIds: number[] = fichaRows.map((r: any) => r.idficha);
+
+  if (fichaIds.length > 0) {
+    // Los archivos de las imágenes se apuntan desde ficha_imagen, así que hay
+    // que quedarse con sus ids ANTES de borrar ficha_imagen o se pierden.
+    const { rows: imgRows } = await client.query(
+      `SELECT archivo_id FROM ficha_imagen WHERE ficha_id = ANY($1::int[])`,
+      [fichaIds]
+    );
+    const archivoIds: number[] = imgRows
+      .map((r: any) => r.archivo_id)
+      .filter((x: number | null): x is number => x !== null);
+
+    await client.query(
+      `DELETE FROM ficha_detalle_ubicacion
+        WHERE detalle_id IN (SELECT idficha_detalle FROM ficha_detalle WHERE ficha_id = ANY($1::int[]))
+           OR imagen_id  IN (SELECT idficha_imagen  FROM ficha_imagen  WHERE ficha_id = ANY($1::int[]))`,
+      [fichaIds]
+    );
+    await client.query(`DELETE FROM ficha_detalle WHERE ficha_id = ANY($1::int[])`, [fichaIds]);
+    await client.query(`DELETE FROM ficha_pantone WHERE ficha_id = ANY($1::int[])`, [fichaIds]);
+    await client.query(`DELETE FROM ficha_imagen  WHERE ficha_id = ANY($1::int[])`, [fichaIds]);
+
+    await client.query(`DELETE FROM archivos WHERE ficha_id = ANY($1::int[])`, [fichaIds]);
+    if (archivoIds.length > 0) {
+      await client.query(`DELETE FROM archivos WHERE id_archivo = ANY($1::int[])`, [archivoIds]);
+    }
+
+    await client.query(`DELETE FROM orden_diseno_ficha WHERE idficha = ANY($1::int[])`, [fichaIds]);
+  }
+
+  // archivos.revision_diseno_id es ON DELETE SET NULL: no bloquea, pero
+  // dejaría archivos huérfanos, y aquí lo que se pidió es que no quede nada.
+  await client.query(
+    `DELETE FROM archivos
+      WHERE revision_diseno_id IN (
+        SELECT idrevision FROM revision_diseno WHERE orden_diseno_id = ANY($1::int[]))`,
+    [ordenIds]
+  );
+
+  await client.query(`DELETE FROM mensaje_diseno            WHERE orden_diseno_id = ANY($1::int[])`, [ordenIds]);
+  await client.query(`DELETE FROM revision_diseno           WHERE orden_diseno_id = ANY($1::int[])`, [ordenIds]);
+  await client.query(`DELETE FROM orden_diseno_participante WHERE orden_diseno_id = ANY($1::int[])`, [ordenIds]);
+  await client.query(`DELETE FROM orden_diseno              WHERE idorden_diseno  = ANY($1::int[])`, [ordenIds]);
+}
 
 function normalizarNombreEstado(nombre: string): string {
   if (!nombre) return "Pendiente";
@@ -157,6 +237,7 @@ export const getPedidos = async (req: Request, res: Response) => {
           s.sin_iva,
           s.moneda,
           s.tipo_cambio,
+          s.origen_cotizador_libre,
           s.clientes_idclientes,
           s.estado_administrativo_cat_idestado_administrativo_cat,
 
@@ -363,6 +444,7 @@ export const getPedidos = async (req: Request, res: Response) => {
           no_pedido: noPedido,
           no_cotizacion: row.no_cotizacion ?? null,
           es_directo: row.no_cotizacion === null,
+          origen_cotizador_libre: row.origen_cotizador_libre === true,
           fecha: row.fecha,
           prioridad: row.prioridad ?? false,
           sin_iva: row.sin_iva ?? false,
@@ -598,7 +680,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
 
     const solicitudId: number = pedRows[0].idsolicitud;
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     // Urgente (prioridad) y sin_iva son banderas de cabecera de la
     // solicitud; sólo se actualizan si el front las envía explícitamente
@@ -1345,7 +1427,7 @@ export const cambiarMonedaPedido = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Pedido no encontrado" });
     }
 
-    const resultado = await cambiarMonedaSolicitud(pedRows[0].idsolicitud, moneda);
+    const resultado = await cambiarMonedaSolicitud(req, pedRows[0].idsolicitud, moneda);
     return res.json(resultado);
   } catch (error: any) {
     console.error("❌ CAMBIAR MONEDA PEDIDO ERROR:", error.message);
@@ -1354,162 +1436,174 @@ export const cambiarMonedaPedido = async (req: Request, res: Response) => {
 };
 
 export const eliminarPedido = async (req: Request, res: Response) => {
-  const client = await pool.connect();
   try {
     const { id } = req.params;
 
-    const { rows: pedRows } = await client.query(
-      `SELECT idsolicitud, no_cotizacion FROM solicitud WHERE no_pedido = $1`, [id]
-    );
-    if (pedRows.length === 0)
-      return res.status(404).json({ error: "Pedido no encontrado" });
-
-    const solicitudId: number = pedRows[0].idsolicitud;
-    const noCotizacion: number | null = pedRows[0].no_cotizacion;
-
-    const { rows: pagosRows } = await client.query(
-      `SELECT COUNT(*) AS total FROM venta_pago vp
-       INNER JOIN ventas v ON v.idventas = vp.ventas_idventas
-       WHERE v.solicitud_idsolicitud = $1`, [solicitudId]
-    );
-    if (Number(pagosRows[0].total) > 0) {
-      return res.status(409).json({
-        error: "No se puede eliminar este pedido porque tiene pagos registrados.",
-        motivo: "pagos",
-        detalle: `El pedido #${id} tiene ${pagosRows[0].total} pago(s) registrado(s). ` +
-          "Elimina los pagos desde el módulo de Anticipo y Liquidación antes de cancelar el pedido.",
-      });
-    }
-
-    const { rows: disenoRows } = await client.query(
-      `SELECT COUNT(*) AS total FROM diseno_producto dp
-       INNER JOIN diseno d ON d.iddiseno = dp.diseno_iddiseno
-       WHERE d.solicitud_idsolicitud = $1
-         AND dp.estado_administrativo_cat_idestado_administrativo_cat = 3`, [solicitudId]
-    );
-    if (Number(disenoRows[0].total) > 0) {
-      return res.status(409).json({
-        error: "No se puede eliminar este pedido porque tiene productos aprobados en diseño.",
-        motivo: "diseno",
-        detalle: `El pedido #${id} tiene ${disenoRows[0].total} producto(s) aprobado(s) en diseño. ` +
-          "Restablece los productos en el módulo de Diseño antes de cancelar el pedido.",
-      });
-    }
-
-    await client.query("BEGIN");
-
-    const { rows: prodRows } = await client.query(
-      `SELECT idsolicitud_producto FROM solicitud_producto WHERE solicitud_idsolicitud = $1`,
-      [solicitudId]
-    );
-    const productoIds: number[] = prodRows.map((r: any) => r.idsolicitud_producto);
-
-    if (productoIds.length > 0) {
-      await client.query(
-        `DELETE FROM herramental WHERE idsolicitud_producto = ANY($1::int[])`,
-        [productoIds]
+    // Borrado FÍSICO a propósito: el cliente pidió poder desaparecer por
+    // completo un pedido. La trazabilidad no se pierde porque el trigger
+    // trg_bitacora_* guarda cada renglón borrado en bitacora_cambios
+    // (datos_antes trae la fila entera), y req.tx deja registrado quién lo
+    // hizo y desde qué endpoint. Sin req.tx todo esto quedaría con
+    // usuario_id = NULL, que es lo peor posible en la operación más
+    // destructiva del sistema.
+    const resultado = await req.tx(async (client) => {
+      const { rows: pedRows } = await client.query(
+        `SELECT idsolicitud, no_cotizacion FROM solicitud WHERE no_pedido = $1`, [id]
       );
+      if (pedRows.length === 0) {
+        throw new ErrorHttp(404, "Pedido no encontrado");
+      }
 
-      const { rows: odRows } = await client.query(
-        `SELECT idorden_diseno FROM orden_diseno WHERE solicitud_producto_id = ANY($1::int[])`,
-        [productoIds]
+      const solicitudId: number = pedRows[0].idsolicitud;
+      const noCotizacion: number | null = pedRows[0].no_cotizacion;
+
+      const { rows: pagosRows } = await client.query(
+        `SELECT COUNT(*) AS total FROM venta_pago vp
+         INNER JOIN ventas v ON v.idventas = vp.ventas_idventas
+         WHERE v.solicitud_idsolicitud = $1
+           AND vp.eliminado_at IS NULL`, [solicitudId]
       );
-      const ordenDisenoIds: number[] = odRows.map((r: any) => r.idorden_diseno);
-
-      if (ordenDisenoIds.length > 0) {
-        await client.query(
-          `DELETE FROM orden_diseno_participante WHERE orden_diseno_id = ANY($1::int[])`,
-          [ordenDisenoIds]
-        );
-        await client.query(
-          `DELETE FROM archivos WHERE revision_diseno_id = ANY($1::int[])`,
-          [ordenDisenoIds]
-        );
-        await client.query(
-          `DELETE FROM orden_diseno WHERE idorden_diseno = ANY($1::int[])`,
-          [ordenDisenoIds]
+      if (Number(pagosRows[0].total) > 0) {
+        throw new ErrorHttp(
+          409,
+          `No se puede eliminar este pedido porque tiene ${pagosRows[0].total} pago(s) registrado(s). ` +
+            "Elimina los pagos desde el módulo de Anticipo y Liquidación antes de cancelar el pedido."
         );
       }
 
-      await client.query(
-        `DELETE FROM diseno_producto WHERE solicitud_producto_idsolicitud_producto = ANY($1::int[])`,
-        [productoIds]
+      const { rows: disenoRows } = await client.query(
+        `SELECT COUNT(*) AS total FROM diseno_producto dp
+         INNER JOIN diseno d ON d.iddiseno = dp.diseno_iddiseno
+         WHERE d.solicitud_idsolicitud = $1
+           AND dp.estado_administrativo_cat_idestado_administrativo_cat = 3`, [solicitudId]
       );
-      await client.query(
-        `DELETE FROM orden_produccion WHERE idsolicitud_producto = ANY($1::int[])`,
-        [productoIds]
+      if (Number(disenoRows[0].total) > 0) {
+        throw new ErrorHttp(
+          409,
+          `No se puede eliminar este pedido porque tiene ${disenoRows[0].total} producto(s) aprobado(s) en diseño. ` +
+            "Restablece los productos en el módulo de Diseño antes de cancelar el pedido."
+        );
+      }
+
+      const { rows: prodRows } = await client.query(
+        `SELECT idsolicitud_producto FROM solicitud_producto WHERE solicitud_idsolicitud = $1`,
+        [solicitudId]
       );
-      await client.query(
-        `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = ANY($1::int[])`,
-        [productoIds]
+      const productoIds: number[] = prodRows.map((r: any) => r.idsolicitud_producto);
+
+      if (productoIds.length > 0) {
+        await client.query(
+          `DELETE FROM herramental WHERE idsolicitud_producto = ANY($1::int[])`,
+          [productoIds]
+        );
+
+        // Antes esto borraba a mano participantes, archivos y orden_diseno —
+        // y filtraba archivos por revision_diseno_id usando ids de
+        // orden_diseno, que son espacios de ids distintos, así que nunca
+        // borraba lo que creía. Además ignoraba las tablas ficha_*.
+        await borrarArbolDiseno(client, productoIds);
+
+        await client.query(
+          `DELETE FROM diseno_producto WHERE solicitud_producto_idsolicitud_producto = ANY($1::int[])`,
+          [productoIds]
+        );
+        await client.query(
+          `DELETE FROM orden_produccion WHERE idsolicitud_producto = ANY($1::int[])`,
+          [productoIds]
+        );
+        await client.query(
+          `DELETE FROM solicitud_detalle WHERE solicitud_producto_id = ANY($1::int[])`,
+          [productoIds]
+        );
+      }
+
+      await client.query(`DELETE FROM diseno WHERE solicitud_idsolicitud = $1`, [solicitudId]);
+      await client.query(`DELETE FROM solicitud_producto WHERE solicitud_idsolicitud = $1`, [solicitudId]);
+
+      const { rows: ventaRows } = await client.query(
+        `SELECT idventas FROM ventas WHERE solicitud_idsolicitud = $1`,
+        [solicitudId]
       );
-    }
+      if (ventaRows.length > 0) {
+        const ventaId = ventaRows[0].idventas;
+        await client.query(`DELETE FROM venta_pago WHERE ventas_idventas = $1`, [ventaId]);
+        await client.query(`DELETE FROM ventas WHERE idventas = $1`, [ventaId]);
+      }
 
-    await client.query(`DELETE FROM diseno WHERE solicitud_idsolicitud = $1`, [solicitudId]);
-    await client.query(`DELETE FROM solicitud_producto WHERE solicitud_idsolicitud = $1`, [solicitudId]);
+      await client.query(`DELETE FROM solicitud WHERE idsolicitud = $1`, [solicitudId]);
 
-    const { rows: ventaRows } = await client.query(
-      `SELECT idventas FROM ventas WHERE solicitud_idsolicitud = $1`,
-      [solicitudId]
-    );
-    if (ventaRows.length > 0) {
-      const ventaId = ventaRows[0].idventas;
-      await client.query(`DELETE FROM venta_pago WHERE ventas_idventas = $1`, [ventaId]);
-      await client.query(`DELETE FROM ventas WHERE idventas = $1`, [ventaId]);
-    }
-
-    await client.query(`DELETE FROM solicitud WHERE idsolicitud = $1`, [solicitudId]);
-
-    await client.query("COMMIT");
-
-    return res.json({
-      message: "Pedido cancelado y eliminado exitosamente",
-      no_pedido: id,
-      no_cotizacion: noCotizacion,
-      tenia_cotizacion: noCotizacion !== null,
+      return {
+        message: "Pedido cancelado y eliminado exitosamente",
+        no_pedido: id,
+        no_cotizacion: noCotizacion,
+        tenia_cotizacion: noCotizacion !== null,
+      };
     });
 
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    console.error("❌ CANCELAR PEDIDO ERROR:", error.message);
-    return res.status(500).json({ error: "Error al cancelar pedido", detalle: error.message });
-  } finally {
-    client.release();
+    return res.json(resultado);
+  } catch (error) {
+    return responderError(res, error, "Error al cancelar pedido");
   }
 };
 
 export const eliminarPedidoCompleto = async (req: Request, res: Response) => {
-  const client = await pool.connect();
-
   try {
     const { noPedido } = req.params;
 
-    await client.query("BEGIN");
+    // Borrado FÍSICO de todo el árbol del pedido —incluidos envíos, notas de
+    // remisión y bitácora de reparto— porque así lo pidió el cliente: que no
+    // quede nada. Lo que sí queda es el rastro: cada DELETE dispara
+    // trg_bitacora_* y guarda la fila completa en bitacora_cambios.datos_antes,
+    // con el usuario que lo ejecutó gracias a req.tx.
+    const resultado = await req.tx(async (client) => {
+      const pedido = await client.query(
+        `
+        SELECT idsolicitud
+        FROM solicitud
+        WHERE no_pedido = $1
+        `,
+        [noPedido]
+      );
 
-    const pedido = await client.query(
-      `
-      SELECT idsolicitud
-      FROM solicitud
-      WHERE no_pedido = $1
-      `,
-      [noPedido]
-    );
+      if (pedido.rows.length === 0) {
+        throw new ErrorHttp(404, "Pedido no encontrado");
+      }
 
-    if (pedido.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Pedido no encontrado" });
-    }
+      const idsolicitud = pedido.rows[0].idsolicitud;
 
-    const idsolicitud = pedido.rows[0].idsolicitud;
+      const params = [idsolicitud];
 
-    const params = [idsolicitud];
+      await client.query(`
+        DELETE FROM envio_bulto
+        WHERE bultos_idbulto IN (
+          SELECT b.idbulto
+          FROM bultos b
+          WHERE b.bolseo_idbolseo IN (
+            SELECT idbolseo FROM bolseo
+            WHERE orden_produccion_idproduccion IN (
+              SELECT idproduccion FROM orden_produccion
+              WHERE idsolicitud_producto IN (
+                SELECT idsolicitud_producto FROM solicitud_producto
+                WHERE solicitud_idsolicitud = $1
+              )
+            )
+          )
+          OR b.asa_flexible_idasa_flexible IN (
+            SELECT idasa_flexible FROM asa_flexible
+            WHERE orden_produccion_idproduccion IN (
+              SELECT idproduccion FROM orden_produccion
+              WHERE idsolicitud_producto IN (
+                SELECT idsolicitud_producto FROM solicitud_producto
+                WHERE solicitud_idsolicitud = $1
+              )
+            )
+          )
+        )
+      `, params);
 
-    await client.query(`
-      DELETE FROM envio_bulto
-      WHERE bultos_idbulto IN (
-        SELECT b.idbulto
-        FROM bultos b
-        WHERE b.bolseo_idbolseo IN (
+      await client.query(`
+        DELETE FROM bultos
+        WHERE bolseo_idbolseo IN (
           SELECT idbolseo FROM bolseo
           WHERE orden_produccion_idproduccion IN (
             SELECT idproduccion FROM orden_produccion
@@ -1519,7 +1613,7 @@ export const eliminarPedidoCompleto = async (req: Request, res: Response) => {
             )
           )
         )
-        OR b.asa_flexible_idasa_flexible IN (
+        OR asa_flexible_idasa_flexible IN (
           SELECT idasa_flexible FROM asa_flexible
           WHERE orden_produccion_idproduccion IN (
             SELECT idproduccion FROM orden_produccion
@@ -1529,47 +1623,10 @@ export const eliminarPedidoCompleto = async (req: Request, res: Response) => {
             )
           )
         )
-      )
-    `, params);
+      `, params);
 
-    await client.query(`
-      DELETE FROM bultos
-      WHERE bolseo_idbolseo IN (
-        SELECT idbolseo FROM bolseo
-        WHERE orden_produccion_idproduccion IN (
-          SELECT idproduccion FROM orden_produccion
-          WHERE idsolicitud_producto IN (
-            SELECT idsolicitud_producto FROM solicitud_producto
-            WHERE solicitud_idsolicitud = $1
-          )
-        )
-      )
-      OR asa_flexible_idasa_flexible IN (
-        SELECT idasa_flexible FROM asa_flexible
-        WHERE orden_produccion_idproduccion IN (
-          SELECT idproduccion FROM orden_produccion
-          WHERE idsolicitud_producto IN (
-            SELECT idsolicitud_producto FROM solicitud_producto
-            WHERE solicitud_idsolicitud = $1
-          )
-        )
-      )
-    `, params);
-
-    await client.query(`
-      DELETE FROM avance_proceso
-      WHERE orden_produccion_idproduccion IN (
-        SELECT idproduccion FROM orden_produccion
-        WHERE idsolicitud_producto IN (
-          SELECT idsolicitud_producto FROM solicitud_producto
-          WHERE solicitud_idsolicitud = $1
-        )
-      )
-    `, params);
-
-    for (const tabla of ["extrusion", "impresion", "bolseo", "asa_flexible"]) {
       await client.query(`
-        DELETE FROM ${tabla}
+        DELETE FROM avance_proceso
         WHERE orden_produccion_idproduccion IN (
           SELECT idproduccion FROM orden_produccion
           WHERE idsolicitud_producto IN (
@@ -1578,157 +1635,127 @@ export const eliminarPedidoCompleto = async (req: Request, res: Response) => {
           )
         )
       `, params);
-    }
 
-    await client.query(`
-      DELETE FROM orden_produccion
-      WHERE idsolicitud_producto IN (
-        SELECT idsolicitud_producto FROM solicitud_producto
-        WHERE solicitud_idsolicitud = $1
-      )
-    `, params);
+      for (const tabla of ["extrusion", "impresion", "bolseo", "asa_flexible"]) {
+      await client.query(`
+          DELETE FROM ${tabla}
+          WHERE orden_produccion_idproduccion IN (
+            SELECT idproduccion FROM orden_produccion
+            WHERE idsolicitud_producto IN (
+              SELECT idsolicitud_producto FROM solicitud_producto
+              WHERE solicitud_idsolicitud = $1
+            )
+          )
+        `, params);
+      }
 
-    await client.query(`
-      DELETE FROM mensaje_diseno
-      WHERE orden_diseno_id IN (
-        SELECT idorden_diseno FROM orden_diseno
+      await client.query(`
+        DELETE FROM orden_produccion
+        WHERE idsolicitud_producto IN (
+          SELECT idsolicitud_producto FROM solicitud_producto
+          WHERE solicitud_idsolicitud = $1
+        )
+      `, params);
+
+      // Ficha, imágenes, pantones, revisiones, mensajes, participantes y la
+      // orden misma, en el orden que exigen las llaves foráneas. Antes esto
+      // no borraba orden_diseno_ficha y el DELETE de orden_diseno tronaba en
+      // cualquier pedido que tuviera ficha de diseño.
+      const { rows: spRows } = await client.query(
+        `SELECT idsolicitud_producto FROM solicitud_producto WHERE solicitud_idsolicitud = $1`,
+        params
+      );
+      await borrarArbolDiseno(client, spRows.map((r: any) => r.idsolicitud_producto));
+
+      await client.query(`
+        DELETE FROM diseno_producto
+        WHERE solicitud_producto_idsolicitud_producto IN (
+          SELECT idsolicitud_producto FROM solicitud_producto
+          WHERE solicitud_idsolicitud = $1
+        )
+      `, params);
+
+      await client.query(`DELETE FROM diseno WHERE solicitud_idsolicitud = $1`, params);
+
+      await client.query(`
+        DELETE FROM venta_pago
+        WHERE ventas_idventas IN (
+          SELECT idventas FROM ventas
+          WHERE solicitud_idsolicitud = $1
+        )
+      `, params);
+
+      await client.query(`DELETE FROM ventas WHERE solicitud_idsolicitud = $1`, params);
+
+
+      await client.query(`
+    DELETE FROM bitacora_reparto
+    WHERE envio_idenvio IN (
+      SELECT idenvio FROM envio
+      WHERE solicitud_idsolicitud = $1
+    )
+  `, params);
+
+      await client.query(`
+    DELETE FROM nota_remision_envio
+    WHERE envio_idenvio IN (
+      SELECT idenvio FROM envio
+      WHERE solicitud_idsolicitud = $1
+    )
+  `, params);
+
+      await client.query(`
+    DELETE FROM nota_remision
+    WHERE envio_idenvio IN (
+      SELECT idenvio FROM envio
+      WHERE solicitud_idsolicitud = $1
+    )
+  `, params);
+
+      await client.query(`
+    DELETE FROM envio_bulto
+    WHERE envio_idenvio IN (
+      SELECT idenvio FROM envio
+      WHERE solicitud_idsolicitud = $1
+    )
+  `, params);
+
+      await client.query(`
+    DELETE FROM archivos
+    WHERE envio_id IN (
+      SELECT idenvio FROM envio
+      WHERE solicitud_idsolicitud = $1
+    )
+  `, params);
+
+      await client.query(`DELETE FROM envio WHERE solicitud_idsolicitud = $1`, params);
+
+      await client.query(`
+        DELETE FROM solicitud_detalle
         WHERE solicitud_producto_id IN (
           SELECT idsolicitud_producto FROM solicitud_producto
           WHERE solicitud_idsolicitud = $1
         )
-      )
-    `, params);
+      `, params);
 
-    await client.query(`
-      DELETE FROM revision_diseno
-      WHERE orden_diseno_id IN (
-        SELECT idorden_diseno FROM orden_diseno
-        WHERE solicitud_producto_id IN (
+      await client.query(`
+        DELETE FROM herramental
+        WHERE idsolicitud_producto IN (
           SELECT idsolicitud_producto FROM solicitud_producto
           WHERE solicitud_idsolicitud = $1
         )
-      )
-    `, params);
+      `, params);
 
-    await client.query(`
-      DELETE FROM orden_diseno_participante
-      WHERE orden_diseno_id IN (
-        SELECT idorden_diseno FROM orden_diseno
-        WHERE solicitud_producto_id IN (
-          SELECT idsolicitud_producto FROM solicitud_producto
-          WHERE solicitud_idsolicitud = $1
-        )
-      )
-    `, params);
+      await client.query(`DELETE FROM solicitud_producto WHERE solicitud_idsolicitud = $1`, params);
 
-    await client.query(`
-      DELETE FROM orden_diseno
-      WHERE solicitud_producto_id IN (
-        SELECT idsolicitud_producto FROM solicitud_producto
-        WHERE solicitud_idsolicitud = $1
-      )
-    `, params);
+      await client.query(`DELETE FROM solicitud WHERE idsolicitud = $1`, params);
 
-    await client.query(`
-      DELETE FROM diseno_producto
-      WHERE solicitud_producto_idsolicitud_producto IN (
-        SELECT idsolicitud_producto FROM solicitud_producto
-        WHERE solicitud_idsolicitud = $1
-      )
-    `, params);
-
-    await client.query(`DELETE FROM diseno WHERE solicitud_idsolicitud = $1`, params);
-
-    await client.query(`
-      DELETE FROM venta_pago
-      WHERE ventas_idventas IN (
-        SELECT idventas FROM ventas
-        WHERE solicitud_idsolicitud = $1
-      )
-    `, params);
-
-    await client.query(`DELETE FROM ventas WHERE solicitud_idsolicitud = $1`, params);
-
-
-    await client.query(`
-  DELETE FROM bitacora_reparto
-  WHERE envio_idenvio IN (
-    SELECT idenvio FROM envio
-    WHERE solicitud_idsolicitud = $1
-  )
-`, params);
-
-    await client.query(`
-  DELETE FROM nota_remision_envio
-  WHERE envio_idenvio IN (
-    SELECT idenvio FROM envio
-    WHERE solicitud_idsolicitud = $1
-  )
-`, params);
-
-    await client.query(`
-  DELETE FROM nota_remision
-  WHERE envio_idenvio IN (
-    SELECT idenvio FROM envio
-    WHERE solicitud_idsolicitud = $1
-  )
-`, params);
-
-    await client.query(`
-  DELETE FROM envio_bulto
-  WHERE envio_idenvio IN (
-    SELECT idenvio FROM envio
-    WHERE solicitud_idsolicitud = $1
-  )
-`, params);
-
-    await client.query(`
-  DELETE FROM archivos
-  WHERE envio_id IN (
-    SELECT idenvio FROM envio
-    WHERE solicitud_idsolicitud = $1
-  )
-`, params);
-
-    await client.query(`DELETE FROM envio WHERE solicitud_idsolicitud = $1`, params);
-
-    await client.query(`
-      DELETE FROM solicitud_detalle
-      WHERE solicitud_producto_id IN (
-        SELECT idsolicitud_producto FROM solicitud_producto
-        WHERE solicitud_idsolicitud = $1
-      )
-    `, params);
-
-    await client.query(`
-      DELETE FROM herramental
-      WHERE idsolicitud_producto IN (
-        SELECT idsolicitud_producto FROM solicitud_producto
-        WHERE solicitud_idsolicitud = $1
-      )
-    `, params);
-
-    await client.query(`DELETE FROM solicitud_producto WHERE solicitud_idsolicitud = $1`, params);
-
-    await client.query(`DELETE FROM solicitud WHERE idsolicitud = $1`, params);
-
-    await client.query("COMMIT");
-
-    return res.json({
-      message: `Pedido ${noPedido} eliminado completamente`,
+      return { message: `Pedido ${noPedido} eliminado completamente` };
     });
 
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    console.error("❌ ELIMINAR PEDIDO COMPLETO ERROR:", error.message);
-
-    return res.status(500).json({
-      error: "Error al eliminar completamente el pedido",
-      detalle: error.message,
-    });
-
-  } finally {
-    client.release();
+    return res.json(resultado);
+  } catch (error) {
+    return responderError(res, error, "Error al eliminar completamente el pedido");
   }
 };
 
@@ -1891,6 +1918,7 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
           no_pedido: noPedido,
           no_cotizacion: row.no_cotizacion ?? null,
           es_directo: row.no_cotizacion === null,
+          origen_cotizador_libre: row.origen_cotizador_libre === true,
           fecha: row.fecha,
           prioridad: row.prioridad ?? false,
           sin_iva: row.sin_iva ?? false,

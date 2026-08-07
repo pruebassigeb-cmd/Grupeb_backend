@@ -1,3 +1,5 @@
+import { iniciarTx } from "../middlewares/auditoria";
+import { Request } from "express";
 import { pool } from "../config/db";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -177,10 +179,10 @@ export async function sincronizarEspejoDesdeInsumo(
  * eso lo maneja `insumo_proveedor` por separado) y su espejo en cat_*, si
  * corresponde a un catálogo sincronizado. Nunca borra nada de la BD.
  */
-export async function desactivarInsumoCompleto(idinsumo: number) {
+export async function desactivarInsumoCompleto(req: Request, idinsumo: number) {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows } = await client.query(
       `UPDATE insumo SET activo = false WHERE idinsumo = $1 RETURNING idinsumo, tipo_insumo_id, nombre`,
@@ -212,10 +214,10 @@ export async function desactivarInsumoCompleto(idinsumo: number) {
 }
 
 /** Reactiva el insumo completo y su espejo (si corresponde). */
-export async function reactivarInsumoCompleto(idinsumo: number) {
+export async function reactivarInsumoCompleto(req: Request, idinsumo: number) {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows } = await client.query(
       `UPDATE insumo SET activo = true WHERE idinsumo = $1 RETURNING idinsumo, tipo_insumo_id, nombre`,

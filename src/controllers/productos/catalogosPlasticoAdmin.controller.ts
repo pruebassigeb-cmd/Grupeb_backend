@@ -1,3 +1,4 @@
+import { qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -41,7 +42,7 @@ export const crearTipoProductoAdmin = async (req: Request, res: Response) => {
     if (!nombre || !String(nombre).trim()) {
       return res.status(400).json({ error: "El nombre es requerido" });
     }
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `INSERT INTO tipo_producto_plastico (material_plastico_producto, productos_idproductos, activo)
        VALUES ($1, $2, true)
        RETURNING idtipo_producto_plastico AS id, material_plastico_producto AS nombre, activo`,
@@ -65,7 +66,7 @@ export const editarTipoProductoAdmin = async (req: Request, res: Response) => {
     if (!nombre || !String(nombre).trim()) {
       return res.status(400).json({ error: "El nombre es requerido" });
     }
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE tipo_producto_plastico SET material_plastico_producto = $1
        WHERE idtipo_producto_plastico = $2
        RETURNING idtipo_producto_plastico AS id, material_plastico_producto AS nombre, activo`,
@@ -85,7 +86,7 @@ export const editarTipoProductoAdmin = async (req: Request, res: Response) => {
 export const desactivarTipoProductoAdmin = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE tipo_producto_plastico SET activo = false
        WHERE idtipo_producto_plastico = $1 RETURNING idtipo_producto_plastico`,
       [id]
@@ -101,7 +102,7 @@ export const desactivarTipoProductoAdmin = async (req: Request, res: Response) =
 export const reactivarTipoProductoAdmin = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE tipo_producto_plastico SET activo = true
        WHERE idtipo_producto_plastico = $1 RETURNING idtipo_producto_plastico`,
       [id]
@@ -149,7 +150,7 @@ export const crearMaterialAdmin = async (req: Request, res: Response) => {
     if (valor === undefined || valor === null || isNaN(Number(valor))) {
       return res.status(400).json({ error: "El valor (factor de cálculo) es requerido y debe ser numérico" });
     }
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `INSERT INTO material_plastico (tipo_material, valor, activo)
        VALUES ($1, $2, true)
        RETURNING idmaterial_plastico AS id, tipo_material AS nombre, valor, activo`,
@@ -176,7 +177,7 @@ export const editarMaterialAdmin = async (req: Request, res: Response) => {
     if (valor === undefined || valor === null || isNaN(Number(valor))) {
       return res.status(400).json({ error: "El valor (factor de cálculo) es requerido y debe ser numérico" });
     }
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE material_plastico SET tipo_material = $1, valor = $2
        WHERE idmaterial_plastico = $3
        RETURNING idmaterial_plastico AS id, tipo_material AS nombre, valor, activo`,
@@ -196,7 +197,7 @@ export const editarMaterialAdmin = async (req: Request, res: Response) => {
 export const desactivarMaterialAdmin = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE material_plastico SET activo = false
        WHERE idmaterial_plastico = $1 RETURNING idmaterial_plastico`,
       [id]
@@ -212,7 +213,7 @@ export const desactivarMaterialAdmin = async (req: Request, res: Response) => {
 export const reactivarMaterialAdmin = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE material_plastico SET activo = true
        WHERE idmaterial_plastico = $1 RETURNING idmaterial_plastico`,
       [id]
@@ -257,7 +258,7 @@ export const crearCalibreAdmin = async (req: Request, res: Response) => {
     if (calibre === undefined || calibre === null || isNaN(Number(calibre))) {
       return res.status(400).json({ error: "El calibre es requerido y debe ser numérico" });
     }
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `INSERT INTO calibre (calibre, calibre_bopp, gramos, activo)
        VALUES ($1, $2, $3, true)
        RETURNING idcalibre AS id, calibre, calibre_bopp, gramos, activo`,
@@ -285,7 +286,7 @@ export const editarCalibreAdmin = async (req: Request, res: Response) => {
     if (calibre === undefined || calibre === null || isNaN(Number(calibre))) {
       return res.status(400).json({ error: "El calibre es requerido y debe ser numérico" });
     }
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE calibre SET calibre = $1, calibre_bopp = $2, gramos = $3
        WHERE idcalibre = $4
        RETURNING idcalibre AS id, calibre, calibre_bopp, gramos, activo`,
@@ -310,7 +311,7 @@ export const editarCalibreAdmin = async (req: Request, res: Response) => {
 export const desactivarCalibreAdmin = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE calibre SET activo = false WHERE idcalibre = $1 RETURNING idcalibre`,
       [id]
     );
@@ -325,7 +326,7 @@ export const desactivarCalibreAdmin = async (req: Request, res: Response) => {
 export const reactivarCalibreAdmin = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE calibre SET activo = true WHERE idcalibre = $1 RETURNING idcalibre`,
       [id]
     );

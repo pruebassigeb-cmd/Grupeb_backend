@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -238,7 +239,7 @@ export const createEnvio = async (req: Request, res: Response) => {
 
     // recoleccion: no requiere nada extra
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: bultosOcupados } = await client.query(
       `SELECT bultos_idbulto FROM envio_bulto WHERE bultos_idbulto = ANY($1)`,
@@ -406,7 +407,7 @@ export const marcarEnvioCompletado = async (req: Request, res: Response) => {
     if (!["local", "paqueteria", "recoleccion"].includes(tipo))
       return res.status(400).json({ error: "Tipo de envío inválido" });
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     // ── Bultos pendientes de esta orden de producción ──
     const { rows: bultosPendientes } = await client.query(
@@ -675,7 +676,7 @@ export const updateEstadoEnvio = async (req: Request, res: Response) => {
     if (!["preparando", "en_camino", "entregado"].includes(estado))
       return res.status(400).json({ error: "Estado inválido" });
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE envio SET estado = $1 WHERE idenvio = $2 RETURNING idenvio, estado`,
       [estado, id]
     );
@@ -699,7 +700,7 @@ export const deleteEnvio = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const envioActual = await client.query(
       "SELECT estado FROM envio WHERE idenvio = $1 LIMIT 1", [id]
@@ -800,7 +801,7 @@ export const updateGuiaEnvio = async (req: Request, res: Response) => {
     const { id } = req.params;
     const { numero_guia } = req.body;
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE envio SET numero_guia = $1 WHERE idenvio = $2 RETURNING idenvio, numero_guia`,
       [numero_guia || null, id]
     );
@@ -1009,7 +1010,7 @@ export const updateClavesSatBultos = async (req: Request, res: Response) => {
     if (!Array.isArray(bultos) || bultos.length === 0)
       return res.status(400).json({ error: "Se requiere al menos un bulto" });
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     for (const b of bultos) {
       await client.query(

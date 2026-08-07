@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -177,7 +178,7 @@ export const getFoilById = async (req: Request, res: Response) => {
 export const actualizarFoil = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { id, idFoil } = req.params;
     const {
@@ -288,7 +289,7 @@ export const eliminarFoil = async (req: Request, res: Response) => {
   try {
     const { id, idFoil } = req.params;
 
-    const { rowCount } = await pool.query(`
+    const { rowCount } = await qAudit(req)(`
       UPDATE foil_proveedor SET activo = false
       WHERE idfoil = $1 AND proveedor_idproveedor = $2 AND activo = true
     `, [idFoil, id]);

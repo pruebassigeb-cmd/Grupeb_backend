@@ -1,3 +1,4 @@
+import { qAudit } from "../../middlewares/auditoria";
 import type { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -378,7 +379,7 @@ export const eliminarItemCatalogo = async (req: Request, res: Response) => {
     const cat = CATALOGOS[catalogo];
     if (!cat) return res.status(400).json({ error: `Catálogo '${catalogo}' no válido` });
 
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE ${cat.tabla} SET activo = false WHERE ${cat.pk} = $1 RETURNING *`,
       [id]
     );
@@ -404,7 +405,7 @@ export const reactivarItemCatalogo = async (req: Request, res: Response) => {
     const cat = CATALOGOS[catalogo];
     if (!cat) return res.status(400).json({ error: `Catálogo '${catalogo}' no válido` });
 
-    const { rows } = await pool.query(
+    const { rows } = await qAudit(req)(
       `UPDATE ${cat.tabla} SET activo = true WHERE ${cat.pk} = $1 RETURNING *`,
       [id]
     );

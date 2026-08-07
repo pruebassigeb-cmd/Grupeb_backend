@@ -1,3 +1,4 @@
+import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -493,7 +494,7 @@ export const actualizarEstadoProducto = async (req: Request, res: Response) => {
     if (![ESTADO.PENDIENTE, ESTADO.EN_PROCESO, ESTADO.APROBADO].includes(estadoNum as any))
       return res.status(400).json({ error: "Estado inválido. Use: 1, 2 o 3" });
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rowCount } = await client.query(
       `UPDATE diseno_producto

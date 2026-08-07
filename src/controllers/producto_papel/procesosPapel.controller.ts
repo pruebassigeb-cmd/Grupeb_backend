@@ -1,3 +1,4 @@
+import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -789,7 +790,7 @@ export const iniciarProcesoPapel = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Debes indicar el proceso válido (tabla_proceso)" });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const procesos = await getProcesosDeOrdenPapel(client, Number(idproduccion));
     const procesoActualCat = await getIdProcesoCatPorTabla(tabla_proceso);
@@ -930,7 +931,7 @@ export const registrarAvancePapel = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Debes indicar el proceso válido (tabla_proceso)" });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: procesoRows } = await client.query(
       `SELECT estado_produccion_cat_idestado_produccion_cat AS estado, fecha_inicio
@@ -1040,7 +1041,7 @@ export const finalizarProcesoPapel = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Debes indicar el proceso válido (tabla_proceso)" });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const procesos = await getProcesosDeOrdenPapel(client, Number(idproduccion));
     const procesoActualCat = await getIdProcesoCatPorTabla(tablaProceso);
@@ -1178,7 +1179,7 @@ export const editarProcesoPapel = async (req: Request, res: Response) => {
       return res.status(400).json({ error: `Tabla invalida: ${tabla}` });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: procesoRows } = await client.query(
       `SELECT * FROM ${tabla} WHERE orden_produccion_idproduccion = $1`, [idproduccion]
@@ -1291,7 +1292,7 @@ export const reiniciarProcesoPreparacionPapel = async (req: Request, res: Respon
       });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const procesos = await getProcesosDeOrdenPapel(client, Number(idproduccion));
     const catActual = await getIdProcesoCatPorTabla(tabla);

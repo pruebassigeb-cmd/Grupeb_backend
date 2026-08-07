@@ -1,3 +1,4 @@
+import { qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -62,7 +63,7 @@ export const createUnidad = async (req: Request, res: Response) => {
     if ((existePlaca.rowCount ?? 0) > 0)
       return res.status(400).json({ error: "Ya existe una unidad con esa placa" });
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `INSERT INTO unidades (tipo, marca, modelo, placa, num_serie, num_motor, color, propietario)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        RETURNING idunidad, tipo, marca, modelo, placa, num_serie, num_motor, color, propietario, activo`,
@@ -104,7 +105,7 @@ export const updateUnidad = async (req: Request, res: Response) => {
     if ((existePlaca.rowCount ?? 0) > 0)
       return res.status(400).json({ error: "Ya existe una unidad con esa placa" });
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE unidades
        SET tipo=$1, marca=$2, modelo=$3, placa=$4, num_serie=$5,
            num_motor=$6, color=$7, propietario=$8, activo=$9
@@ -144,7 +145,7 @@ export const deleteUnidad = async (req: Request, res: Response) => {
     if ((tieneEnvios.rowCount ?? 0) > 0)
       return res.status(400).json({ error: "No se puede eliminar una unidad que tiene envíos registrados" });
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       "DELETE FROM unidades WHERE idunidad = $1 RETURNING idunidad",
       [id]
     );

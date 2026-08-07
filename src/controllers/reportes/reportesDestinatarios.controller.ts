@@ -1,3 +1,4 @@
+import { iniciarTx } from "../../middlewares/auditoria";
 // src/controllers/reportes/reportesDestinatarios.controller.ts
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
@@ -66,7 +67,7 @@ export const actualizarDestinatarioReporte = async (req: Request, res: Response)
 
     const activos = REPORTES_VALIDOS.filter((r) => reportes[r] === true);
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
     await client.query(`DELETE FROM preferencia_correo_reporte WHERE usuarios_idusuario = $1`, [idusuario]);
 
     for (const reporte of activos) {

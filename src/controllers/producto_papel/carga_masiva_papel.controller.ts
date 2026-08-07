@@ -1,3 +1,4 @@
+import { iniciarTxUsuario } from "../../middlewares/auditoria";
 // src/controllers/producto_papel/carga_masiva_papel.controller.ts
 //
 // POST /productos-papel/carga-masiva
@@ -61,7 +62,7 @@ async function insertarUnProducto(
 ): Promise<number> {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTxUsuario(client, idusuario);
 
     // ── 1. Tipo de producto (catálogo) ────────────────────────────────
     const idcat_tipo_producto_papel = await resolverCatalogoSimple(client, reporte, {

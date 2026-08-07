@@ -1,3 +1,5 @@
+import { iniciarTx } from "../../middlewares/auditoria";
+import { Request } from "express";
 // src/services/ventas/cambioMoneda.service.ts
 //
 // Cambiar la moneda de una cotización o pedido YA CREADO. Convierte los
@@ -22,6 +24,7 @@ export interface ResultadoCambioMoneda {
 }
 
 export async function cambiarMonedaSolicitud(
+  req: Request,
   idsolicitud: number,
   monedaRaw: unknown,
 ): Promise<ResultadoCambioMoneda> {
@@ -32,7 +35,7 @@ export async function cambiarMonedaSolicitud(
 
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: solRows } = await client.query(
       `SELECT idsolicitud, moneda, sin_iva FROM solicitud WHERE idsolicitud = $1 FOR UPDATE`,
@@ -52,7 +55,8 @@ export async function cambiarMonedaSolicitud(
 
     if (ventaId) {
       const { rows: pagoRows } = await client.query(
-        `SELECT 1 FROM venta_pago WHERE ventas_idventas = $1 LIMIT 1`,
+        `SELECT 1 FROM venta_pago
+          WHERE ventas_idventas = $1 AND eliminado_at IS NULL LIMIT 1`,
         [ventaId],
       );
       if (pagoRows.length > 0) {

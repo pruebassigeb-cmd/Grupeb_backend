@@ -1,3 +1,4 @@
+import { qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -43,7 +44,7 @@ export const getOrCreateNota = async (req: Request, res: Response) => {
 
       no_nota = `${prefijo}${String(consecutivo).padStart(3, "0")}`;
 
-      const nueva = await pool.query(
+      const nueva = await qAudit(req)(
         `INSERT INTO nota_remision (no_nota, envio_idenvio)
          VALUES ($1, $2)
          RETURNING idnota, no_nota, created_at`,

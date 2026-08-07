@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 
@@ -91,7 +92,7 @@ export const agregarAlCarrito = async (req: Request, res: Response) => {
 
     const params = bultos_ids.flatMap((id: number) => [id, idsolicitud, idusuario]);
 
-    await pool.query(
+    await qAudit(req)(
       `INSERT INTO carrito_envio (bultos_idbulto, idsolicitud, agregado_por)
        VALUES ${values} ON CONFLICT (bultos_idbulto) DO NOTHING`,
       params
@@ -126,7 +127,7 @@ export const asignarTipoEnvioPedido = async (req: Request, res: Response) => {
     // Si tipo_envio es null, se limpia también la paquetería
     const finalPaqueteriaId = tipo_envio === "paqueteria" ? (paqueteria_idpaqueteria ?? null) : null;
 
-    await pool.query(
+    await qAudit(req)(
       `UPDATE carrito_envio
        SET tipo_envio = $1,
            paqueteria_idpaqueteria = $2
@@ -152,7 +153,7 @@ export const asignarPaqueteriaCarrito = async (req: Request, res: Response) => {
     const { paqueteria_idpaqueteria } = req.body;
     const tipo_envio = paqueteria_idpaqueteria ? "paqueteria" : "local";
 
-    const result = await pool.query(
+    const result = await qAudit(req)(
       `UPDATE carrito_envio
        SET paqueteria_idpaqueteria = $1, tipo_envio = $2
        WHERE idcarrito = $3
@@ -173,7 +174,7 @@ export const asignarPaqueteriaCarrito = async (req: Request, res: Response) => {
 export const quitarDelCarrito = async (req: Request, res: Response) => {
   try {
     const { idbulto } = req.params;
-    await pool.query(`DELETE FROM carrito_envio WHERE bultos_idbulto = $1`, [idbulto]);
+    await req.tx((client) => client.query(`DELETE FROM carrito_envio WHERE bultos_idbulto = $1`, [idbulto]));
     res.json({ message: "Bulto removido del carrito" });
   } catch (error: any) {
     console.error("❌ QUITAR CARRITO ERROR:", error.message);
@@ -183,7 +184,7 @@ export const quitarDelCarrito = async (req: Request, res: Response) => {
 
 export const vaciarCarrito = async (req: Request, res: Response) => {
   try {
-    await pool.query(`DELETE FROM carrito_envio`);
+    await req.tx((client) => client.query(`DELETE FROM carrito_envio`));
     res.json({ message: "Carrito vaciado" });
   } catch (error: any) {
     console.error("❌ VACIAR CARRITO ERROR:", error.message);
@@ -194,7 +195,7 @@ export const vaciarCarrito = async (req: Request, res: Response) => {
 export const procesarCarrito = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const {
       usuarios_idusuario, unidades_idunidad,

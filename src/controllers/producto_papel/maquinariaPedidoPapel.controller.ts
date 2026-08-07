@@ -1,3 +1,4 @@
+import { iniciarTx } from "../../middlewares/auditoria";
 // NOTA: Este endpoint ya no se llama desde un modal manual — la
 // confirmación de "Configurar maquinaria" (ModalMaquinariaPedidoPapel /
 // ConfigurarMaquinariaPedidoPapel) se quitó del flujo de aprobación en
@@ -28,7 +29,7 @@ export const guardarMaquinariaPedidoPapel = async (
       });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: productos } = await client.query(
       `SELECT

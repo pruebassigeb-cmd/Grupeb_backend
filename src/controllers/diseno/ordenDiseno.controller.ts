@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import { AuthRequest } from "../../middlewares/auth.middleware";
@@ -326,7 +327,7 @@ export const crearOrdenDiseno = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "idsolicitud y no_pedido son requeridos" });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: existente } = await client.query(
       `SELECT idorden_diseno FROM orden_diseno
@@ -626,7 +627,7 @@ export const enviarMensaje = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "El contenido del mensaje es requerido" });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: ordenRows } = await client.query(
       `SELECT estado FROM orden_diseno WHERE idorden_diseno = $1`,
@@ -706,7 +707,7 @@ export const subirRevision = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Se requiere al menos un archivo" });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: ordenRows } = await client.query(
       `SELECT version_actual, estado, no_pedido FROM orden_diseno WHERE idorden_diseno = $1`,
@@ -787,7 +788,7 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     const usuarioId = req.user!.id;
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: ordenRows } = await client.query(
       `SELECT estado, no_pedido, solicitud_producto_id FROM orden_diseno WHERE idorden_diseno = $1`,
@@ -965,7 +966,7 @@ export const agregarParticipante = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "usuario_id es requerido" });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     await client.query(
       `INSERT INTO orden_diseno_participante (orden_diseno_id, usuario_id, rol_en_orden)
@@ -1022,13 +1023,13 @@ export const marcarNotificacionesLeidas = async (req: AuthRequest, res: Response
     const { ids } = req.body;
 
     if (ids && Array.isArray(ids) && ids.length > 0) {
-      await pool.query(
+      await qAudit(req)(
         `UPDATE notificaciones SET leido = true
          WHERE usuario_id = $1 AND idnotificacion = ANY($2)`,
         [usuarioId, ids]
       );
     } else {
-      await pool.query(
+      await qAudit(req)(
         `UPDATE notificaciones SET leido = true WHERE usuario_id = $1`,
         [usuarioId]
       );
@@ -1049,7 +1050,7 @@ export const marcarVersionFinal = async (req: AuthRequest, res: Response) => {
   try {
     const { id, revId } = req.params;
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: revRows } = await client.query(
       `SELECT rd.idrevision, rd.tipo, rd.orden_diseno_id
@@ -1101,7 +1102,7 @@ export const marcarVersionFinal = async (req: AuthRequest, res: Response) => {
 export const limpiarChatsAntiguos = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: ordenes } = await client.query(`
       SELECT idorden_diseno FROM orden_diseno

@@ -9,7 +9,21 @@ import {
   eliminarItemCatalogo,
   reactivarItemCatalogo,
 } from "../../controllers/catalogos_papel/catalogos_papel.controller";
+import {
+  getImagenesCatalogo,
+  subirImagenCatalogo,
+  eliminarImagenCatalogo,
+} from "../../controllers/catalogos_papel/catalogoImagen.controller";
+import {
+  getColoresAsaAdmin,
+  getColoresAsaInactivos,
+  crearColorAsa,
+  editarColorAsa,
+  desactivarColorAsa,
+  reactivarColorAsa,
+} from "../../controllers/catalogos_papel/colorAsa.controller";
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
+import { upload } from "../../config/multer";
 
 const router = Router();
 
@@ -35,6 +49,31 @@ const PERMISO = "Gestionar Catálogos Papel";
 // ── GET — cualquier autenticado ───────────────────────────────────────────
 router.get("/", authMiddleware, getCatalogosPapel);
 router.get("/inactivos", authMiddleware, getCatalogosInactivos);
+
+// ── Imágenes de catálogo — deben ir ANTES de /:catalogo y /:catalogo/:id,
+// si no Express las confunde con esas rutas comodín. ──────────────────────
+router.get("/imagenes", authMiddleware, getImagenesCatalogo);
+router.post(
+  "/imagenes",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  upload.single("archivo"),
+  subirImagenCatalogo
+);
+router.delete(
+  "/imagenes/:id_archivo",
+  authMiddleware,
+  checkPermiso(PERMISO),
+  eliminarImagenCatalogo
+);
+
+// ── Colores de asa — mismo motivo de orden que /imagenes. ─────────────────
+router.get("/color-asa", authMiddleware, getColoresAsaAdmin);
+router.get("/color-asa/inactivos", authMiddleware, getColoresAsaInactivos);
+router.post("/color-asa", authMiddleware, checkPermiso(PERMISO), crearColorAsa);
+router.put("/color-asa/:id", authMiddleware, checkPermiso(PERMISO), editarColorAsa);
+router.delete("/color-asa/:id", authMiddleware, checkPermiso(PERMISO), desactivarColorAsa);
+router.patch("/color-asa/:id/reactivar", authMiddleware, checkPermiso(PERMISO), reactivarColorAsa);
 
 // ── Escritura — requiere permiso ──────────────────────────────────────────
 router.post(

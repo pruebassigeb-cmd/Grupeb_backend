@@ -1,3 +1,4 @@
+import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 // src/controllers/producto_papel/precios_acabados_papel.controller.ts
 import type { Request, Response } from "express";
 import { pool } from "../../config/db";
@@ -25,7 +26,9 @@ const costoMetroValido = (v: unknown): number | null => {
 // ─────────────────────────────────────────────────────────────────────────────
 // COSTO GLOBAL DEL LAMINADO
 // ─────────────────────────────────────────────────────────────────────────────
-export const getCostoMetroLaminado = async (_req: Request, res: Response) => {
+// req se usa (aunque sea un GET): si el renglón por omisión no existe, este
+// handler lo siembra, y esa escritura también debe quedar auditada.
+export const getCostoMetroLaminado = async (req: Request, res: Response) => {
   try {
     const { rows } = await pool.query(`
       SELECT idcosto_metro AS id, costo, created_at, updated_at
@@ -34,7 +37,7 @@ export const getCostoMetroLaminado = async (_req: Request, res: Response) => {
     `);
 
     if (!rows.length) {
-      const { rows: creadas } = await pool.query(`
+      const { rows: creadas } = await qAudit(req)(`
         INSERT INTO costo_metro (idcosto_metro, costo)
         VALUES (1, 6.50)
         ON CONFLICT (idcosto_metro)
@@ -71,7 +74,7 @@ export const updateCostoMetroLaminado = async (req: Request, res: Response) => {
       });
     }
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows } = await client.query(`
       INSERT INTO costo_metro (
@@ -202,7 +205,7 @@ export const updateMatrizPreciosAcabadoPapel = async (req: Request, res: Respons
     if (!idAcabado) return res.status(400).json({ error: "ID de acabado inválido" });
     if (!celdas.length) return res.status(400).json({ error: "No se recibieron celdas" });
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     for (const celda of celdas) {
       const idTamano = idValido(celda.idTamano);
@@ -249,7 +252,7 @@ export const createEscalaCostoPapel = async (req: Request, res: Response) => {
     const cantidad = idValido(req.body?.cantidad);
     if (!cantidad) return res.status(400).json({ error: "Cantidad inválida" });
 
-    await client.query("BEGIN");
+    await iniciarTx(req, client);
 
     const { rows: ordenRows } = await client.query(`
       SELECT COALESCE(MAX(orden),0)+1 AS siguiente FROM cat_escala_costo
@@ -295,7 +298,7 @@ export const updateEscalaCostoPapel = async (req: Request, res: Response) => {
     const cantidad = idValido(req.body?.cantidad);
     if (!id || !cantidad) return res.status(400).json({ error: "ID o cantidad inválidos" });
 
-    const { rows } = await pool.query(`
+    const { rows } = await qAudit(req)(`
       UPDATE cat_escala_costo
       SET cantidad=$1, updated_at=CURRENT_TIMESTAMP
       WHERE idcat_escala_costo=$2
@@ -317,7 +320,7 @@ export const toggleEscalaCostoPapel = async (req: Request, res: Response) => {
     const activo = req.body?.activo;
     if (!id || typeof activo !== "boolean") return res.status(400).json({ error: "Datos inválidos" });
 
-    const { rows } = await pool.query(`
+    const { rows } = await qAudit(req)(`
       UPDATE cat_escala_costo
       SET activo=$1, updated_at=CURRENT_TIMESTAMP
       WHERE idcat_escala_costo=$2
@@ -337,7 +340,7 @@ export const toggleAcabadoCostoPapel = async (req: Request, res: Response) => {
     const activo = req.body?.activo;
     if (!id || typeof activo !== "boolean") return res.status(400).json({ error: "Datos inválidos" });
 
-    const { rows } = await pool.query(`
+    const { rows } = await qAudit(req)(`
       UPDATE cat_acabado_costo
       SET activo=$1, updated_at=CURRENT_TIMESTAMP
       WHERE idcat_acabado_costo=$2

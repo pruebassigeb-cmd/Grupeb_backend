@@ -7,6 +7,7 @@ import {
 } from "../../services/ventas/totalesVenta.service";
 import { ventaTieneCredito } from "../../services/ventas/pagos.service";
 import { type Moneda, resolverMontoPago } from "../../utils/moneda.utils";
+import { ErrorHttp, responderError } from "../../utils/errorHttp";
 
 async function generarNoProduccion(client: any): Promise<string> {
   const anio = new Date().getFullYear().toString().slice(-2);
@@ -296,6 +297,7 @@ export const getVentas = async (req: Request, res: Response) => {
           SELECT 1 FROM venta_pago vp
           WHERE vp.ventas_idventas = v.idventas
             AND vp.es_credito_anticipo = true
+            AND vp.eliminado_at IS NULL
         ) AS es_credito_anticipo,
         ${SUBQ_HERRAMENTAL}
       FROM ventas v
@@ -333,6 +335,7 @@ export const getVentaById = async (req: Request, res: Response) => {
           SELECT 1 FROM venta_pago vp
           WHERE vp.ventas_idventas = v.idventas
             AND vp.es_credito_anticipo = true
+            AND vp.eliminado_at IS NULL
         ) AS es_credito_anticipo,
         ${SUBQ_HERRAMENTAL}
       FROM ventas v
@@ -353,6 +356,7 @@ export const getVentaById = async (req: Request, res: Response) => {
       FROM venta_pago vp
       JOIN metodo_pago mp ON mp.idmetodo_pago = vp.metodo_pago_idmetodo_pago
       WHERE vp.ventas_idventas = $1
+        AND vp.eliminado_at IS NULL
       ORDER BY vp.fecha ASC
     `, [id]);
 
@@ -384,6 +388,7 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
           SELECT 1 FROM venta_pago vp
           WHERE vp.ventas_idventas = v.idventas
             AND vp.es_credito_anticipo = true
+            AND vp.eliminado_at IS NULL
         ) AS es_credito_anticipo,
         ${SUBQ_HERRAMENTAL}
       FROM ventas v
@@ -404,6 +409,7 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
       FROM venta_pago vp
       JOIN metodo_pago mp ON mp.idmetodo_pago = vp.metodo_pago_idmetodo_pago
       WHERE vp.ventas_idventas = $1
+        AND vp.eliminado_at IS NULL
       ORDER BY vp.fecha ASC
     `, [ventaRows[0].idventas]);
 
@@ -418,7 +424,6 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
 // REGISTRAR PAGO / ABONO
 // ============================================================
 export const registrarPago = async (req: Request, res: Response) => {
-  const client = await pool.connect();
   try {
     const { id } = req.params;
     const {
@@ -441,101 +446,97 @@ export const registrarPago = async (req: Request, res: Response) => {
       fechaPago = parsed;
     }
 
-    await client.query("BEGIN");
+    // req.tx abre la transacción, declara app.usuario_id para los triggers de
+    // auditoría y hace COMMIT/ROLLBACK. Cortar el flujo a media transacción se
+    // hace lanzando ErrorHttp, no con un return.
+    const resultado = await req.tx(async (client) => {
+      const { rows: ventaRows } = await client.query(
+        `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud, v.moneda
+         FROM ventas v WHERE v.idventas = $1`,
+        [id]
+      );
 
-    const { rows: ventaRows } = await client.query(
-      `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud, v.moneda
-       FROM ventas v WHERE v.idventas = $1`,
-      [id]
-    );
+      if (ventaRows.length === 0) {
+        throw new ErrorHttp(404, "Venta no encontrada");
+      }
 
-    if (ventaRows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Venta no encontrada" });
-    }
+      const venta       = ventaRows[0];
+      const solicitudId = venta.solicitud_idsolicitud;
+      const montoNum    = Number(monto);
+      const monedaVenta: Moneda = venta.moneda ?? "MXN";
 
-    const venta       = ventaRows[0];
-    const solicitudId = venta.solicitud_idsolicitud;
-    const montoNum    = Number(monto);
-    const monedaVenta: Moneda = venta.moneda ?? "MXN";
+      let resuelto;
+      try {
+        resuelto = resolverMontoPago(montoNum, monedaPagoRaw, monedaVenta, tipoCambioAplicadoRaw);
+      } catch (e: any) {
+        throw new ErrorHttp(400, e.message);
+      }
+      const { moneda: monedaPago, tipoCambioAplicado, montoMonedaVenta } = resuelto;
 
-    let resuelto;
-    try {
-      resuelto = resolverMontoPago(montoNum, monedaPagoRaw, monedaVenta, tipoCambioAplicadoRaw);
-    } catch (e: any) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: e.message });
-    }
-    const { moneda: monedaPago, tipoCambioAplicado, montoMonedaVenta } = resuelto;
+      const abonoAntes  = Number(venta.abono);
+      const nuevoAbono  = Number((abonoAntes + montoMonedaVenta).toFixed(2));
+      const totalVenta  = Number(venta.total);
+      const nuevoSaldo  = Number((totalVenta - nuevoAbono).toFixed(2));
 
-    const abonoAntes  = Number(venta.abono);
-    const nuevoAbono  = Number((abonoAntes + montoMonedaVenta).toFixed(2));
-    const totalVenta  = Number(venta.total);
-    const nuevoSaldo  = Number((totalVenta - nuevoAbono).toFixed(2));
+      const umbralActivacion = calcularUmbralAnticipo(totalVenta);
 
-    const umbralActivacion = calcularUmbralAnticipo(totalVenta);
+      const anticipoAntesNoCubierto = abonoAntes  < umbralActivacion;
+      const anticipoAhoraCubierto   = nuevoAbono >= umbralActivacion;
+      const esAnticipoReal          = anticipoAntesNoCubierto && anticipoAhoraCubierto;
+      const esLiquidacion           = nuevoSaldo <= 0;
 
-    const anticipoAntesNoCubierto = abonoAntes  < umbralActivacion;
-    const anticipoAhoraCubierto   = nuevoAbono >= umbralActivacion;
-    const esAnticipoReal          = anticipoAntesNoCubierto && anticipoAhoraCubierto;
-    const esLiquidacion           = nuevoSaldo <= 0;
+      // FIX: verificar crédito antes de asignar estado
+      const esCreditoAnticipo = await ventaTieneCredito(client, Number(id));
+      const nuevoEstado       = determinarEstado(nuevoAbono, nuevoSaldo, umbralActivacion, esCreditoAnticipo);
 
-    // FIX: verificar crédito antes de asignar estado
-    const esCreditoAnticipo = await ventaTieneCredito(client, Number(id));
-    const nuevoEstado       = determinarEstado(nuevoAbono, nuevoSaldo, umbralActivacion, esCreditoAnticipo);
+      console.log(`💳 Pago: abono=${nuevoAbono} | umbral=${umbralActivacion} | credito=${esCreditoAnticipo} | estado=${nuevoEstado} | moneda=${monedaPago}${tipoCambioAplicado ? ` (tc=${tipoCambioAplicado} → ${montoMonedaVenta} ${monedaVenta})` : ""}`);
 
-    console.log(`💳 Pago: abono=${nuevoAbono} | umbral=${umbralActivacion} | credito=${esCreditoAnticipo} | estado=${nuevoEstado} | moneda=${monedaPago}${tipoCambioAplicado ? ` (tc=${tipoCambioAplicado} → ${montoMonedaVenta} ${monedaVenta})` : ""}`);
+      await client.query(
+        `INSERT INTO venta_pago (
+          ventas_idventas, metodo_pago_idmetodo_pago,
+          monto, es_anticipo, es_credito_anticipo, observacion, fecha,
+          moneda, tipo_cambio_aplicado, monto_moneda_venta
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          id, metodoPagoId, montoNum, esAnticipoReal, false, observacion, fechaPago ?? new Date(),
+          monedaPago, tipoCambioAplicado, montoMonedaVenta,
+        ]
+      );
 
-    await client.query(
-      `INSERT INTO venta_pago (
-        ventas_idventas, metodo_pago_idmetodo_pago,
-        monto, es_anticipo, es_credito_anticipo, observacion, fecha,
-        moneda, tipo_cambio_aplicado, monto_moneda_venta
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [
-        id, metodoPagoId, montoNum, esAnticipoReal, false, observacion, fechaPago ?? new Date(),
-        monedaPago, tipoCambioAplicado, montoMonedaVenta,
-      ]
-    );
+      await client.query(
+        `UPDATE ventas
+         SET abono  = $1,
+             saldo  = $2,
+             estado_administrativo_cat_idestado_administrativo_cat = $3
+             ${esLiquidacion ? ", fecha_liquidacion = NOW()" : ""}
+         WHERE idventas = $4`,
+        [nuevoAbono, nuevoSaldo, nuevoEstado, id]
+      );
 
-    await client.query(
-      `UPDATE ventas
-       SET abono  = $1,
-           saldo  = $2,
-           estado_administrativo_cat_idestado_administrativo_cat = $3
-           ${esLiquidacion ? ", fecha_liquidacion = NOW()" : ""}
-       WHERE idventas = $4`,
-      [nuevoAbono, nuevoSaldo, nuevoEstado, id]
-    );
+      let ordenesGeneradas: string[] = [];
+      if (anticipoAhoraCubierto) {
+        ordenesGeneradas = await generarOrdenesPendientes(client, solicitudId);
+      }
 
-    let ordenesGeneradas: string[] = [];
-    if (anticipoAhoraCubierto) {
-      ordenesGeneradas = await generarOrdenesPendientes(client, solicitudId);
-    }
-
-    await client.query("COMMIT");
-
-    return res.json({
-      message:           "Pago registrado exitosamente",
-      abono_total:       nuevoAbono,
-      saldo:             nuevoSaldo,
-      estado_id:         nuevoEstado,
-      pagado:            nuevoSaldo <= 0,
-      anticipo_cubierto: anticipoAhoraCubierto,
-      es_anticipo:       esAnticipoReal,
-      liquidado:         esLiquidacion,
-      ordenes_generadas: ordenesGeneradas,
-      moneda:              monedaPago,
-      tipo_cambio_aplicado: tipoCambioAplicado,
-      monto_moneda_venta:   montoMonedaVenta,
+      return {
+        message:           "Pago registrado exitosamente",
+        abono_total:       nuevoAbono,
+        saldo:             nuevoSaldo,
+        estado_id:         nuevoEstado,
+        pagado:            nuevoSaldo <= 0,
+        anticipo_cubierto: anticipoAhoraCubierto,
+        es_anticipo:       esAnticipoReal,
+        liquidado:         esLiquidacion,
+        ordenes_generadas: ordenesGeneradas,
+        moneda:              monedaPago,
+        tipo_cambio_aplicado: tipoCambioAplicado,
+        monto_moneda_venta:   montoMonedaVenta,
+      };
     });
 
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    console.error("❌ REGISTRAR PAGO ERROR:", error.message);
-    return res.status(500).json({ error: "Error al registrar pago" });
-  } finally {
-    client.release();
+    return res.json(resultado);
+  } catch (error) {
+    return responderError(res, error, "Error al registrar pago");
   }
 };
 
@@ -543,69 +544,76 @@ export const registrarPago = async (req: Request, res: Response) => {
 // ELIMINAR PAGO
 // ============================================================
 export const eliminarPago = async (req: Request, res: Response) => {
-  const client = await pool.connect();
   try {
     const { id } = req.params;
-    await client.query("BEGIN");
 
-    const { rows: pagoRows } = await client.query(
-      `SELECT idventa_pago, ventas_idventas, monto FROM venta_pago WHERE idventa_pago = $1`, [id]
-    );
-    if (pagoRows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Pago no encontrado" });
-    }
+    const resultado = await req.tx(async (client) => {
+      const { rows: pagoRows } = await client.query(
+        `SELECT idventa_pago, ventas_idventas, monto FROM venta_pago
+          WHERE idventa_pago = $1 AND eliminado_at IS NULL`,
+        [id]
+      );
+      if (pagoRows.length === 0) {
+        throw new ErrorHttp(404, "Pago no encontrado");
+      }
 
-    const ventaId = pagoRows[0].ventas_idventas;
-    await client.query(`DELETE FROM venta_pago WHERE idventa_pago = $1`, [id]);
+      const ventaId = pagoRows[0].ventas_idventas;
 
-    const { rows: sumaRows } = await client.query(
-      `SELECT COALESCE(SUM(monto_moneda_venta), 0) AS total_abonado FROM venta_pago WHERE ventas_idventas = $1`,
-      [ventaId]
-    );
-    const nuevoAbono = Number(sumaRows[0].total_abonado);
+      // Borrado lógico, no DELETE: si el renglón desaparece, la bitácora
+      // apunta a algo que ya no existe y se pierde justo lo que se quería
+      // conservar — quién cobró qué y quién lo dio de baja después.
+      // eliminado_por lo llena el trigger fn_tocar_autoria.
+      await client.query(
+        `UPDATE venta_pago SET eliminado_at = now() WHERE idventa_pago = $1`,
+        [id]
+      );
 
-    const { rows: ventaRows } = await client.query(
-      `SELECT total, anticipo FROM ventas WHERE idventas = $1`, [ventaId]
-    );
-    const total         = Number(ventaRows[0].total);
-    const nuevoSaldo    = Number((total - nuevoAbono).toFixed(2));
-    const estaLiquidado = nuevoSaldo <= 0;
+      const { rows: sumaRows } = await client.query(
+        `SELECT COALESCE(SUM(monto_moneda_venta), 0) AS total_abonado
+           FROM venta_pago
+          WHERE ventas_idventas = $1 AND eliminado_at IS NULL`,
+        [ventaId]
+      );
+      const nuevoAbono = Number(sumaRows[0].total_abonado);
 
-    const umbralActivacion = calcularUmbralAnticipo(total);
+      const { rows: ventaRows } = await client.query(
+        `SELECT total, anticipo FROM ventas WHERE idventas = $1`, [ventaId]
+      );
+      const total         = Number(ventaRows[0].total);
+      const nuevoSaldo    = Number((total - nuevoAbono).toFixed(2));
+      const estaLiquidado = nuevoSaldo <= 0;
 
-    // FIX: verificar si aún queda algún registro de crédito DESPUÉS de eliminar
-    // (el DELETE ya ocurrió, así que si el pago eliminado era el de crédito,
-    //  ya no aparece en la consulta)
-    const esCreditoAnticipo = await ventaTieneCredito(client, ventaId);
-    const nuevoEstado       = determinarEstado(nuevoAbono, nuevoSaldo, umbralActivacion, esCreditoAnticipo);
+      const umbralActivacion = calcularUmbralAnticipo(total);
 
-    console.log(`🗑️ Eliminar pago: abono=${nuevoAbono} | umbral=${umbralActivacion} | credito=${esCreditoAnticipo} | estado=${nuevoEstado}`);
+      // FIX: verificar si aún queda algún registro de crédito DESPUÉS de eliminar
+      // (la baja lógica ya ocurrió y ventaTieneCredito filtra eliminado_at,
+      //  así que si el pago dado de baja era el de crédito, ya no cuenta)
+      const esCreditoAnticipo = await ventaTieneCredito(client, ventaId);
+      const nuevoEstado       = determinarEstado(nuevoAbono, nuevoSaldo, umbralActivacion, esCreditoAnticipo);
 
-    await client.query(
-      `UPDATE ventas
-       SET abono = $1, saldo = $2,
-           estado_administrativo_cat_idestado_administrativo_cat = $3,
-           fecha_liquidacion = $4
-       WHERE idventas = $5`,
-      [nuevoAbono, nuevoSaldo, nuevoEstado, estaLiquidado ? new Date() : null, ventaId]
-    );
+      console.log(`🗑️ Eliminar pago: abono=${nuevoAbono} | umbral=${umbralActivacion} | credito=${esCreditoAnticipo} | estado=${nuevoEstado}`);
 
-    await client.query("COMMIT");
-    return res.json({
-      message:     "Pago eliminado y saldo recalculado",
-      abono_total: nuevoAbono,
-      saldo:       nuevoSaldo,
-      estado_id:   nuevoEstado,
-      liquidado:   estaLiquidado,
+      await client.query(
+        `UPDATE ventas
+         SET abono = $1, saldo = $2,
+             estado_administrativo_cat_idestado_administrativo_cat = $3,
+             fecha_liquidacion = $4
+         WHERE idventas = $5`,
+        [nuevoAbono, nuevoSaldo, nuevoEstado, estaLiquidado ? new Date() : null, ventaId]
+      );
+
+      return {
+        message:     "Pago eliminado y saldo recalculado",
+        abono_total: nuevoAbono,
+        saldo:       nuevoSaldo,
+        estado_id:   nuevoEstado,
+        liquidado:   estaLiquidado,
+      };
     });
 
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    console.error("❌ ELIMINAR PAGO ERROR:", error.message);
-    return res.status(500).json({ error: "Error al eliminar pago" });
-  } finally {
-    client.release();
+    return res.json(resultado);
+  } catch (error) {
+    return responderError(res, error, "Error al eliminar pago");
   }
 };
 
@@ -613,71 +621,63 @@ export const eliminarPago = async (req: Request, res: Response) => {
 // AUTORIZAR ANTICIPO POR CRÉDITO
 // ============================================================
 export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
-  const client = await pool.connect();
   try {
     const { id } = req.params;
 
-    await client.query("BEGIN");
+    const resultado = await req.tx(async (client) => {
+      const { rows: ventaRows } = await client.query(
+        `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud, v.moneda
+         FROM ventas v WHERE v.idventas = $1`,
+        [id]
+      );
 
-    const { rows: ventaRows } = await client.query(
-      `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud, v.moneda
-       FROM ventas v WHERE v.idventas = $1`,
-      [id]
-    );
+      if (ventaRows.length === 0) {
+        throw new ErrorHttp(404, "Venta no encontrada");
+      }
 
-    if (ventaRows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Venta no encontrada" });
-    }
+      const venta = ventaRows[0];
+      const total = Number(venta.total);
+      const abono = Number(venta.abono);
+      const monedaVenta: Moneda = venta.moneda ?? "MXN";
 
-    const venta = ventaRows[0];
-    const total = Number(venta.total);
-    const abono = Number(venta.abono);
-    const monedaVenta: Moneda = venta.moneda ?? "MXN";
+      const umbralActivacion = calcularUmbralAnticipo(total);
 
-    const umbralActivacion = calcularUmbralAnticipo(total);
+      if (abono >= umbralActivacion) {
+        throw new ErrorHttp(400, "El anticipo mínimo requerido ya está cubierto");
+      }
 
-    if (abono >= umbralActivacion) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "El anticipo mínimo requerido ya está cubierto" });
-    }
+      await client.query(
+        `UPDATE ventas
+         SET estado_administrativo_cat_idestado_administrativo_cat = $1
+         WHERE idventas = $2`,
+        [ESTADO.ANTICIPO_PAGADO, id]
+      );
 
-    await client.query(
-      `UPDATE ventas
-       SET estado_administrativo_cat_idestado_administrativo_cat = $1
-       WHERE idventas = $2`,
-      [ESTADO.ANTICIPO_PAGADO, id]
-    );
+      await client.query(
+        `INSERT INTO venta_pago (
+          ventas_idventas, metodo_pago_idmetodo_pago,
+          monto, es_anticipo, es_credito_anticipo, observacion, fecha,
+          moneda, tipo_cambio_aplicado, monto_moneda_venta
+        ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)`,
+        [id, 1, 0, true, true, "Anticipo autorizado por crédito", monedaVenta, null, 0]
+      );
 
-    await client.query(
-      `INSERT INTO venta_pago (
-        ventas_idventas, metodo_pago_idmetodo_pago,
-        monto, es_anticipo, es_credito_anticipo, observacion, fecha,
-        moneda, tipo_cambio_aplicado, monto_moneda_venta
-      ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)`,
-      [id, 1, 0, true, true, "Anticipo autorizado por crédito", monedaVenta, null, 0]
-    );
+      const ordenesGeneradas = await generarOrdenesPendientes(client, venta.solicitud_idsolicitud);
 
-    const ordenesGeneradas = await generarOrdenesPendientes(client, venta.solicitud_idsolicitud);
-
-    await client.query("COMMIT");
-
-    return res.json({
-      message:             "Anticipo autorizado por crédito",
-      abono_total:         abono,
-      saldo:               Number(venta.saldo),
-      estado_id:           ESTADO.ANTICIPO_PAGADO,
-      anticipo_cubierto:   true,
-      es_credito_anticipo: true,
-      ordenes_generadas:   ordenesGeneradas,
+      return {
+        message:             "Anticipo autorizado por crédito",
+        abono_total:         abono,
+        saldo:               Number(venta.saldo),
+        estado_id:           ESTADO.ANTICIPO_PAGADO,
+        anticipo_cubierto:   true,
+        es_credito_anticipo: true,
+        ordenes_generadas:   ordenesGeneradas,
+      };
     });
 
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    console.error("❌ AUTORIZAR ANTICIPO CRÉDITO ERROR:", error.message);
-    return res.status(500).json({ error: "Error al autorizar anticipo por crédito" });
-  } finally {
-    client.release();
+    return res.json(resultado);
+  } catch (error) {
+    return responderError(res, error, "Error al autorizar anticipo por crédito");
   }
 };
 
