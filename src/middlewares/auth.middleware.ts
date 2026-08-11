@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 // ==========================
 // INTERFACES
 // ==========================
-interface JwtPayload {
+export interface JwtPayload {
   id:           number;
   correo:       string;
   rol?:         string;
@@ -15,6 +15,51 @@ interface JwtPayload {
 export interface AuthRequest extends Request {
   user?: JwtPayload;
 }
+
+export const PERMISO_EDITAR_DISENO = "Editar Diseño";
+export const PERMISO_ORDEN_DISENO = "Orden de Diseño";
+
+const normalizarRol = (rol?: string): string =>
+  (rol ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+
+/**
+ * Los privilegios almacenados siguen siendo la fuente principal. Estas
+ * equivalencias expresan los privilegios base de los roles de Diseño y
+ * Ventas para que el acceso no dependa de una asignación individual.
+ */
+export const usuarioTienePermiso = (
+  usuario: JwtPayload | undefined,
+  privilegio: string
+): boolean => {
+  if (!usuario) return false;
+  if (usuario.acceso_total) return true;
+  if ((usuario.privilegios ?? []).includes(privilegio)) return true;
+
+  const rol = normalizarRol(usuario.rol);
+
+  if (rol === "diseno") {
+    return privilegio === PERMISO_EDITAR_DISENO || privilegio === PERMISO_ORDEN_DISENO;
+  }
+
+  return rol === "ventas" && privilegio === PERMISO_ORDEN_DISENO;
+};
+
+const ROLES_ADMINISTRATIVOS = new Set([
+  "admin",
+  "administrador",
+  "super usuario",
+  "superusuario",
+]);
+
+export const usuarioEsAdminOSuper = (usuario: JwtPayload | undefined): boolean =>
+  Boolean(
+    usuario?.acceso_total &&
+    ROLES_ADMINISTRATIVOS.has(normalizarRol(usuario.rol))
+  );
 
 // ==========================
 // MIDDLEWARE DE AUTENTICACIÓN
@@ -93,11 +138,7 @@ export const checkPermiso = (privilegio: string) => {
       }
 
       // Acceso total → pasa sin validar privilegios
-      if (req.user.acceso_total) {
-        return next();
-      }
-
-      const tienePermiso = (req.user.privilegios ?? []).includes(privilegio);
+      const tienePermiso = usuarioTienePermiso(req.user, privilegio);
 
       if (!tienePermiso) {
         console.warn(
@@ -111,6 +152,34 @@ export const checkPermiso = (privilegio: string) => {
       next();
     } catch (err: any) {
       console.error("❌ CHECK PERMISO ERROR:", err.message);
+      return res.status(500).json({ error: "Error al verificar permisos" });
+    }
+  };
+};
+
+// ==========================
+// MIDDLEWARE DE CUALQUIERA DE VARIOS PRIVILEGIOS
+// ==========================
+export const checkAnyPermiso = (...privilegios: string[]) => {
+  return (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Usuario no autenticado" });
+      }
+
+      const tieneAlguno = privilegios.some((privilegio) =>
+        usuarioTienePermiso(req.user, privilegio)
+      );
+
+      if (!tieneAlguno) {
+        return res.status(403).json({
+          error: "No tienes permisos para acceder a este recurso",
+        });
+      }
+
+      next();
+    } catch (err: any) {
+      console.error("❌ CHECK ANY PERMISO ERROR:", err.message);
       return res.status(500).json({ error: "Error al verificar permisos" });
     }
   };
@@ -204,5 +273,33 @@ export const optionalAuth = (
     next();
   } catch (err) {
     next();
+  }
+};
+
+// ==========================
+// MIDDLEWARE EXCLUSIVO DE ADMIN / SUPER USUARIO
+// Además de acceso_total valida el rol para excluir cuentas especiales que
+// históricamente pudieron conservar ese flag (por ejemplo Expo).
+// ==========================
+export const requireAdminOrSuperUser = (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "Usuario no autenticado" });
+    }
+
+    if (!usuarioEsAdminOSuper(req.user)) {
+      return res.status(403).json({
+        error: "Esta operación es exclusiva de administradores",
+      });
+    }
+
+    next();
+  } catch (err: any) {
+    console.error("❌ ADMIN ACCESS MIDDLEWARE ERROR:", err.message);
+    return res.status(500).json({ error: "Error al verificar permisos" });
   }
 };

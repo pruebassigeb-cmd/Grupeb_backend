@@ -28,17 +28,23 @@ async function obtenerPrivilegios(
     [userId]
   );
 
-  if (custom.length > 0) return custom.map((r: any) => r.privilegio);
-
   const { rows: rolPrivs } = await pool.query(
     `SELECT p.privilegio
-     FROM roles_has_privilegios rp
+     FROM roles_privilegios rp
      JOIN privilegios p ON p.idprivilegios = rp.privilegios_idprivilegios
      WHERE rp.roles_idroles = $1`,
     [rolId]
   );
 
-  return rolPrivs.map((r: any) => r.privilegio);
+  // Los privilegios del usuario son adicionales a los de su rol. Antes se
+  // devolvía solo una de las dos listas, lo que podía quitar privilegios
+  // base al asignar una casilla adicional.
+  return [
+    ...new Set([
+      ...rolPrivs.map((r: any) => r.privilegio),
+      ...custom.map((r: any) => r.privilegio),
+    ]),
+  ];
 }
 
 // ==========================
@@ -66,7 +72,7 @@ async function tienePrivilegio(
 
   const { rows: rolPrivs } = await pool.query(
     `SELECT 1
-     FROM roles_has_privilegios rp
+     FROM roles_privilegios rp
      JOIN privilegios p ON p.idprivilegios = rp.privilegios_idprivilegios
      WHERE rp.roles_idroles = $1
        AND p.privilegio = $2

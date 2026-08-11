@@ -1,5 +1,8 @@
 import { Router } from "express";
-import { authMiddleware } from "../../middlewares/auth.middleware";
+import {
+  authMiddleware,
+  requireAdminOrSuperUser,
+} from "../../middlewares/auth.middleware";
 import {
   getAuditoriaRegistro,
   getTablasAuditables,
@@ -7,9 +10,10 @@ import {
 
 const router = Router();
 
-// El privilegio por tabla lo revisa el controller, porque depende de cuál
-// tabla se pidió. Aquí solo se exige estar autenticado.
-router.get("/tablas", authMiddleware, getTablasAuditables);
-router.get("/:tabla/:id", authMiddleware, getAuditoriaRegistro);
+// La bitácora contiene información sensible de autoría. No basta con ocultar
+// los botones en el frontend: ambos endpoints exigen Admin o Super Usuario
+// con acceso_total.
+router.get("/tablas", authMiddleware, requireAdminOrSuperUser, getTablasAuditables);
+router.get("/:tabla/:id", authMiddleware, requireAdminOrSuperUser, getAuditoriaRegistro);
 
 export default router;

@@ -4,21 +4,35 @@ import {
   actualizarEstadoProducto,
   verificarCondicionesProduccion,
 } from "../../controllers/diseno/diseno.controller";
-import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
+import {
+  authMiddleware,
+  checkAnyPermiso,
+  checkPermiso,
+  PERMISO_EDITAR_DISENO,
+  PERMISO_ORDEN_DISENO,
+} from "../../middlewares/auth.middleware";
 
 const router = Router();
 
-const PERMISO = "Editar Diseño";
+const accesoFichaChat = checkAnyPermiso(
+  PERMISO_EDITAR_DISENO,
+  PERMISO_ORDEN_DISENO
+);
 
 // ── GETs — cualquier autenticado ──────────────────────────
-router.get("/pedido/:noPedido",            authMiddleware, getDisenoByPedido);
-router.get("/pedido/:noPedido/produccion", authMiddleware, verificarCondicionesProduccion);
+router.get("/pedido/:noPedido", authMiddleware, accesoFichaChat, getDisenoByPedido);
+router.get(
+  "/pedido/:noPedido/produccion",
+  authMiddleware,
+  accesoFichaChat,
+  verificarCondicionesProduccion
+);
 
 // ── Escritura — requiere permiso ──────────────────────────
 router.patch(
   "/producto/:id/estado",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkPermiso(PERMISO_EDITAR_DISENO),
   actualizarEstadoProducto
 );
 

@@ -122,7 +122,7 @@ export async function crearInsumoConEspejo(
     );
     idinsumo = rows[0].idinsumo;
   }
-
+ 
   const catRow = await upsertEspejoCat(client, params.catKey, idinsumo, nombreCompleto);
   return { idinsumo, catRow, yaExistia };
 }

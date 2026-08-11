@@ -96,15 +96,37 @@ const calcularMetrosLaminacion = (pliegos: unknown, desarrolloMm: unknown): numb
   return round2((pliegosNum * desarrolloNum) / 1000);
 };
 
+// Un pedido puede tener varias cantidades vigentes para el mismo producto.
+// Seguimiento necesita una sola fila canónica, por eso agrega únicamente los
+// detalles aprobados en lugar de multiplicar el producto por cada detalle.
+const JOIN_DETALLES_APROBADOS_AGREGADOS = `
+  LEFT JOIN LATERAL (
+    SELECT
+      SUM(sd0.cantidad) AS cantidad,
+      SUM(sd0.kilogramos) AS kilogramos,
+      CASE
+        WHEN COUNT(*) > 0
+         AND BOOL_AND(COALESCE(sd0.modo_cantidad, 'unidad') = 'kilo')
+        THEN 'kilo'
+        ELSE 'unidad'
+      END AS modo_cantidad
+    FROM solicitud_detalle sd0
+    WHERE sd0.solicitud_producto_id = sp.idsolicitud_producto
+      AND sd0.aprobado = true
+  ) sd ON true
+`;
+
 // ============================================================
 // GET /api/seguimiento
 // ============================================================
 export const getSeguimiento = async (req: Request, res: Response) => {
   try {
+    res.setHeader("Cache-Control", "no-store");
     // ── Query de PLÁSTICO (idéntico al original, sin cambios) ──────────
     const { rows: rowsPlastico } = await pool.query(`
       SELECT
         s.idsolicitud,
+        sp.idsolicitud_producto,
         s.no_pedido,
         s.no_cotizacion,
         s.fecha,
@@ -156,6 +178,16 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         -- ✅ NUEVO: fecha real de aprobación de la orden de diseño (para
         -- mostrarla debajo del badge de OD, no solo usarla para colorear).
         od.autorizado_at                                                    AS od_fecha_aprobacion,
+        -- ✅ NUEVO: fecha real en que el acumulado de pagos alcanzó el
+        -- anticipo requerido — mismo valor que ya se usaba para calcular
+        -- op_fecha_aprobacion, ahora expuesto también como su propio campo
+        -- para pintarlo debajo del badge de ANTICIPO.
+        fap.fecha                                                           AS anticipo_fecha_aprobacion,
+        -- ✅ NUEVO: fecha real de aprobación del diseño DE ESTE PRODUCTO
+        -- (diseno_producto.fecha_aprobacion), o si no la tiene, la fecha de
+        -- aprobación general de la orden completa — para pintarla debajo
+        -- del badge de DISEÑO.
+        COALESCE(dp.fecha_aprobacion, d.fecha_aprobacion_general)          AS diseno_fecha_aprobacion,
         -- ✅ NUEVO: fecha en que quedó habilitado el PDF de orden de
         -- producción — el mayor entre (anticipo/pago cubierto) y (diseño
         -- aprobado), que son las dos condiciones de puede_pdf.
@@ -281,14 +313,28 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       -- anticipo requerido (para mostrar debajo del PDF de orden de
       -- producción cuándo quedó "aprobado" el pago que la desbloqueó).
       LEFT JOIN LATERAL (
-        SELECT MIN(x.fecha) AS fecha
-        FROM (
-          SELECT vp.fecha,
-                 SUM(vp.monto_moneda_venta) OVER (ORDER BY vp.fecha, vp.idventa_pago) AS acumulado
-          FROM venta_pago vp
-          WHERE vp.ventas_idventas = v.idventas AND vp.eliminado_at IS NULL
-        ) x
-        WHERE x.acumulado >= v.anticipo
+        -- LEAST ignora los NULL (solo da NULL si las dos partes lo son),
+        -- así que sirve de COALESCE-por-fecha-más-temprana entre las dos
+        -- formas de cubrir el anticipo:
+        --   · pago acumulado alcanza el monto requerido
+        --   · anticipo autorizado por crédito (venta_pago con monto=0 y
+        --     es_credito_anticipo=true — nunca suma al acumulado de arriba,
+        --     así que sin esto el anticipo por crédito quedaba sin fecha)
+        SELECT LEAST(
+          (SELECT MIN(x.fecha)
+             FROM (
+               SELECT vp.fecha,
+                      SUM(vp.monto_moneda_venta) OVER (ORDER BY vp.fecha, vp.idventa_pago) AS acumulado
+                 FROM venta_pago vp
+                WHERE vp.ventas_idventas = v.idventas AND vp.eliminado_at IS NULL
+             ) x
+            WHERE x.acumulado >= v.anticipo),
+          (SELECT MIN(vp2.fecha)
+             FROM venta_pago vp2
+            WHERE vp2.ventas_idventas = v.idventas
+              AND vp2.es_credito_anticipo = true
+              AND vp2.eliminado_at IS NULL)
+        ) AS fecha
       ) fap ON true
       LEFT JOIN diseno d
           ON d.solicitud_idsolicitud = s.idsolicitud
@@ -319,9 +365,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           ON ca.id_color = sp.id_color
       LEFT JOIN medidas_troquel mt
           ON mt.id_medidatro = sp.id_medidatro
-      LEFT JOIN solicitud_detalle sd
-          ON sd.solicitud_producto_id = sp.idsolicitud_producto
-          AND sd.aprobado = true
+      ${JOIN_DETALLES_APROBADOS_AGREGADOS}
       LEFT JOIN orden_diseno od
           ON od.solicitud_producto_id = sp.idsolicitud_producto
 
@@ -344,6 +388,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
     const { rows: rowsPapel } = await pool.query(`
       SELECT
         s.idsolicitud,
+        sp.idsolicitud_producto,
         s.no_pedido,
         s.no_cotizacion,
         s.fecha,
@@ -386,6 +431,16 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         -- ✅ NUEVO: fecha real de aprobación de la orden de diseño (para
         -- mostrarla debajo del badge de OD, no solo usarla para colorear).
         od.autorizado_at                                                    AS od_fecha_aprobacion,
+        -- ✅ NUEVO: fecha real en que el acumulado de pagos alcanzó el
+        -- anticipo requerido — mismo valor que ya se usaba para calcular
+        -- op_fecha_aprobacion, ahora expuesto también como su propio campo
+        -- para pintarlo debajo del badge de ANTICIPO.
+        fap.fecha                                                           AS anticipo_fecha_aprobacion,
+        -- ✅ NUEVO: fecha real de aprobación del diseño DE ESTE PRODUCTO
+        -- (diseno_producto.fecha_aprobacion), o si no la tiene, la fecha de
+        -- aprobación general de la orden completa — para pintarla debajo
+        -- del badge de DISEÑO.
+        COALESCE(dp.fecha_aprobacion, d.fecha_aprobacion_general)          AS diseno_fecha_aprobacion,
         -- ✅ NUEVO: fecha en que quedó habilitado el PDF de orden de
         -- producción — el mayor entre (anticipo/pago cubierto) y (diseño
         -- aprobado), que son las dos condiciones de puede_pdf.
@@ -520,14 +575,28 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       -- anticipo requerido (para mostrar debajo del PDF de orden de
       -- producción cuándo quedó "aprobado" el pago que la desbloqueó).
       LEFT JOIN LATERAL (
-        SELECT MIN(x.fecha) AS fecha
-        FROM (
-          SELECT vp.fecha,
-                 SUM(vp.monto_moneda_venta) OVER (ORDER BY vp.fecha, vp.idventa_pago) AS acumulado
-          FROM venta_pago vp
-          WHERE vp.ventas_idventas = v.idventas AND vp.eliminado_at IS NULL
-        ) x
-        WHERE x.acumulado >= v.anticipo
+        -- LEAST ignora los NULL (solo da NULL si las dos partes lo son),
+        -- así que sirve de COALESCE-por-fecha-más-temprana entre las dos
+        -- formas de cubrir el anticipo:
+        --   · pago acumulado alcanza el monto requerido
+        --   · anticipo autorizado por crédito (venta_pago con monto=0 y
+        --     es_credito_anticipo=true — nunca suma al acumulado de arriba,
+        --     así que sin esto el anticipo por crédito quedaba sin fecha)
+        SELECT LEAST(
+          (SELECT MIN(x.fecha)
+             FROM (
+               SELECT vp.fecha,
+                      SUM(vp.monto_moneda_venta) OVER (ORDER BY vp.fecha, vp.idventa_pago) AS acumulado
+                 FROM venta_pago vp
+                WHERE vp.ventas_idventas = v.idventas AND vp.eliminado_at IS NULL
+             ) x
+            WHERE x.acumulado >= v.anticipo),
+          (SELECT MIN(vp2.fecha)
+             FROM venta_pago vp2
+            WHERE vp2.ventas_idventas = v.idventas
+              AND vp2.es_credito_anticipo = true
+              AND vp2.eliminado_at IS NULL)
+        ) AS fecha
       ) fap ON true
       LEFT JOIN diseno d
           ON d.solicitud_idsolicitud = s.idsolicitud
@@ -560,9 +629,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           ON ctrefmed.idcat_refuerzo_medidas = ap.idcat_refuerzo_medidas
       LEFT JOIN cat_empaque ctemp
           ON ctemp.idcat_empaque = ap.idcat_empaque
-      LEFT JOIN solicitud_detalle sd
-          ON sd.solicitud_producto_id = sp.idsolicitud_producto
-          AND sd.aprobado = true
+      ${JOIN_DETALLES_APROBADOS_AGREGADOS}
       LEFT JOIN orden_diseno od
           ON od.solicitud_producto_id = sp.idsolicitud_producto
 
@@ -657,6 +724,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
       return {
         idsolicitud: Number(row.idsolicitud),
+        idsolicitud_producto: Number(row.idsolicitud_producto),
         no_pedido: row.no_pedido,
         no_cotizacion: row.no_cotizacion ?? null,
         fecha: row.fecha,
@@ -690,6 +758,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         diseno_fecha_estado: row.diseno_fecha_estado ?? null,
         od_fecha_estado: row.od_fecha_estado ?? null,
         od_fecha_aprobacion: row.od_fecha_aprobacion ?? null,
+        anticipo_fecha_aprobacion: row.anticipo_fecha_aprobacion ?? null,
+        diseno_fecha_aprobacion: row.diseno_fecha_aprobacion ?? null,
         op_fecha_aprobacion: row.op_fecha_aprobacion ?? null,
         envio_fecha_estado: row.envio_fecha_estado ?? null,
         estado_envio: mapEstadoEnvio(
@@ -750,6 +820,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
       return {
         idsolicitud: Number(row.idsolicitud),
+        idsolicitud_producto: Number(row.idsolicitud_producto),
         no_pedido: row.no_pedido,
         no_cotizacion: row.no_cotizacion ?? null,
         fecha: row.fecha,
@@ -792,6 +863,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         diseno_fecha_estado: row.diseno_fecha_estado ?? null,
         od_fecha_estado: row.od_fecha_estado ?? null,
         od_fecha_aprobacion: row.od_fecha_aprobacion ?? null,
+        anticipo_fecha_aprobacion: row.anticipo_fecha_aprobacion ?? null,
+        diseno_fecha_aprobacion: row.diseno_fecha_aprobacion ?? null,
         op_fecha_aprobacion: row.op_fecha_aprobacion ?? null,
         envio_fecha_estado: row.envio_fecha_estado ?? null,
         estado_envio: mapEstadoEnvio(
@@ -1012,9 +1085,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           ON ca.id_color = sp.id_color
       LEFT JOIN medidas_troquel mt
           ON mt.id_medidatro = sp.id_medidatro
-      LEFT JOIN solicitud_detalle sd
-          ON sd.solicitud_producto_id = sp.idsolicitud_producto
-          AND sd.aprobado = true
+      ${JOIN_DETALLES_APROBADOS_AGREGADOS}
       LEFT JOIN extrusion ext
           ON ext.orden_produccion_idproduccion = op.idproduccion
       LEFT JOIN orden_diseno od_img
@@ -1221,9 +1292,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ON crmed.idcat_refuerzo_medidas = ap.idcat_refuerzo_medidas
       LEFT JOIN cat_empaque cemp
         ON cemp.idcat_empaque = ap.idcat_empaque
-      LEFT JOIN solicitud_detalle sd
-        ON sd.solicitud_producto_id = sp.idsolicitud_producto
-        AND sd.aprobado = true
+      ${JOIN_DETALLES_APROBADOS_AGREGADOS}
       LEFT JOIN LATERAL (
   SELECT
     spj.idsuaje_papel,
@@ -1602,9 +1671,7 @@ export const getBultosEtiqueta = async (req: Request, res: Response) => {
           ON tpp.idtipo_producto_plastico = cfg.tipo_producto_plastico_plastico_idtipo_producto_plastico
       LEFT JOIN material_plastico mp
           ON mp.idmaterial_plastico = cfg.material_plastico_plastico_idmaterial_plastico
-      LEFT JOIN solicitud_detalle sd
-          ON sd.solicitud_producto_id = sp.idsolicitud_producto
-          AND sd.aprobado = true
+      ${JOIN_DETALLES_APROBADOS_AGREGADOS}
       LEFT JOIN asa_flexible af
           ON af.orden_produccion_idproduccion = op.idproduccion
       LEFT JOIN bolseo bol

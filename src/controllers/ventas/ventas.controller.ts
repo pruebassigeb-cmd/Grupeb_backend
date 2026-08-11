@@ -5,9 +5,44 @@ import {
   calcularUmbralAnticipo,
   determinarEstadoVenta as determinarEstado,
 } from "../../services/ventas/totalesVenta.service";
-import { ventaTieneCredito } from "../../services/ventas/pagos.service";
+import {
+  bloquearSolicitudParaVenta,
+  ventaTieneCredito,
+} from "../../services/ventas/pagos.service";
 import { type Moneda, resolverMontoPago } from "../../utils/moneda.utils";
 import { ErrorHttp, responderError } from "../../utils/errorHttp";
+
+/**
+ * Resuelve primero la solicitud, toma su advisory transaccional y finalmente
+ * relee/bloquea la venta. AsÃ­ ninguna operaciÃ³n usa total/abono obsoletos
+ * despuÃ©s de esperar a una ediciÃ³n de pedido o a otro pago.
+ */
+async function obtenerVentaBloqueada(client: any, ventaId: unknown): Promise<any | null> {
+  const { rows: referenciaRows } = await client.query(
+    `SELECT solicitud_idsolicitud FROM ventas WHERE idventas = $1`,
+    [ventaId],
+  );
+  if (referenciaRows.length === 0) return null;
+
+  const solicitudId = Number(referenciaRows[0].solicitud_idsolicitud);
+  await bloquearSolicitudParaVenta(client, solicitudId);
+
+  const { rows } = await client.query(
+    `SELECT
+       v.idventas,
+       v.total,
+       v.anticipo,
+       v.saldo,
+       v.abono,
+       v.solicitud_idsolicitud,
+       v.moneda
+     FROM ventas v
+     WHERE v.idventas = $1
+     FOR UPDATE`,
+    [ventaId],
+  );
+  return rows[0] ?? null;
+}
 
 async function generarNoProduccion(client: any): Promise<string> {
   const anio = new Date().getFullYear().toString().slice(-2);
@@ -157,9 +192,20 @@ async function getMedidasParaOrden(client: any, idsolicitudProducto: number) {
     FROM solicitud_producto sp
     JOIN configuracion_plastico cfg
         ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
-    LEFT JOIN solicitud_detalle sd
-        ON sd.solicitud_producto_id = sp.idsolicitud_producto
-        AND sd.aprobado = true
+    LEFT JOIN LATERAL (
+      SELECT
+        SUM(sd0.cantidad) AS cantidad,
+        SUM(sd0.kilogramos) AS kilogramos,
+        CASE
+          WHEN COUNT(*) > 0
+           AND BOOL_AND(COALESCE(sd0.modo_cantidad, 'unidad') = 'kilo')
+          THEN 'kilo'
+          ELSE 'unidad'
+        END AS modo_cantidad
+      FROM solicitud_detalle sd0
+      WHERE sd0.solicitud_producto_id = sp.idsolicitud_producto
+        AND sd0.aprobado = true
+    ) sd ON true
     WHERE sp.idsolicitud_producto = $1
     LIMIT 1
   `, [idsolicitudProducto]);
@@ -234,13 +280,28 @@ async function generarOrdenesPendientes(client: any, solicitudId: number): Promi
         SELECT 1 FROM orden_produccion op
         WHERE op.idsolicitud_producto = dp.solicitud_producto_idsolicitud_producto
       )
+    ORDER BY dp.solicitud_producto_idsolicitud_producto
   `, [solicitudId, ESTADO.APROBADO]);
 
   const ordenesCreadas: string[] = [];
 
   for (const prod of pendientes) {
+    const productoId = Number(prod.idsolicitud_producto);
+    await client.query(`SELECT pg_advisory_xact_lock($1)`, [productoId]);
+
+    // La lista inicial puede quedar obsoleta mientras se espera el advisory
+    // que tambiÃ©n usa DiseÃ±o. Se confirma de nuevo dentro del candado.
+    const { rows: ordenExistenteRows } = await client.query(
+      `SELECT no_produccion
+       FROM orden_produccion
+       WHERE idsolicitud_producto = $1
+       LIMIT 1`,
+      [productoId],
+    );
+    if (ordenExistenteRows.length > 0) continue;
+
     const noProduccion = await generarNoProduccion(client);
-    const datosOrden   = await prepararDatosOrden(client, prod.idsolicitud_producto);
+    const datosOrden   = await prepararDatosOrden(client, productoId);
 
     await client.query(
       `INSERT INTO orden_produccion (
@@ -251,7 +312,7 @@ async function generarOrdenesPendientes(client: any, solicitudId: number): Promi
         kilos, kilos_merma, pzas, pzas_merma, repeticion_kidder, repeticion_sicosa
       ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [
-        ESTADO.PENDIENTE, noProduccion, solicitudId, prod.idsolicitud_producto, ESTADO.PENDIENTE,
+        ESTADO.PENDIENTE, noProduccion, solicitudId, productoId, ESTADO.PENDIENTE,
         datosOrden.repeticion_extrusion, datosOrden.repeticion_metro,
         datosOrden.metros, datosOrden.metros_merma, datosOrden.ancho_bobina,
         datosOrden.kilos, datosOrden.kilos_merma, datosOrden.pzas, datosOrden.pzas_merma,
@@ -281,6 +342,7 @@ const SUBQ_HERRAMENTAL = `
 // ============================================================
 export const getVentas = async (req: Request, res: Response) => {
   try {
+    res.setHeader("Cache-Control", "no-store");
     const { rows } = await pool.query(`
       SELECT
         v.idventas, v.solicitud_idsolicitud,
@@ -372,6 +434,7 @@ export const getVentaById = async (req: Request, res: Response) => {
 // ============================================================
 export const getVentaByPedido = async (req: Request, res: Response) => {
   try {
+    res.setHeader("Cache-Control", "no-store");
     const { noPedido } = req.params;
     const { rows: ventaRows } = await pool.query(`
       SELECT
@@ -450,17 +513,11 @@ export const registrarPago = async (req: Request, res: Response) => {
     // auditoría y hace COMMIT/ROLLBACK. Cortar el flujo a media transacción se
     // hace lanzando ErrorHttp, no con un return.
     const resultado = await req.tx(async (client) => {
-      const { rows: ventaRows } = await client.query(
-        `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud, v.moneda
-         FROM ventas v WHERE v.idventas = $1`,
-        [id]
-      );
-
-      if (ventaRows.length === 0) {
+      const venta = await obtenerVentaBloqueada(client, id);
+      if (!venta) {
         throw new ErrorHttp(404, "Venta no encontrada");
       }
 
-      const venta       = ventaRows[0];
       const solicitudId = venta.solicitud_idsolicitud;
       const montoNum    = Number(monto);
       const monedaVenta: Moneda = venta.moneda ?? "MXN";
@@ -548,16 +605,33 @@ export const eliminarPago = async (req: Request, res: Response) => {
     const { id } = req.params;
 
     const resultado = await req.tx(async (client) => {
+      const { rows: pagoReferenciaRows } = await client.query(
+        `SELECT ventas_idventas FROM venta_pago
+         WHERE idventa_pago = $1 AND eliminado_at IS NULL`,
+        [id]
+      );
+      if (pagoReferenciaRows.length === 0) {
+        throw new ErrorHttp(404, "Pago no encontrado");
+      }
+
+      const ventaId = Number(pagoReferenciaRows[0].ventas_idventas);
+      const venta = await obtenerVentaBloqueada(client, ventaId);
+      if (!venta) {
+        throw new ErrorHttp(404, "Venta no encontrada");
+      }
+
+      // Se confirma de nuevo después de esperar el advisory por solicitud;
+      // otro proceso pudo haber eliminado este pago mientras tanto.
       const { rows: pagoRows } = await client.query(
-        `SELECT idventa_pago, ventas_idventas, monto FROM venta_pago
-          WHERE idventa_pago = $1 AND eliminado_at IS NULL`,
+        `SELECT idventa_pago, ventas_idventas, monto
+         FROM venta_pago
+         WHERE idventa_pago = $1 AND eliminado_at IS NULL
+         FOR UPDATE`,
         [id]
       );
       if (pagoRows.length === 0) {
         throw new ErrorHttp(404, "Pago no encontrado");
       }
-
-      const ventaId = pagoRows[0].ventas_idventas;
 
       // Borrado lógico, no DELETE: si el renglón desaparece, la bitácora
       // apunta a algo que ya no existe y se pierde justo lo que se quería
@@ -576,10 +650,7 @@ export const eliminarPago = async (req: Request, res: Response) => {
       );
       const nuevoAbono = Number(sumaRows[0].total_abonado);
 
-      const { rows: ventaRows } = await client.query(
-        `SELECT total, anticipo FROM ventas WHERE idventas = $1`, [ventaId]
-      );
-      const total         = Number(ventaRows[0].total);
+      const total         = Number(venta.total);
       const nuevoSaldo    = Number((total - nuevoAbono).toFixed(2));
       const estaLiquidado = nuevoSaldo <= 0;
 
@@ -625,17 +696,11 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
     const { id } = req.params;
 
     const resultado = await req.tx(async (client) => {
-      const { rows: ventaRows } = await client.query(
-        `SELECT v.idventas, v.total, v.anticipo, v.saldo, v.abono, v.solicitud_idsolicitud, v.moneda
-         FROM ventas v WHERE v.idventas = $1`,
-        [id]
-      );
-
-      if (ventaRows.length === 0) {
+      const venta = await obtenerVentaBloqueada(client, id);
+      if (!venta) {
         throw new ErrorHttp(404, "Venta no encontrada");
       }
 
-      const venta = ventaRows[0];
       const total = Number(venta.total);
       const abono = Number(venta.abono);
       const monedaVenta: Moneda = venta.moneda ?? "MXN";

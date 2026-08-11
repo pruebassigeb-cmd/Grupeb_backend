@@ -14,11 +14,32 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
  */
 export function generarClaveLimitador(req: Request): string {
   const usuarioId = (req as Request & { user?: { id?: number } }).user?.id;
-  return usuarioId ? `user:${usuarioId}` : ipKeyGenerator(req.ip ?? "desconocida");
+  return usuarioId
+    ? `user:${usuarioId}`
+    : `ip:${ipKeyGenerator(req.ip ?? "desconocida")}`;
+}
+
+/**
+ * Login: separar el presupuesto por correo + IP.
+ * Así varios usuarios detrás del mismo router no se bloquean entre sí.
+ * Además, el limiter de login solo conserva intentos FALLIDOS gracias a
+ * skipSuccessfulRequests.
+ */
+export function generarClaveLogin(req: Request): string {
+  const correo = String(req.body?.correo ?? "")
+    .trim()
+    .toLowerCase();
+  const ip = ipKeyGenerator(req.ip ?? "desconocida");
+
+  return correo ? `login:${correo}:${ip}` : `login:${ip}`;
+}
+
+function esDesarrollo(): boolean {
+  return process.env.NODE_ENV !== "production";
 }
 
 export const setupSecurity = (app: Express) => {
-app.use(
+  app.use(
     helmet({
       crossOriginResourcePolicy: { policy: "cross-origin" },
       frameguard: {
@@ -103,7 +124,7 @@ export const SECURITY_CONSTANTS = {
   RATE_LIMIT_WINDOW_MS:    15 * 60 * 1000,
   LOGIN_MAX_ATTEMPTS:      10,
   CREATE_USER_MAX_ATTEMPTS: 10,
-  GENERAL_MAX_REQUESTS:    500,
+  GENERAL_MAX_REQUESTS:    3000,
   APPROVAL_MAX_REQUESTS:   1000,
   COTIZADOR_LIBRE_PRECIO_WINDOW_MS: 60 * 1000,
   COTIZADOR_LIBRE_PRECIO_MAX_REQUESTS: 60,
@@ -126,6 +147,14 @@ export const generalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders:  false,
   keyGenerator:   generarClaveLimitador,
+
+  // En local/desarrollo no bloquear el flujo de trabajo.
+  // En producción, /auth/login tiene su propio limiter y no debe consumir
+  // también el presupuesto general.
+  skip: (req) =>
+    esDesarrollo() ||
+    req.originalUrl.startsWith("/api/auth/login"),
+
   message:        { error: "Demasiadas solicitudes, espera un momento." },
 });
 
@@ -139,21 +168,27 @@ export const approvalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders:  false,
   keyGenerator:   generarClaveLimitador,
+  skip:           () => esDesarrollo(),
   message:        { error: "Demasiadas solicitudes de aprobación, espera un momento." },
 });
 
 /**
- * Rate limiter estricto para login — se queda por IP a propósito (no por
- * usuario): antes de autenticarse no hay `req.user` que usar, y el punto de
- * este limiter es justo frenar intentos de login repetidos desde el mismo
- * origen antes de que exista una sesión.
+ * Rate limiter de login.
+ * - Cuenta por correo + IP, no por IP compartida únicamente.
+ * - Los logins exitosos NO consumen intentos.
+ * - En desarrollo/local queda desactivado.
  */
 export const loginLimiter = rateLimit({
   windowMs:       SECURITY_CONSTANTS.RATE_LIMIT_WINDOW_MS,
   max:            SECURITY_CONSTANTS.LOGIN_MAX_ATTEMPTS,
   standardHeaders: true,
   legacyHeaders:  false,
-  message:        { error: "Demasiados intentos de inicio de sesión. Intenta más tarde." },
+  keyGenerator:   generarClaveLogin,
+  skipSuccessfulRequests: true,
+  skip:           () => esDesarrollo(),
+  message:        {
+    error: "Demasiados intentos fallidos de inicio de sesión. Intenta más tarde.",
+  },
 });
 
 /**
@@ -171,5 +206,6 @@ export const cotizadorLibrePrecioLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders:  false,
   keyGenerator:   generarClaveLimitador,
+  skip:           () => esDesarrollo(),
   message:        { error: "Demasiadas solicitudes de cálculo de precio. Espera un momento." },
 });

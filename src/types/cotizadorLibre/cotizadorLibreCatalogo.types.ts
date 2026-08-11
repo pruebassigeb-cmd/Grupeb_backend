@@ -3,6 +3,7 @@
 export interface TipoCatalogoItem {
   id: number;
   nombre: string;
+  imagenUrl?: string | null;
 }
 
 export interface MedidaPapelItem {
@@ -12,6 +13,7 @@ export interface MedidaPapelItem {
   fuelle: number | null;
   altura: number | null;
   descripcion_papel: string | null;
+  imagenUrl?: string | null;
 }
 
 export interface MedidaPlasticoItem {
@@ -30,6 +32,20 @@ export interface GrupoPapelItem {
   precio_sugerido: number | null;
   idcat_tipo_papel: number | null;
   material: string | null;
+  imagenUrl?: string | null;
+}
+
+export interface AcabadosPermitidosPapel {
+  uv: boolean;
+  alto_relieve: boolean;
+  textura: boolean;
+  hot_stamping: boolean;
+}
+
+export interface ImagenesGlobalesPapel {
+  hotStamping: string | null;
+  altoRelieve: string | null;
+  uv: string | null;
 }
 
 export interface DetalleProductoPapelResponse {
@@ -52,6 +68,8 @@ export interface DetalleProductoPapelResponse {
   // exista: se implementará como columna en la misma tabla que guarda
   // el tamaño (según lo indicado), no como catálogo aparte.
   linea: null;
+  acabadosPermitidos: AcabadosPermitidosPapel;
+  imagenesGlobales: ImagenesGlobalesPapel;
 }
 
 export interface TintaItem {

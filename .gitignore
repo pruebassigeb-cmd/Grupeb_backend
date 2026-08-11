@@ -149,3 +149,6 @@ vite.config.ts.timestamp-*
 
 
 .claude/
+
+migrations/*
+!migrations/2026-08-10_permisos_diseno.sql

@@ -22,6 +22,10 @@
 -- Consecuencia directa: cualquier escritura que NO pase por req.tx() queda
 -- registrada con usuario_id = NULL. Ese es el trabajo de la Fase 1.
 --
+-- REQUISITO: correr ANTES 2026-08-05_auditoria_00_base.sql, que trae
+-- bitacora_cambios, fn_usuario_actual() y fn_contexto_actual(). Este archivo
+-- los da por existentes; sin ellos falla.
+--
 -- Este archivo es idempotente. Se puede correr las veces que haga falta.
 -- ============================================================================
 

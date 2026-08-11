@@ -1,7 +1,12 @@
 import { iniciarTx, qAudit } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
-import { AuthRequest } from "../../middlewares/auth.middleware";
+import {
+  AuthRequest,
+  PERMISO_EDITAR_DISENO,
+  PERMISO_ORDEN_DISENO,
+  usuarioTienePermiso,
+} from "../../middlewares/auth.middleware";
 import { getPresignedUrl } from "../../config/multer";
 
 // ============================================================
@@ -198,9 +203,20 @@ async function getMedidasParaOrden(client: any, idsolicitudProducto: number) {
     FROM solicitud_producto sp
     JOIN configuracion_plastico cfg
         ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
-    LEFT JOIN solicitud_detalle sd
-        ON sd.solicitud_producto_id = sp.idsolicitud_producto
-        AND sd.aprobado = true
+    LEFT JOIN LATERAL (
+      SELECT
+        SUM(sd0.cantidad) AS cantidad,
+        SUM(sd0.kilogramos) AS kilogramos,
+        CASE
+          WHEN COUNT(*) > 0
+           AND BOOL_AND(COALESCE(sd0.modo_cantidad, 'unidad') = 'kilo')
+          THEN 'kilo'
+          ELSE 'unidad'
+        END AS modo_cantidad
+      FROM solicitud_detalle sd0
+      WHERE sd0.solicitud_producto_id = sp.idsolicitud_producto
+        AND sd0.aprobado = true
+    ) sd ON true
     WHERE sp.idsolicitud_producto = $1
     LIMIT 1
   `, [idsolicitudProducto]);
@@ -639,22 +655,11 @@ export const enviarMensaje = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Orden no encontrada" });
     }
 
-    const { rows: usuarioRows } = await client.query(
-      `SELECT p.privilegio
-       FROM usuarios u
-       JOIN roles r              ON r.idroles               = u.roles_idroles
-       JOIN roles_privilegios rp ON rp.roles_idroles        = r.idroles
-       JOIN privilegios p        ON p.idprivilegios         = rp.privilegios_idprivilegios
-       WHERE u.idusuario = $1
-         AND p.idprivilegios IN (8, 22)
-       LIMIT 1`,
-      [usuarioId]
-    );
-
-    const privilegio = usuarioRows[0]?.privilegio ?? "";
-    const rolEnOrden = privilegio === "Editar Diseño"
+    // La clasificación debe considerar tanto el rol base como privilegios
+    // individuales; no depende de IDs fijos ni solo de roles_privilegios.
+    const rolEnOrden = usuarioTienePermiso(req.user, PERMISO_EDITAR_DISENO)
       ? "diseno"
-      : privilegio === "Orden de Diseño"
+      : usuarioTienePermiso(req.user, PERMISO_ORDEN_DISENO)
       ? "ventas"
       : "otro";
 

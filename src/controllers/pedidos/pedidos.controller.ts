@@ -10,9 +10,13 @@ import {
   calcularUmbralAnticipo,
   determinarEstadoVenta,
 } from "../../services/ventas/totalesVenta.service";
-import { ventaTieneCredito } from "../../services/ventas/pagos.service";
+import {
+  bloquearSolicitudParaVenta,
+  ventaTieneCredito,
+} from "../../services/ventas/pagos.service";
 import { cambiarMonedaSolicitud } from "../../services/ventas/cambioMoneda.service";
 import { ErrorHttp, responderError } from "../../utils/errorHttp";
+import { prepararDatosOrden } from "../diseno/diseno.controller";
 
 /**
  * Borra el árbol de diseño colgado de unos productos de solicitud.
@@ -126,6 +130,104 @@ const normalizarId = (v: unknown): number | null => {
   const n = Number(v);
   return Number.isInteger(n) && n > 0 ? n : null;
 };
+
+type ModoCantidadPedido = "unidad" | "kilo";
+
+interface DetallesPedidoValidados {
+  detalles: any[];
+  idsExistentes: number[];
+  modo: ModoCantidadPedido;
+}
+
+/**
+ * Valida una lista completa de cantidades de un producto antes de persistirla.
+ * Todos los detalles de un mismo producto deben usar la misma unidad porque
+ * producciÃ³n mantiene un solo objetivo/unidad canÃ³nica por OP.
+ */
+function validarDetallesPedido(
+  detallesRaw: unknown,
+  referenciaProducto: string,
+  permitirIdsExistentes: boolean,
+): DetallesPedidoValidados {
+  if (!Array.isArray(detallesRaw) || detallesRaw.length === 0) {
+    throw new ErrorHttp(
+      400,
+      `El producto ${referenciaProducto} debe conservar al menos un detalle`,
+    );
+  }
+
+  const idsExistentes: number[] = [];
+  const modos = new Set<ModoCantidadPedido>();
+
+  for (const det of detallesRaw) {
+    if (!det || typeof det !== "object") {
+      throw new ErrorHttp(400, `Detalle invÃ¡lido para el producto ${referenciaProducto}`);
+    }
+
+    const idRecibido = (det as any).iddetalle;
+    if (idRecibido !== null && idRecibido !== undefined && idRecibido !== "") {
+      if (!permitirIdsExistentes) {
+        throw new ErrorHttp(
+          400,
+          `Un detalle nuevo del producto ${referenciaProducto} no puede incluir iddetalle`,
+        );
+      }
+      const detalleId = normalizarId(idRecibido);
+      if (detalleId === null) {
+        throw new ErrorHttp(400, "iddetalle invÃ¡lido");
+      }
+      idsExistentes.push(detalleId);
+    }
+
+    const cantidad = Number((det as any).cantidad);
+    const precioTotal = Number((det as any).precio_total);
+    const modo = (det as any).modo_cantidad;
+
+    if (
+      !Number.isFinite(cantidad) ||
+      cantidad <= 0 ||
+      !Number.isFinite(precioTotal) ||
+      precioTotal <= 0 ||
+      (modo !== "unidad" && modo !== "kilo")
+    ) {
+      throw new ErrorHttp(400, `Detalle invÃ¡lido para el producto ${referenciaProducto}`);
+    }
+
+    const kilogramosRaw = (det as any).kilogramos;
+    const tieneKilogramos =
+      kilogramosRaw !== null && kilogramosRaw !== undefined && kilogramosRaw !== "";
+    const kilogramos = tieneKilogramos ? Number(kilogramosRaw) : null;
+
+    if (
+      (modo === "kilo" && (!tieneKilogramos || !Number.isFinite(kilogramos) || Number(kilogramos) <= 0)) ||
+      (tieneKilogramos && (!Number.isFinite(kilogramos) || Number(kilogramos) <= 0))
+    ) {
+      throw new ErrorHttp(
+        400,
+        `Los kilogramos del producto ${referenciaProducto} deben ser mayores a cero`,
+      );
+    }
+
+    modos.add(modo);
+  }
+
+  if (new Set(idsExistentes).size !== idsExistentes.length) {
+    throw new ErrorHttp(400, `Hay detalles duplicados en el producto ${referenciaProducto}`);
+  }
+
+  if (modos.size !== 1) {
+    throw new ErrorHttp(
+      400,
+      `Todos los detalles del producto ${referenciaProducto} deben usar el mismo modo de cantidad`,
+    );
+  }
+
+  return {
+    detalles: detallesRaw,
+    idsExistentes,
+    modo: modos.values().next().value as ModoCantidadPedido,
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DISEÑO — enganchar un producto nuevo al diseño existente del pedido
@@ -669,19 +771,41 @@ export const actualizarPedido = async (req: Request, res: Response) => {
     // que exigen `string` estricto (registrarProductoNuevoEnDiseno).
     const noPedidoParam: string = Array.isArray(id) ? id[0] : id;
     const { productos, prioridad, sin_iva } = req.body;
+    const productosNuevos = req.body.productos_nuevos ?? [];
 
-    const { rows: pedRows } = await client.query(
-      `SELECT idsolicitud FROM solicitud
-       WHERE no_pedido = $1 AND estado = 'pedido'`,
-      [id]
-    );
-    if (pedRows.length === 0)
-      return res.status(404).json({ error: "Pedido no encontrado" });
-
-    const solicitudId: number = pedRows[0].idsolicitud;
+    if (!Array.isArray(productos)) {
+      throw new ErrorHttp(400, "El campo productos debe ser un arreglo");
+    }
+    if (!Array.isArray(productosNuevos)) {
+      throw new ErrorHttp(400, "El campo productos_nuevos debe ser un arreglo");
+    }
 
     await iniciarTx(req, client);
 
+    // Primero se resuelve el id sin retener row locks; después se toma el
+    // advisory por solicitud que comparten edición y pagos. Desde aquí el
+    // orden es siempre: solicitud lógica -> venta -> productos/OP.
+    const { rows: pedidoReferenciaRows } = await client.query(
+      `SELECT idsolicitud FROM solicitud
+       WHERE no_pedido = $1 AND estado = 'pedido'`,
+      [noPedidoParam]
+    );
+    if (pedidoReferenciaRows.length === 0) {
+      throw new ErrorHttp(404, "Pedido no encontrado");
+    }
+
+    const solicitudId = Number(pedidoReferenciaRows[0].idsolicitud);
+    await bloquearSolicitudParaVenta(client, solicitudId);
+
+    const { rows: pedRows } = await client.query(
+      `SELECT idsolicitud FROM solicitud
+       WHERE no_pedido = $1 AND estado = 'pedido'
+       FOR NO KEY UPDATE`,
+      [noPedidoParam]
+    );
+    if (pedRows.length === 0) {
+      throw new ErrorHttp(404, "Pedido no encontrado");
+    }
     // Urgente (prioridad) y sin_iva son banderas de cabecera de la
     // solicitud; sólo se actualizan si el front las envía explícitamente
     // como booleano, para no pisar el valor guardado si no vienen en el payload.
@@ -699,6 +823,85 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       );
     }
 
+    // La fila financiera se bloquea antes que productos/OP. Los flujos de
+    // pago toman el mismo advisory y este mismo row lock, por lo que el abono
+    // usado al recalcular el saldo nunca queda obsoleto.
+    const { rows: ventaRows } = await client.query(
+      `SELECT v.idventas, v.abono, s.sin_iva
+       FROM ventas v
+       JOIN solicitud s ON s.idsolicitud = v.solicitud_idsolicitud
+       WHERE v.solicitud_idsolicitud = $1
+       FOR UPDATE OF v`,
+      [solicitudId]
+    );
+
+    // PolÃ­tica de integridad: cuando cualquier OP del pedido ya iniciÃ³, se
+    // congela la estructura completa (productos, configuraciones y detalles).
+    // Una operaciÃ³n exclusivamente de cabecera puede usar ambos arreglos vacÃ­os.
+    const hayCambiosEstructurales = productos.length > 0 || productosNuevos.length > 0;
+    const productosPersistidos = new Map<number, { tipo_material: string }>();
+    const ordenesPorProducto = new Map<number, any[]>();
+
+    if (hayCambiosEstructurales) {
+      // NO KEY UPDATE serializa ediciones y es compatible con el KEY SHARE
+      // que solicitan las FKs al crear una OP. Los advisory por producto se
+      // toman en orden estable para evitar inversiones entre dos ediciones.
+      const { rows: productosPedidoRows } = await client.query(
+        `SELECT idsolicitud_producto, tipo_material
+         FROM solicitud_producto
+         WHERE solicitud_idsolicitud = $1
+         ORDER BY idsolicitud_producto
+         FOR NO KEY UPDATE`,
+        [solicitudId]
+      );
+
+      for (const row of productosPedidoRows) {
+        const productoId = Number(row.idsolicitud_producto);
+        productosPersistidos.set(productoId, { tipo_material: row.tipo_material });
+        await client.query(`SELECT pg_advisory_xact_lock($1)`, [productoId]);
+      }
+
+      const { rows: ordenesPedidoRows } = await client.query(
+        `SELECT
+           op.idproduccion,
+           op.idsolicitud_producto,
+           op.no_produccion,
+           (
+             COALESCE(op.idestado_produccion_cat, 1) <> 1
+             OR op.proceso_actual IS NOT NULL
+             OR EXISTS (SELECT 1 FROM extrusion e WHERE e.orden_produccion_idproduccion = op.idproduccion)
+             OR EXISTS (SELECT 1 FROM impresion i WHERE i.orden_produccion_idproduccion = op.idproduccion)
+             OR EXISTS (SELECT 1 FROM bolseo b WHERE b.orden_produccion_idproduccion = op.idproduccion)
+             OR EXISTS (SELECT 1 FROM asa_flexible a WHERE a.orden_produccion_idproduccion = op.idproduccion)
+           ) AS produccion_iniciada
+         FROM orden_produccion op
+         JOIN solicitud_producto sp
+           ON sp.idsolicitud_producto = op.idsolicitud_producto
+         WHERE sp.solicitud_idsolicitud = $1
+         ORDER BY op.idproduccion
+         FOR UPDATE OF op`,
+        [solicitudId]
+      );
+
+      for (const orden of ordenesPedidoRows) {
+        const productoId = Number(orden.idsolicitud_producto);
+        const ordenes = ordenesPorProducto.get(productoId) ?? [];
+        ordenes.push(orden);
+        ordenesPorProducto.set(productoId, ordenes);
+      }
+
+      const ordenIniciada = ordenesPedidoRows.find(
+        (orden: any) => orden.produccion_iniciada === true
+      );
+      if (ordenIniciada) {
+        throw new ErrorHttp(
+          409,
+          `No se puede modificar la estructura del pedido ${noPedidoParam}: la orden de producción ${ordenIniciada.no_produccion} ya inició`
+        );
+      }
+    }
+
+    const idsProductosRecibidos = new Set<number>();
     for (const prod of (productos as any[])) {
       const {
         idsolicitud_producto,
@@ -716,9 +919,26 @@ export const actualizarPedido = async (req: Request, res: Response) => {
         detalles,
       } = prod;
 
-      // ── Pegar esto al inicio del loop for (const prod of productos), ANTES del if (eliminado) ──
+      const productoId = normalizarId(idsolicitud_producto);
+      if (productoId === null) {
+        throw new ErrorHttp(400, "Producto existente sin idsolicitud_producto válido");
+      }
+      if (idsProductosRecibidos.has(productoId)) {
+        throw new ErrorHttp(400, `El producto ${productoId} está duplicado en la solicitud`);
+      }
+      idsProductosRecibidos.add(productoId);
 
-      if (esProductoPapel(prod)) {
+      const productoPersistido = productosPersistidos.get(productoId);
+      if (!productoPersistido) {
+        throw new ErrorHttp(
+          404,
+          `El producto ${productoId} no pertenece al pedido ${noPedidoParam}`
+        );
+      }
+
+      const ordenRows = ordenesPorProducto.get(productoId) ?? [];
+
+      if (productoPersistido.tipo_material === "papel") {
         if (prod.eliminado) {
           await client.query(
             `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
@@ -902,25 +1122,55 @@ export const actualizarPedido = async (req: Request, res: Response) => {
           maquinariaSeleccionada
         );
 
-        for (const det of (prod.detalles as any[])) {
+        const {
+          detalles: detallesPapel,
+          idsExistentes: idsDetallesPapel,
+        } = validarDetallesPedido(prod.detalles, String(productoId), true);
+
+        await client.query(
+          `DELETE FROM solicitud_detalle
+           WHERE solicitud_producto_id = $1
+             AND NOT (idsolicitud_detalle = ANY($2::int[]))`,
+          [productoId, idsDetallesPapel]
+        );
+
+        for (const det of detallesPapel) {
           const { iddetalle, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad } = det;
           if (iddetalle) {
-            await client.query(
+            const resultadoDetalle = await client.query(
               `UPDATE solicitud_detalle SET
-           cantidad        = $1,
-           precio_total    = $2,
-           precio_unitario = $3,
-           kilogramos      = $4,
-           modo_cantidad   = $5
-         WHERE idsolicitud_detalle = $6`,
-              [cantidad, precio_total, precio_unitario ?? null, kilogramos ?? null, modo_cantidad, iddetalle]
+                 cantidad        = $1,
+                 precio_total    = $2,
+                 precio_unitario = $3,
+                 kilogramos      = $4,
+                 modo_cantidad   = $5,
+                 aprobado        = true
+               WHERE idsolicitud_detalle = $6
+                 AND solicitud_producto_id = $7
+               RETURNING idsolicitud_detalle`,
+              [
+                cantidad,
+                precio_total,
+                precio_unitario ?? null,
+                kilogramos ?? null,
+                modo_cantidad,
+                iddetalle,
+                productoId,
+              ]
             );
+
+            if (resultadoDetalle.rowCount !== 1) {
+              throw new ErrorHttp(
+                400,
+                `El detalle ${iddetalle} no pertenece al producto ${productoId}`
+              );
+            }
           } else {
             await client.query(
               `INSERT INTO solicitud_detalle
-           (solicitud_producto_id, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad, aprobado)
-         VALUES ($1,$2,$3,$4,$5,$6,true)`,
-              [prod.idsolicitud_producto, cantidad, precio_total, precio_unitario ?? null, kilogramos ?? null, modo_cantidad]
+                 (solicitud_producto_id, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad, aprobado)
+               VALUES ($1,$2,$3,$4,$5,$6,true)`,
+              [productoId, cantidad, precio_total, precio_unitario ?? null, kilogramos ?? null, modo_cantidad]
             );
           }
         }
@@ -1082,34 +1332,109 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       }
 
       // ── Detalles ────────────────────────────────────────────────────────────
-      for (const det of (detalles as any[])) {
+      const {
+        detalles: detallesPlasticos,
+        idsExistentes: idsDetallesRecibidos,
+      } = validarDetallesPedido(detalles, String(productoId), true);
+
+      await client.query(
+        `DELETE FROM solicitud_detalle
+         WHERE solicitud_producto_id = $1
+           AND NOT (idsolicitud_detalle = ANY($2::int[]))`,
+        [productoId, idsDetallesRecibidos]
+      );
+
+      for (const det of detallesPlasticos) {
         const { iddetalle, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad } = det;
 
         if (iddetalle) {
-          await client.query(
+          const resultadoDetalle = await client.query(
             `UPDATE solicitud_detalle SET
                cantidad        = $1,
                precio_total    = $2,
                precio_unitario = $3,
                kilogramos      = $4,
-               modo_cantidad   = $5
-             WHERE idsolicitud_detalle = $6`,
-            [cantidad, precio_total, precio_unitario ?? null, kilogramos, modo_cantidad, iddetalle]
+               modo_cantidad   = $5,
+               aprobado        = true
+             WHERE idsolicitud_detalle = $6
+               AND solicitud_producto_id = $7
+             RETURNING idsolicitud_detalle`,
+            [
+              cantidad,
+              precio_total,
+              precio_unitario ?? null,
+              kilogramos ?? null,
+              modo_cantidad,
+              iddetalle,
+              productoId,
+            ]
           );
+
+          if (resultadoDetalle.rowCount !== 1) {
+            throw new ErrorHttp(
+              400,
+              `El detalle ${iddetalle} no pertenece al producto ${productoId}`
+            );
+          }
         } else {
           await client.query(
             `INSERT INTO solicitud_detalle
                (solicitud_producto_id, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad, aprobado)
-             VALUES ($1, $2, $3, $4, $5, $6, false)`,
-            [idsolicitud_producto, cantidad, precio_total, precio_unitario ?? null, kilogramos, modo_cantidad]
+             VALUES ($1, $2, $3, $4, $5, $6, true)`,
+            [productoId, cantidad, precio_total, precio_unitario ?? null, kilogramos ?? null, modo_cantidad]
           );
         }
       }
+
+      // Si la OP existe pero aún no inició, conserva el folio y actualiza sus
+      // metas con la configuración/cantidades que acaban de persistirse.
+      if (ordenRows.length > 0) {
+        const datosOrden = await prepararDatosOrden(client, productoId);
+        await client.query(
+          `UPDATE orden_produccion SET
+             repeticion_extrusion = $1,
+             repeticion_metro     = $2,
+             metros               = $3,
+             metros_merma         = $4,
+             ancho_bobina         = $5,
+             kilos                = $6,
+             kilos_merma          = $7,
+             pzas                 = $8,
+             pzas_merma           = $9,
+             repeticion_kidder    = $10,
+             repeticion_sicosa    = $11
+           WHERE idproduccion = $12`,
+          [
+            datosOrden.repeticion_extrusion,
+            datosOrden.repeticion_metro,
+            datosOrden.metros,
+            datosOrden.metros_merma,
+            datosOrden.ancho_bobina,
+            datosOrden.kilos,
+            datosOrden.kilos_merma,
+            datosOrden.pzas,
+            datosOrden.pzas_merma,
+            datosOrden.repeticion_kidder,
+            datosOrden.repeticion_sicosa,
+            ordenRows[0].idproduccion,
+          ]
+        );
+      }
     }
 
-    const { productos_nuevos = [] } = req.body;
+    for (const prod of (productosNuevos as any[])) {
+      const referenciaProductoNuevo = String(
+        prod?.nombre ??
+        prod?.idproducto_papel ??
+        prod?.configuracion_plastico_id ??
+        "nuevo",
+      );
+      const { detalles: detallesNuevos } = validarDetallesPedido(
+        prod?.detalles,
+        referenciaProductoNuevo,
+        false,
+      );
 
-    for (const prod of (productos_nuevos as any[])) {
       // ── Producto de PAPEL nuevo ─────────────────────────────────────────────
       if (esProductoPapel(prod)) {
         if (!prod.tintasId) {
@@ -1210,12 +1535,12 @@ export const actualizarPedido = async (req: Request, res: Response) => {
           );
         }
 
-        for (const det of (prod.detalles as any[])) {
+        for (const det of detallesNuevos) {
           const { cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad } = det;
           await client.query(
             `INSERT INTO solicitud_detalle
                (solicitud_producto_id, cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad, aprobado)
-             VALUES ($1,$2,$3,$4,$5,$6,false)`,
+             VALUES ($1,$2,$3,$4,$5,$6,true)`,
             [nuevoSpPapelId, cantidad, precio_total, precio_unitario ?? null, kilogramos ?? null, modo_cantidad]
           );
         }
@@ -1239,7 +1564,6 @@ export const actualizarPedido = async (req: Request, res: Response) => {
         idsuaje,
         id_color,
         id_medidatro,
-        detalles,
       } = prod;
 
       // Resolver IDs de tintas y caras desde sus cantidades
@@ -1300,13 +1624,13 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       }
 
       // Detalles del nuevo producto
-      for (const det of (detalles as any[])) {
+      for (const det of detallesNuevos) {
         const { cantidad, precio_total, precio_unitario, kilogramos, modo_cantidad } = det;
         await client.query(
           `INSERT INTO solicitud_detalle
          (solicitud_producto_id, cantidad, precio_total,
           precio_unitario, kilogramos, modo_cantidad, aprobado)
-       VALUES ($1,$2,$3,$4,$5,$6,false)`,
+       VALUES ($1,$2,$3,$4,$5,$6,true)`,
           [
             nuevoSpId,
             cantidad,
@@ -1321,14 +1645,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       console.log(`✅ Producto nuevo insertado: sp_id=${nuevoSpId} cfg=${configuracion_plastico_id}`);
     }
 
-    // ── Recalcular totales en ventas ──────────────────────────────────────────
-    const { rows: ventaRows } = await client.query(
-      `SELECT v.idventas, v.abono, s.sin_iva
-       FROM ventas v
-       JOIN solicitud s ON s.idsolicitud = v.solicitud_idsolicitud
-       WHERE v.solicitud_idsolicitud = $1`,
-      [solicitudId]
-    );
+    // ── Recalcular totales en la fila de ventas bloqueada ─────────────────────
     if (ventaRows.length > 0) {
       const ventaId = ventaRows[0].idventas;
       const abono = Number(ventaRows[0].abono ?? 0);
@@ -1396,14 +1713,39 @@ export const actualizarPedido = async (req: Request, res: Response) => {
       );
     }
 
+    const { rows: pedidoActualizadoRows } = await client.query(
+      `SELECT
+         s.idsolicitud,
+         s.no_pedido,
+         s.prioridad,
+         s.sin_iva,
+         v.subtotal,
+         v.iva,
+         v.total,
+         v.anticipo,
+         v.abono,
+         v.saldo
+       FROM solicitud s
+       LEFT JOIN ventas v ON v.solicitud_idsolicitud = s.idsolicitud
+       WHERE s.idsolicitud = $1`,
+      [solicitudId]
+    );
+
     await client.query("COMMIT");
     console.log(`✅ Pedido ${id} actualizado`);
-    return res.json({ message: `Pedido ${id} actualizado correctamente` });
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({
+      message: `Pedido ${id} actualizado correctamente`,
+      pedido: pedidoActualizadoRows[0] ?? null,
+    });
 
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    console.error("❌ ACTUALIZAR PEDIDO ERROR:", error.message);
-    return res.status(500).json({ error: "Error al actualizar pedido", detalle: error.message });
+  } catch (error: unknown) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // La transacción pudo no haber iniciado o ya estar cerrada.
+    }
+    return responderError(res, error, "Error al actualizar pedido");
   } finally {
     client.release();
   }

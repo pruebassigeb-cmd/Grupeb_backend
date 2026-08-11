@@ -27,29 +27,19 @@ router.use(
 // ==========================
 // RATE LIMITING
 // ==========================
-const loginLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max:      30,
-  message:  {
-    error: "Demasiados intentos de inicio de sesión. Intenta en 15 minutos.",
-  },
-  standardHeaders: true,
-  legacyHeaders:   false,
-  skip: (req) => process.env.NODE_ENV !== "production",
-});
-
 const verifyLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max:      20,
   message:  { error: "Demasiadas verificaciones. Intenta más tarde." },
   standardHeaders: true,
   legacyHeaders:   false,
+  skip: () => process.env.NODE_ENV !== "production",
 });
 
 // Rate limit para verificarOperador — más permisivo ya que
 // los operadores de planta lo usan frecuentemente
 const operadorLimiter = rateLimit({
-  windowMs: 2 * 60 * 1000, // 5 minutos
+  windowMs: 2 * 60 * 1000, // 2 minutos
   max:      20,
   message:  {
     error: "Demasiados intentos de verificación. Intenta en 5 minutos.",
@@ -64,7 +54,6 @@ const operadorLimiter = rateLimit({
 // ==========================
 router.post(
   "/login",
-  loginLimiter,
   preventSQLInjection,
   validateLogin,
   login

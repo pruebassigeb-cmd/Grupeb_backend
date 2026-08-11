@@ -161,16 +161,27 @@ async function getMedidasParaOrden(client: any, idsolicitudProducto: number) {
     FROM solicitud_producto sp
     JOIN configuracion_plastico cfg
         ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
-    LEFT JOIN solicitud_detalle sd
-        ON sd.solicitud_producto_id = sp.idsolicitud_producto
-        AND sd.aprobado = true
+    LEFT JOIN LATERAL (
+      SELECT
+        SUM(sd0.cantidad) AS cantidad,
+        SUM(sd0.kilogramos) AS kilogramos,
+        CASE
+          WHEN COUNT(*) > 0
+           AND BOOL_AND(COALESCE(sd0.modo_cantidad, 'unidad') = 'kilo')
+          THEN 'kilo'
+          ELSE 'unidad'
+        END AS modo_cantidad
+      FROM solicitud_detalle sd0
+      WHERE sd0.solicitud_producto_id = sp.idsolicitud_producto
+        AND sd0.aprobado = true
+    ) sd ON true
     WHERE sp.idsolicitud_producto = $1
     LIMIT 1
   `, [idsolicitudProducto]);
   return rows[0] ?? null;
 }
 
-async function prepararDatosOrden(client: any, idsolicitudProducto: number) {
+export async function prepararDatosOrden(client: any, idsolicitudProducto: number) {
   const medidas = await getMedidasParaOrden(client, idsolicitudProducto);
 
   if (!medidas) {

@@ -123,7 +123,7 @@ app.use(contextoAuditoria);
 
 // ==========================
 // RATE LIMITERS
-// El más específico va primero para tomar precedencia sobre el general
+// Limiters específicos primero. El general omite /auth/login para evitar doble conteo.
 // ==========================
 app.use("/api/cotizaciones/detalle", approvalLimiter);
 app.use("/api/cotizaciones/herramental", approvalLimiter);

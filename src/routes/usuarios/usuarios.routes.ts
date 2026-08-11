@@ -12,7 +12,13 @@ import {
   toggleActivoUsuario,
   getFotosINE,               // ← agregar este import
 } from "../../controllers/usuarios/usuarios.controller";
-import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
+import {
+  authMiddleware,
+  checkAnyPermiso,
+  checkPermiso,
+  PERMISO_EDITAR_DISENO,
+  PERMISO_ORDEN_DISENO,
+} from "../../middlewares/auth.middleware";
 import {
   validateCreateUsuario,
   validateUsuario,
@@ -62,9 +68,13 @@ router.use(generalLimiter);
 // RUTAS — las estáticas SIEMPRE antes de /:id
 // ==========================
 const PERMISO = "Crear/Editar/Eliminar Usuarios";
+const accesoFichaChat = checkAnyPermiso(
+  PERMISO_EDITAR_DISENO,
+  PERMISO_ORDEN_DISENO
+);
 
 router.get("/conductores/lista", authMiddleware, getConductores);
-router.get("/diseno/lista",      authMiddleware, getUsuariosDiseno);
+router.get("/diseno/lista", authMiddleware, accesoFichaChat, getUsuariosDiseno);
 
 router.post(
   "/",

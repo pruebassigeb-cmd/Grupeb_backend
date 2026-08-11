@@ -573,14 +573,28 @@ export const getUsuariosDiseno = async (req: Request, res: Response) => {
       SELECT u.idusuario, u.nombre, u.apellido, u.telefono, r.nombre AS rol
       FROM usuarios u
       JOIN roles r ON r.idroles = u.roles_idroles
-      WHERE
-        u.roles_idroles = 6
+      WHERE u.activo = true
+        AND u.eliminado_at IS NULL
+        AND (
+        lower(btrim(r.nombre)) IN ('ventas', 'diseño', 'diseno')
         OR EXISTS (
-          SELECT 1 FROM privilegios_has_usuarios phu
+          SELECT 1
+          FROM privilegios_has_usuarios phu
+          JOIN privilegios p
+            ON p.idprivilegios = phu.privilegios_idprivilegios
           WHERE phu.usuarios_idusuario = u.idusuario
-          AND phu.privilegios_idprivilegios = 22
+            AND p.privilegio IN ('Editar Diseño', 'Orden de Diseño')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM roles_privilegios rp
+          JOIN privilegios p
+            ON p.idprivilegios = rp.privilegios_idprivilegios
+          WHERE rp.roles_idroles = r.idroles
+            AND p.privilegio IN ('Editar Diseño', 'Orden de Diseño')
         )
         OR r.acceso_total = true
+        )
       ORDER BY u.nombre ASC
     `);
     res.json(rows);
