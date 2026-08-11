@@ -867,8 +867,18 @@ export const actualizarPedido = async (req: Request, res: Response) => {
            op.idsolicitud_producto,
            op.no_produccion,
            (
+             -- ✅ FIX: se quitó "op.proceso_actual IS NOT NULL" — ese campo
+             -- se inicializa al CREAR la orden (apunta al primer proceso de
+             -- la cascada, tanto en papel como en plástico), no cuando
+             -- alguien realmente empieza a trabajar en ella. Por eso
+             -- bloqueaba la edición de estructura de CUALQUIER pedido con
+             -- una OP recién creada, aunque estuviera 100% pendiente
+             -- (confirmado: 40 órdenes en este estado falso-positivo).
+             -- idestado_produccion_cat ya distingue correctamente
+             -- Pendiente/En proceso/Terminado para ambos materiales — se
+             -- actualiza a EN_PROCESO justo cuando se registra el primer
+             -- avance real (ver procesosController.ts y procesosPapel.controller.ts).
              COALESCE(op.idestado_produccion_cat, 1) <> 1
-             OR op.proceso_actual IS NOT NULL
              OR EXISTS (SELECT 1 FROM extrusion e WHERE e.orden_produccion_idproduccion = op.idproduccion)
              OR EXISTS (SELECT 1 FROM impresion i WHERE i.orden_produccion_idproduccion = op.idproduccion)
              OR EXISTS (SELECT 1 FROM bolseo b WHERE b.orden_produccion_idproduccion = op.idproduccion)
