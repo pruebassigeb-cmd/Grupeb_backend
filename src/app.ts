@@ -64,6 +64,7 @@ import pushRoutes from "./routes/push/push.routes";
 import whatsappRoutes from "./routes/whatsapp/whatsapp.routes";
 import catalogosPapelInsumoRoutes from "./routes/producto_papel/catalogosPapelInsumo.routes";
 import preciosAcabadosPapelRoutes from "./routes/producto_papel/precios_acabados_papel.routes";
+import mermaPapelRoutes from "./routes/producto_papel/mermaPapel.routes";
 import calculadorPrecioPapelRoutes from "./routes/producto_papel/calculadorPrecioPapel.routes";
 import cotizadorLibreClientesRoutes from "./routes/cotizadorLibre/cotizadorLibreClientes.routes";
 import cotizadorLibrePrecioRoutes from "./routes/cotizadorLibre/cotizadorLibrePrecio.routes";
@@ -71,7 +72,7 @@ import cotizadorLibreCatalogoRoutes from "./routes/cotizadorLibre/cotizadorLibre
 import cotizadorLibreCotizacionesRoutes from "./routes/cotizadorLibre/cotizadorLibreCotizaciones.routes";
 import { contextoAuditoria } from "./middlewares/auditoria";
 import cotizadorLibreCorreoRoutes from "./routes/cotizadorLibre/cotizadorLibreCorreo.routes";
-
+import cotizadorLibreLandingRoutes from "./routes/cotizadorLibre/cotizadorLibreLanding.routes";
 
 const app = express();
 
@@ -178,6 +179,7 @@ app.use("/api/foil", foilRoutes);
 app.use("/api/catalogos-papel", catalogosPapelRoutes);
 app.use("/api/productos-papel", productoPapelRoutes);
 app.use("/api/precios-acabados-papel", preciosAcabadosPapelRoutes);
+app.use("/api/merma-papel", mermaPapelRoutes);
 app.use("/api/calculador-precio-papel", calculadorPrecioPapelRoutes);
 app.use("/api", catTexturaRoutes);
 app.use("/api/expo", expoRoutes);
@@ -197,6 +199,8 @@ app.use("/api/cotizador-libre/catalogo", cotizadorLibreCatalogoRoutes);
 app.use("/api/cotizador-libre", cotizadorLibrePrecioRoutes);
 app.use("/api/cotizador-libre/cotizaciones", cotizadorLibreCotizacionesRoutes);
 app.use("/api/cotizador-libre/cotizaciones", cotizadorLibreCorreoRoutes);
+app.use("/api/cotizador-libre/landing", cotizadorLibreLandingRoutes);
+
 
 // ==========================
 // HEALTH CHECK

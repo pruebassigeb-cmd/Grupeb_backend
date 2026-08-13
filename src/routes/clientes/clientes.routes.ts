@@ -46,7 +46,7 @@ const writeLimiter = rateLimit({
 
 router.use(generalLimiter);
 
-const PERMISO = "Crear/Editar/Eliminar Clientes";
+const PERMISO = "clientes.gestionar";
 
 // ── GETs — cualquier autenticado ──────────────────────────
 router.get("/",       authMiddleware, getClientes);

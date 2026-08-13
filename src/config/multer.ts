@@ -27,6 +27,10 @@ export const CARPETAS = {
   // HS/AR y UV globales, color de asa). No confundir con catalogo_productos,
   // que es para las fotos de producto de expo.
   catalogos_admin: "catalogos-admin",
+  // ✅ NUEVO — imágenes de la landing tipo poster del Cotizador Interactivo
+  // (espacios editables por admin: líneas, bolsas, cajas, papel, etiquetas,
+  // listón, proyectos especiales). Ver cotizadorLibreLanding.controller.ts.
+  cotizador_interactivo: "cotizador-interactivo",
 } as const;
 
 export const SUBCARPETAS_PDF = [

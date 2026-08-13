@@ -4,6 +4,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import validator from "validator";
 import { getPresignedUrl } from "../../config/multer";
+import { PERMISO_ORDEN_DISENO } from "../../middlewares/auth.middleware";
 
 // ==========================
 // CONSTANTES DE SEGURIDAD
@@ -20,8 +21,10 @@ async function obtenerPrivilegios(
 ): Promise<string[]> {
   if (accesoTotal) return [];
 
+  // Fase 6: se selecciona clave, no privilegio (texto visible) — así un
+  // renombre desde la pantalla de Roles no le cambia el JWT a nadie.
   const { rows: custom } = await pool.query(
-    `SELECT p.privilegio
+    `SELECT p.clave
      FROM privilegios_has_usuarios pu
      JOIN privilegios p ON p.idprivilegios = pu.privilegios_idprivilegios
      WHERE pu.usuarios_idusuario = $1`,
@@ -29,7 +32,7 @@ async function obtenerPrivilegios(
   );
 
   const { rows: rolPrivs } = await pool.query(
-    `SELECT p.privilegio
+    `SELECT p.clave
      FROM roles_privilegios rp
      JOIN privilegios p ON p.idprivilegios = rp.privilegios_idprivilegios
      WHERE rp.roles_idroles = $1`,
@@ -41,8 +44,8 @@ async function obtenerPrivilegios(
   // base al asignar una casilla adicional.
   return [
     ...new Set([
-      ...rolPrivs.map((r: any) => r.privilegio),
-      ...custom.map((r: any) => r.privilegio),
+      ...rolPrivs.map((r: any) => r.clave),
+      ...custom.map((r: any) => r.clave),
     ]),
   ];
 }
@@ -54,7 +57,7 @@ async function tienePrivilegio(
   userId: number,
   rolId: number,
   accesoTotal: boolean,
-  privilegio: string
+  clave: string
 ): Promise<boolean> {
   if (accesoTotal) return true;
 
@@ -63,9 +66,9 @@ async function tienePrivilegio(
      FROM privilegios_has_usuarios pu
      JOIN privilegios p ON p.idprivilegios = pu.privilegios_idprivilegios
      WHERE pu.usuarios_idusuario = $1
-       AND p.privilegio = $2
+       AND p.clave = $2
      LIMIT 1`,
-    [userId, privilegio]
+    [userId, clave]
   );
 
   if (custom.length > 0) return true;
@@ -75,9 +78,9 @@ async function tienePrivilegio(
      FROM roles_privilegios rp
      JOIN privilegios p ON p.idprivilegios = rp.privilegios_idprivilegios
      WHERE rp.roles_idroles = $1
-       AND p.privilegio = $2
+       AND p.clave = $2
      LIMIT 1`,
-    [rolId, privilegio]
+    [rolId, clave]
   );
 
   return rolPrivs.length > 0;
@@ -260,22 +263,40 @@ export const verifyToken = (req: Request, res: Response) => {
 // ==========================
 export const verificarOperador = async (req: Request, res: Response) => {
   try {
-    const { correo, codigo, proceso } = req.body;
-
-    const PROCESO_PRIVILEGIO: Record<string, string> = {
-      extrusion:    "Operar Extrusión",
-      impresion:    "Operar Impresión",
-      bolseo:       "Operar Bolseo",
-      asa_flexible: "Operar Asa Flexible",
-      orden_diseno: "Orden de Diseño",
-    };
+    const { correo, codigo, proceso, idproduccion } = req.body;
 
     if (!correo || !codigo || !proceso) {
       return res.status(400).json({ error: "Correo, código y proceso son requeridos" });
     }
 
-    if (!PROCESO_PRIVILEGIO[proceso]) {
-      return res.status(400).json({ error: "Proceso inválido" });
+    // idproduccion solo aplica a procesos de producción — "orden_diseno" no
+    // tiene uno (es una orden de diseño, no de producción).
+    if (proceso !== "orden_diseno" && !Number.isInteger(Number(idproduccion))) {
+      return res.status(400).json({ error: "idproduccion es requerido para procesos de producción" });
+    }
+
+    // "orden_diseno" no es un proceso de producción (no vive en proceso_cat)
+    // — se queda como caso especial. Todo lo demás (plástico y papel) se
+    // resuelve contra proceso_cat, que desde la fase 0 es la única fuente
+    // del mapeo proceso→privilegio (evita repetirlo hardcodeado en cada
+    // repo, y evita que un renombre de privilegio deje esto desincronizado
+    // como pasaba con el mapa fijo que tenía esta función antes).
+    let privilegioRequerido: string;
+    if (proceso === "orden_diseno") {
+      privilegioRequerido = PERMISO_ORDEN_DISENO;
+    } else {
+      const procesoResult = await pool.query(
+        `SELECT p.clave
+         FROM proceso_cat pc
+         JOIN privilegios p ON p.idprivilegios = pc.idprivilegio
+         WHERE (pc.tabla = $1 OR pc.nombre_proceso = $1) AND pc.activo = true
+         LIMIT 1`,
+        [proceso]
+      );
+      if (procesoResult.rows.length === 0) {
+        return res.status(400).json({ error: "Proceso inválido" });
+      }
+      privilegioRequerido = procesoResult.rows[0].clave;
     }
 
     if (!/^\d{4,8}$/.test(codigo)) {
@@ -318,7 +339,6 @@ export const verificarOperador = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    const privilegioRequerido = PROCESO_PRIVILEGIO[proceso];
     const autorizado = await tienePrivilegio(
       usuario.idusuario,
       usuario.roles_idroles,
@@ -335,6 +355,29 @@ export const verificarOperador = async (req: Request, res: Response) => {
 
     console.log(`✅ Operador verificado: ${usuario.nombre} → ${proceso}`);
 
+    // Token de proceso (fase 5): de vida corta y con alcance acotado a
+    // {operador, proceso, idproduccion} — lo exige X-Proceso-Token en las
+    // escrituras de procesos-papel/procesos, para que la bitácora registre
+    // al operador real y no a la cuenta compartida de Planta. Null para
+    // orden_diseno, que queda fuera del alcance de esta fase (no es una
+    // acción de producción — ver docs/roles-privilegios-plan.md §3.5).
+    let tokenProceso: string | null = null;
+    if (proceso !== "orden_diseno") {
+      const jwtSecret = process.env.JWT_SECRET;
+      if (jwtSecret) {
+        tokenProceso = jwt.sign(
+          {
+            tipo:        "proceso",
+            operadorId:  usuario.idusuario,
+            proceso,
+            idproduccion: Number(idproduccion),
+          },
+          jwtSecret,
+          { expiresIn: "10m" }
+        );
+      }
+    }
+
     return res.json({
       autorizado: true,
       operador: {
@@ -342,6 +385,7 @@ export const verificarOperador = async (req: Request, res: Response) => {
         nombre:   usuario.nombre,
         apellido: usuario.apellido,
       },
+      tokenProceso,
     });
   } catch (error: any) {
     console.error("❌ VERIFICAR OPERADOR ERROR:", error.message);

@@ -16,25 +16,25 @@ router.use(authMiddleware);
 // migración de Fase 1.
 router.get(
   "/tipos",
-  checkPermiso("Cotizador Libre - Ver Catalogo"),
+  checkPermiso("externos.cotizador_libre.ver_catalogo"),
   getTiposCotizadorLibre
 );
 
 router.get(
   "/medidas",
-  checkPermiso("Cotizador Libre - Ver Catalogo"),
+  checkPermiso("externos.cotizador_libre.ver_catalogo"),
   getMedidasCotizadorLibre
 );
 
 router.get(
   "/papel/producto/:idproducto_papel",
-  checkPermiso("Cotizador Libre - Ver Catalogo"),
+  checkPermiso("externos.cotizador_libre.ver_catalogo"),
   getDetalleProductoPapelCotizadorLibre
 );
 
 router.get(
   "/plastico/producto/:idconfiguracion_plastico",
-  checkPermiso("Cotizador Libre - Ver Catalogo"),
+  checkPermiso("externos.cotizador_libre.ver_catalogo"),
   getDetalleProductoPlasticoCotizadorLibre
 );
 

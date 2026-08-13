@@ -61,7 +61,7 @@ export const TABLAS_AUDITABLES: Record<string, TablaAuditable> = {
     pk: "idventa_pago",
     etiqueta: "Pago",
     modo: "principal",
-    permiso: "Editar Anticipo y Liquidacion",
+    permiso: "Editar Anticipo y Liquidación",
     campos: {
       monto: "Monto",
       moneda: "Moneda",
@@ -79,7 +79,7 @@ export const TABLAS_AUDITABLES: Record<string, TablaAuditable> = {
     pk: "idventas",
     etiqueta: "Venta",
     modo: "principal",
-    permiso: "Editar Anticipo y Liquidacion",
+    permiso: "Editar Anticipo y Liquidación",
     campos: {
       subtotal: "Subtotal",
       iva: "IVA",

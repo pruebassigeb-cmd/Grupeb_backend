@@ -8,6 +8,10 @@ import {
   usuarioTienePermiso,
 } from "../../middlewares/auth.middleware";
 import { getPresignedUrl } from "../../config/multer";
+// ── MERMA DE PAPEL: enganche de Fase 6 (ver merma-papel-contexto.md) ──
+// Congela la merma tolerada justo después de crear la orden de producción.
+// No hace nada si la orden es de plástico.
+import { congelarMermaSiEsPapel } from "../../services/producto_papel/merma.service";
 
 // ============================================================
 // HELPERS
@@ -922,6 +926,24 @@ export const aprobarOrdenDiseno = async (req: AuthRequest, res: Response) => {
               ? `✅ Orden ${noProduccion} creada para PAPEL desde aprobación de orden de diseño`
               : `✅ Orden ${noProduccion} creada desde aprobación de orden de diseño`
           );
+
+          // ── MERMA DE PAPEL (Fase 6) ──
+          const { rows: idOrdenRows } = await client.query(
+            `SELECT idproduccion FROM orden_produccion WHERE idsolicitud_producto = $1`,
+            [solicitudProductoId]
+          );
+          const idproduccionNueva = idOrdenRows[0]?.idproduccion;
+
+          if (idproduccionNueva) {
+            const { aplico } = await congelarMermaSiEsPapel(
+              client,
+              Number(idproduccionNueva),
+              usuarioId
+            );
+            if (aplico) {
+              console.log(`📐 Merma de papel congelada para la orden ${noProduccion}`);
+            }
+          }
         } else {
           ordenGenerada = true;
         }

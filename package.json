@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "ts-node-dev --respawn -r dotenv/config src/server.ts",
     "build": "tsc",
-    "start": "node -r dotenv/config dist/server.js"
+    "start": "node -r dotenv/config dist/server.js",
+    "verificar-permisos": "ts-node scripts/verificarCoberturaPermisos.ts"
   },
   "keywords": [],
   "author": "",

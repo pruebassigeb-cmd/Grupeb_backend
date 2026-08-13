@@ -56,7 +56,7 @@ router.use(generalLimiter);
 
 // Mismo permiso que "Dar de alta productos" — ajusta si prefieres un permiso
 // dedicado para administrar catálogos.
-const PERMISO = "Dar de alta productos";
+const PERMISO = "productos.plastico.gestionar";
 
 // ── Tipo de producto ─────────────────────────────────────────────────────
 router.get("/tipos-producto", authMiddleware, getTiposProductoAdmin);

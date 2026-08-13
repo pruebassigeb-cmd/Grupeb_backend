@@ -35,19 +35,34 @@ export const contextoAuditoria = (
   _res: Response,
   next: NextFunction
 ): void => {
-  const usuarioId = (req as any).user?.id ?? null;
-
   const contexto: ContextoAuditoria = {
     endpoint: req.originalUrl,
     metodo: req.method,
     ip: req.ip,
   };
 
+  // req.tx() se llama DESPUÉS de este middleware, así que resuelve el
+  // usuario en ese momento (no aquí) — de otro modo un middleware
+  // posterior en la cadena (ej. resolverOperadorProceso, fase 5) que
+  // ajuste req.operadorId nunca se reflejaría, porque el usuarioId ya
+  // habría quedado fijo en este closure.
   (req as any).tx = <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> =>
-    conAuditoria(usuarioId, fn, contexto);
+    conAuditoria(usuarioIdParaAuditoria(req), fn, contexto);
 
   next();
 };
+
+/**
+ * A quién se le atribuye la escritura. Por default el usuario de la sesión
+ * (req.user.id) — pero si resolverOperadorProceso (fase 5, ver
+ * middlewares/procesoToken.middleware.ts) validó un token de proceso, usa
+ * ese operador real en su lugar. Así la bitácora de una acción hecha por la
+ * cuenta compartida de Planta, verificada por un operador puntual, queda a
+ * nombre del operador y no de la cuenta compartida.
+ */
+export function usuarioIdParaAuditoria(req: Request): number | null {
+  return (req as any).operadorId ?? (req as any).user?.id ?? null;
+}
 
 /**
  * Abre una transacción, declara quién la ejecuta y corre el callback.
@@ -108,7 +123,7 @@ export async function conAuditoria<T>(
  * un `return` temprano devolvería al pool un client con transacción abierta.
  */
 export async function iniciarTx(req: Request, client: PoolClient): Promise<void> {
-  await iniciarTxUsuario(client, (req as any).user?.id ?? null, {
+  await iniciarTxUsuario(client, usuarioIdParaAuditoria(req), {
     endpoint: req.originalUrl,
     metodo: req.method,
     ip: req.ip,
@@ -135,7 +150,7 @@ export const qAudit =
   (req: Request) =>
   (text: string, params?: any[]) =>
     conAuditoria(
-      (req as any).user?.id ?? null,
+      usuarioIdParaAuditoria(req),
       (client) => client.query(text, params),
       { endpoint: req.originalUrl, metodo: req.method, ip: req.ip }
     );

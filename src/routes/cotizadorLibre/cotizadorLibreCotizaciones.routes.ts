@@ -9,7 +9,7 @@ router.use(authMiddleware);
 
 router.post(
   "/",
-  checkPermiso("Cotizador Libre - Crear Cotizacion"),
+  checkPermiso("externos.cotizador_libre.crear_cotizacion"),
   crearCotizacionCotizadorLibre
 );
 

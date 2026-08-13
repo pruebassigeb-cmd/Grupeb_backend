@@ -32,7 +32,9 @@ const limiter = rateLimit({
 
 router.use(limiter);
 
-const PERMISO = "Crear/Editar/Eliminar Pedidos";
+// Split en la fase 0: "Eliminar Pedido" es privilegio propio desde entonces
+// (antes solo lo exigía el código, sin existir en la tabla — ver P3 del plan).
+const PERMISO = "pedido.crear_editar";
 
 // ── GET — cualquier autenticado ───────────────────────────
 router.get("/", authMiddleware, getPedidos);
@@ -54,7 +56,7 @@ router.put(
 router.delete(
   "/:id",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkPermiso("pedido.eliminar"),
   eliminarPedido
 );
 
@@ -68,7 +70,7 @@ router.put(
 router.delete(
   "/:noPedido/completo",
   authMiddleware,
-  checkPermiso("Eliminar Pedido"),
+  checkPermiso("pedido.eliminar"),
   eliminarPedidoCompleto
 );
 

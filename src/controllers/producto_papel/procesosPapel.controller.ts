@@ -226,7 +226,7 @@ const CLAVE_MAQUINA_POR_TABLA: Record<string, string> = {
  * Esto es porque en papel el cliente decide proceso por proceso al
  * cotizar o pedir, no es una propiedad fija del tipo de producto.
  */
-async function getProcesosDeOrdenPapel(client: any, idproduccion: number): Promise<number[]> {
+export async function getProcesosDeOrdenPapel(client: any, idproduccion: number): Promise<number[]> {
   const { claveAId } = await getMapaProcesoCatPapel();
 
   const { rows } = await client.query(
@@ -297,6 +297,40 @@ async function getProcesosDeOrdenPapel(client: any, idproduccion: number): Promi
   return ORDEN_CLAVES_PAPEL
     .filter((clave) => clavesAplican.includes(clave))
     .map((clave) => claveAId.get(clave)!);
+}
+
+/**
+ * Total de tintas (frente + dentro/reverso) de la orden — hasta 4 de cada
+ * lado, 8 en total. Usado por merma.service.ts para multiplicar la merma de
+ * Impresión por la cantidad de tintas (ver R9 en ese archivo). Consulta
+ * separada de getProcesosDeOrdenPapel a propósito: esa función la llaman 7
+ * sitios que esperan number[], cambiar su forma de retorno los afectaría a
+ * todos para un dato que solo necesita merma.
+ */
+export async function getTintasDeOrdenPapel(
+  client: any,
+  idproduccion: number
+): Promise<{ tintasFrente: number; tintasDentro: number }> {
+  const { rows } = await client.query(
+    `
+    SELECT
+      t.cantidad       AS tintas,
+      tdentro.cantidad AS tintas_dentro
+    FROM orden_produccion op
+    JOIN solicitud_producto sp ON sp.idsolicitud_producto = op.idsolicitud_producto
+    JOIN solicitud_producto_papel spp ON spp.idsolicitud_producto = sp.idsolicitud_producto
+    LEFT JOIN tintas t ON t.idtintas = sp.tintas_idtintas
+    LEFT JOIN tintas tdentro ON tdentro.idtintas = spp.tintas_dentro_idtintas
+    WHERE op.idproduccion = $1
+    `,
+    [idproduccion]
+  );
+
+  const r = rows[0];
+  return {
+    tintasFrente: Number(r?.tintas) || 0,
+    tintasDentro: Number(r?.tintas_dentro) || 0,
+  };
 }
 
 async function getMaquinaElegidaPapel(

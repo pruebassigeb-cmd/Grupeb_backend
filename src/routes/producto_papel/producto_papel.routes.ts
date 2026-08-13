@@ -36,7 +36,7 @@ const limiter = rateLimit({
 
 router.use(limiter);
 
-const PERMISO = "Gestionar Productos Papel";
+const PERMISO = "catalogos.productos_papel.gestionar";
 
 // ── GET — cualquier autenticado ───────────────────────────────────────────
 router.get("/", authMiddleware, getProductosPapel);

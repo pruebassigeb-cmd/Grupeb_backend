@@ -5,17 +5,20 @@ import {
   desactivarCatalogoInsumo,
   reactivarCatalogoInsumo,
 } from "../../controllers/catalogos_papel/catalogosPapelInsumo.controller";
-// import { authMiddleware } from "../../middlewares/auth.middleware"; // agrega si tus otras rutas de catálogos lo usan
+import { authMiddleware, checkAnyPermiso, checkPermiso } from "../../middlewares/auth.middleware";
+
+const PERMISO = "catalogos.productos_papel_insumo.gestionar";
+const VER_O_GESTIONAR = checkAnyPermiso("catalogos.ver", PERMISO);
+const GESTIONAR = checkPermiso(PERMISO);
 
 const router = Router();
-
-// router.use(authMiddleware);
+router.use(authMiddleware);
 
 // :catKey ∈ tipo_papel | pegamento | laminado | sacabocados | perforado | matrix
-router.get("/:catKey", listarCatalogoInsumo);
-router.post("/:catKey", crearCatalogoInsumo);
-router.patch("/:catKey/:id/reactivar", reactivarCatalogoInsumo); // antes de la genérica :id
-router.patch("/:catKey/:id", desactivarCatalogoInsumo);
+router.get("/:catKey", VER_O_GESTIONAR, listarCatalogoInsumo);
+router.post("/:catKey", GESTIONAR, crearCatalogoInsumo);
+router.patch("/:catKey/:id/reactivar", GESTIONAR, reactivarCatalogoInsumo); // antes de la genérica :id
+router.patch("/:catKey/:id", GESTIONAR, desactivarCatalogoInsumo);
 
 export default router;
 

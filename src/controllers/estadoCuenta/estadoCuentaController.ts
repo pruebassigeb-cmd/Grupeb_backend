@@ -147,30 +147,22 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
     // ════════════════════════════════════════════════════════════════════
     // RESOLVER "cantidad_real" — bifurca por tipo_material
     // ════════════════════════════════════════════════════════════════════
-    // Plástico: igual que antes (bolseo / asa_flexible).
-    // Papel: TODAVÍA NO tiene proceso de producción propio (bultos,
-    // parcialidades, etc. se definirán en la siguiente etapa). Por
-    // indicación explícita, el Estado de Cuenta para papel debe esperar
-    // a que ese proceso exista — así que se marca como "producción
-    // pendiente de definir" en lugar de:
-    //   a) excluir el producto silenciosamente (bug anterior), o
-    //   b) inventar una regla de bultos que aún no existe.
-    // Esto NO bloquea el estado de cuenta de los demás productos
-    // (plástico) del mismo pedido.
+    // Papel YA tiene proceso de producción propio (Fase 6-7 del sistema de
+    // merma): cada orden de papel corre su cascada de procesos y termina en
+    // empaque_papel.bolsas_entregadas_final, la salida real de la orden —
+    // mismo rol que bolseo/asa_flexible cumplen para plástico.
+    //
+    // La comparación de cobro es SIEMPRE contra lo que pidió el cliente
+    // (cantidad_original), nunca contra cantidad_a_producir (que ya incluye
+    // merma) — la merma es el margen de piezas de más que se manda a
+    // producir para poder cumplir el pedido, no una base de cobro. Si
+    // salieron piezas de más se cobra la diferencia; si salieron de menos,
+    // se descuenta; si salieron las correctas, no hay ajuste. Ver R11 en
+    // merma-papel-contexto.md.
     // ════════════════════════════════════════════════════════════════════
     const productosConReal = await Promise.all(prodRows.map(async (prod: any) => {
       const esPapel  = prod.tipo_material === "papel";
       const modoKilo = prod.modo_cantidad === "kilo";
-
-      if (esPapel) {
-        // Papel: producción propia aún no definida (ver nota arriba).
-        return {
-          ...prod,
-          cantidad_real: null,
-          no_produccion: null,
-          motivo_null:   "papel_sin_proceso_produccion",
-        };
-      }
 
       const { rows: opRows } = await client.query(`
         SELECT op.idproduccion, op.no_produccion
@@ -184,6 +176,23 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       }
 
       const { idproduccion, no_produccion } = opRows[0];
+
+      if (esPapel) {
+        // Papel siempre se cuenta por piezas (ver más abajo, en el cálculo
+        // de precio, el mismo criterio ya establecido en este archivo).
+        const { rows: empaqueRows } = await client.query(`
+          SELECT bolsas_entregadas_final AS cantidad_real
+          FROM empaque_papel
+          WHERE orden_produccion_idproduccion = $1
+          LIMIT 1
+        `, [idproduccion]);
+
+        const cantidad_real = empaqueRows[0]?.cantidad_real ?? null;
+        return {
+          ...prod, cantidad_real, no_produccion,
+          motivo_null: cantidad_real === null ? "empaque_incompleto" : null,
+        };
+      }
 
       if (prod.tiene_asa_flexible) {
         const campoCantidad = modoKilo ? "kilos_finales" : "pzas_finales";
@@ -216,21 +225,18 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
       }
     }));
 
-    // ── Separamos: productos de papel (siempre "incompletos" por ahora)
-    // de los de plástico realmente incompletos ──
-    const incompletosPlastico = productosConReal.filter(
-      p => p.cantidad_real === null && p.tipo_material !== "papel"
-    );
-    const pendientesPapel = productosConReal.filter(
-      p => p.tipo_material === "papel"
-    );
+    // ── Producción incompleta bloquea el estado de cuenta, sin importar
+    // el material — antes papel quedaba fuera de este filtro a propósito
+    // porque no tenía de dónde sacar cantidad_real; ahora sí lo tiene. ──
+    const incompletos = productosConReal.filter(p => p.cantidad_real === null);
+    const pendientesPapel = incompletos.filter(p => p.tipo_material === "papel");
 
-    if (incompletosPlastico.length > 0) {
+    if (incompletos.length > 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({
         error: "Producción incompleta",
-        detalle: `${incompletosPlastico.length} producto(s) aún no tienen cantidad final de producción.`,
-        productos_incompletos: incompletosPlastico.map(p => ({
+        detalle: `${incompletos.length} producto(s) aún no tienen cantidad final de producción.`,
+        productos_incompletos: incompletos.map(p => ({
           idsolicitud_producto: p.idsolicitud_producto,
           no_produccion:        p.no_produccion,
           motivo:               p.motivo_null,
@@ -257,30 +263,46 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
         ? Number(prod.herramental_precio)
         : null;
 
-      // ── PAPEL: sin recálculo de producción real. El precio aprobado
-      // en la cotización/pedido (precio_total_original) ES el precio
-      // real, porque papel aún no tiene proceso de producción propio
-      // que pueda generar variación (merma, piezas reales, etc.).
+      // ── PAPEL: mismo cálculo que plástico (R11 en merma-papel-contexto.md).
+      // La comparación es SIEMPRE contra lo pedido (cantidad_original), no
+      // contra lo que se mandó a producir con merma incluida — la merma es
+      // el margen que se produce de más para poder cumplir, no una base de
+      // cobro. Si sale de más se cobra, si sale de menos se descuenta, si
+      // sale igual no hay ajuste.
       //
-      // IMPORTANTE: papel SIEMPRE se cuenta por piezas/unidades, nunca
-      // por kilogramos. modo_cantidad/kilogramos en solicitud_detalle
-      // es una columna agnóstica de material (la usa también plástico),
-      // así que aquí se ignora deliberadamente cualquier valor de
-      // modo_cantidad/kilogramos para papel y se fuerza a "unidad". ──
+      // IMPORTANTE: papel SIEMPRE se cuenta por piezas/unidades, nunca por
+      // kilogramos — a diferencia de plástico, aquí no hay bifurcación por
+      // modo_cantidad/kilogramos, se ignora deliberadamente y se fuerza a
+      // "unidad". Por eso baseOriginal no necesita el ternario que sí
+      // necesita plástico más abajo. ──
       if (esPapel) {
-        nuevoSubtotal += precioOrig;
+        const baseOriginal = Number(prod.cantidad_original);
+        const cantReal     = Number(prod.cantidad_real);
+
+        const precio_unitario_original = baseOriginal > 0
+          ? precioOrig / baseOriginal
+          : 0;
+
+        const precio_total_real = Number((precio_unitario_original * cantReal).toFixed(2));
+
+        nuevoSubtotal += precio_total_real;
         if (herrPrecio != null) {
           nuevoSubtotal    += herrPrecio;
           herramentalTotal += herrPrecio;
         }
 
-        const cantidadPiezas = Number(prod.cantidad_original);
+        console.log(
+          `📦 [papel ${prod.idsolicitud_producto}] baseOrig=${baseOriginal} | ` +
+          `precioOrig=${precioOrig} | precioUnit=${precio_unitario_original.toFixed(4)} | ` +
+          `cantReal=${cantReal} | precio_total_real=${precio_total_real} | ` +
+          `herramental=${herrPrecio ?? 0}`
+        );
 
         return {
           idsolicitud_producto:    prod.idsolicitud_producto,
           tipo_material:           "papel",
-          no_produccion:           null,
-          produccion_pendiente:    true, // ← bandera para el frontend
+          no_produccion:           prod.no_produccion,
+          produccion_pendiente:    false, // si seguía pendiente, ya se bloqueó arriba
           nombre,
           medida:                  prod.papel_medida ?? null,
           material:                prod.papel_grupo_descripcion ?? null,
@@ -288,15 +310,14 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
           tintas:                  prod.tintas_num,
           caras:                   prod.caras_num,
           modo_cantidad:           "unidad", // ← forzado: papel nunca es por kilo
-          cantidad_original:       cantidadPiezas,
+          cantidad_original:       baseOriginal,
           precio_total_original:   precioOrig,
-          // Para papel, "real" = "original" (precio ya fijo, sin merma)
-          cantidad_real:           cantidadPiezas,
+          cantidad_real:           cantReal,
           peso_kg_real:            null, // ← papel no maneja peso, solo piezas
-          precio_unitario_real:    null,
-          precio_total_real:       precioOrig,
-          diferencia_piezas:       0,
-          diferencia_precio:       0,
+          precio_unitario_real:    Number(precio_unitario_original.toFixed(6)),
+          precio_total_real,
+          diferencia_piezas:       cantReal - baseOriginal,
+          diferencia_precio:       Number((precio_total_real - precioOrig).toFixed(2)),
           herramental_descripcion: prod.herramental_descripcion ?? null,
           herramental_precio:      prod.herramental_precio != null ? Number(prod.herramental_precio) : null,
           herramental_aprobado:    prod.herramental_aprobado ?? null,
@@ -422,12 +443,16 @@ export const getEstadoCuenta = async (req: Request, res: Response) => {
 
       productos,
 
-      // ── Bandera a nivel pedido: avisa al frontend que hay productos
-      // de papel cuya "producción real" aún no se puede calcular porque
-      // el proceso de producción de papel no está implementado todavía.
-      // El subtotal/total/saldo de este endpoint YA incluye el precio
-      // cotizado de esos productos (no los excluye), solo no puede
-      // mostrar una "cantidad real" distinta a la original. ──
+      // ── Bandera a nivel pedido, heredada del diseño anterior.
+      // ⚠️ Con el sistema de merma (Fase 8), papel ya NO se reporta como
+      // "pendiente pero con estimado": si su producción está incompleta,
+      // el endpoint entero responde 400 más arriba (mismo criterio que
+      // plástico) y nunca llega hasta aquí. Por eso estos dos campos
+      // SIEMPRE llegan en false/0 desde ahora — quedan vigentes solo por
+      // compatibilidad con el frontend, que puede seguir leyéndolos sin
+      // romperse, pero ya no aportan información nueva. Si el frontend
+      // tenía una rama de UI para "papel pendiente, mostrando estimado",
+      // esa rama ya no se activa nunca y se puede retirar. ──
       tiene_productos_papel_pendientes: pendientesPapel.length > 0,
       productos_papel_pendientes_count: pendientesPapel.length,
 

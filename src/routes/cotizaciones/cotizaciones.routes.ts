@@ -17,6 +17,7 @@ import { getMedidasTroquel } from "../../controllers/cotizaciones/medidasTroquel
 import {
   authMiddleware,
   checkPermiso,
+  checkAnyPermiso,
   type AuthRequest,
 } from "../../middlewares/auth.middleware";
 import { preventSQLInjection } from "../../middlewares/validation.middleware";
@@ -51,8 +52,14 @@ const writeLimiter = rateLimit({
 
 router.use(generalLimiter);
 
-const PERMISO         = "Crear/Editar/Aprobar/Rechazar Cotizaciones";
-const PERMISO_URGENTE = "Orden Urgente";
+// Split en la fase 0 (2026-08-12): el privilegio monolítico original se
+// dividió en crear/editar y aprobar/rechazar. A todo el que ya tenía el
+// viejo se le dieron los dos nuevos automáticamente, así que esto no le
+// quita capacidad a nadie — solo permite, de ahora en más, un rol que
+// apruebe sin poder crear/editar.
+const PERMISO_CREAR_EDITAR = "cotizacion.crear_editar";
+const PERMISO_APROBAR      = "cotizacion.aprobar";
+const PERMISO_URGENTE      = "cotizacion.urgente";
 
 // Middleware inline — valida "Orden Urgente" solo si prioridad = true en un pedido
 const checkOrdenUrgente = (
@@ -88,17 +95,19 @@ router.get("/medidas-troquel", authMiddleware, getMedidasTroquel);
 router.post(
   "/",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkPermiso(PERMISO_CREAR_EDITAR),
   checkOrdenUrgente,      // ← valida prioridad solo si tipo=pedido y prioridad=true
   writeLimiter,
   preventSQLInjection,
   crearCotizacion
 );
 
+// Cambia el estado administrativo — incluye transiciones de
+// aprobado/rechazado, por eso acepta cualquiera de los dos privilegios.
 router.patch(
   "/:id/estado",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkAnyPermiso(PERMISO_CREAR_EDITAR, PERMISO_APROBAR),
   writeLimiter,
   preventSQLInjection,
   actualizarEstadoCotizacion
@@ -108,7 +117,7 @@ router.patch(
 router.patch(
   "/detalle/:idDetalle/aprobar",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkPermiso(PERMISO_APROBAR),
   writeLimiter,
   aprobarDetalle
 );
@@ -116,7 +125,7 @@ router.patch(
 router.patch(
   "/herramental/:idH/aprobar",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkPermiso(PERMISO_APROBAR),
   writeLimiter,
   aprobarHerramental
 );
@@ -124,7 +133,7 @@ router.patch(
 router.patch(
   "/producto/:idP/observacion",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkPermiso(PERMISO_CREAR_EDITAR),
   writeLimiter,
   preventSQLInjection,
   actualizarObservacion
@@ -133,7 +142,7 @@ router.patch(
 router.delete(
   "/:id",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkPermiso(PERMISO_CREAR_EDITAR),
   writeLimiter,
   eliminarCotizacion
 );
@@ -141,7 +150,7 @@ router.delete(
 router.put(
   "/:id/moneda",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkPermiso(PERMISO_CREAR_EDITAR),
   writeLimiter,
   cambiarMonedaCotizacion
 );
@@ -154,7 +163,7 @@ router.post(
 router.put(
   "/:id",
   authMiddleware,
-  checkPermiso(PERMISO),
+  checkPermiso(PERMISO_CREAR_EDITAR),
   writeLimiter,
   preventSQLInjection,
   actualizarCotizacionProductos

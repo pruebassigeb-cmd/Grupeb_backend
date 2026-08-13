@@ -12,11 +12,11 @@
 // ─────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
 import { getTexturas } from "../../controllers/producto_papel/cattextura.controller";
-// import { authMiddleware } from "../middlewares/auth"; // si tus catálogos van protegidos
+import { authMiddleware, checkAnyPermiso } from "../../middlewares/auth.middleware";
 
 const router = Router();
 
-router.get("/cat-textura", /* authMiddleware, */ getTexturas);
+router.get("/cat-textura", authMiddleware, checkAnyPermiso("catalogos.ver", "catalogos.gestionar"), getTexturas);
 
 export default router;
 

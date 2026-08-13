@@ -44,7 +44,7 @@ const limiter = rateLimit({
 
 router.use(limiter);
 
-const PERMISO = "Gestionar Catálogos Papel";
+const PERMISO = "catalogos.productos_papel.gestionar"; // fase 6: mismo destino que "Gestionar Productos Papel" (producto_papel.routes.ts) — este archivo usaba un texto distinto ("Gestionar Catálogos Papel") que nunca tuvo fila propia en la tabla (fantasma no detectado en la fase 0)
 
 // ── GET — cualquier autenticado ───────────────────────────────────────────
 router.get("/", authMiddleware, getCatalogosPapel);

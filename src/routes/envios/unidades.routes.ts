@@ -17,7 +17,10 @@ const writeLimiter   = rateLimit({ windowMs: 15 * 60 * 1000, max: 30,  standardH
 
 router.use(generalLimiter);
 
-const PERMISO = "Crear/Editar/Eliminar Clientes"; // reutilizamos permiso admin
+// Fase 6: antes reutilizaba "Crear/Editar/Eliminar Clientes" como comodín
+// (sin relación real con unidades de reparto) — ya existe un privilegio
+// propio para esto desde la fase 0, se corrige de paso al migrar a clave.
+const PERMISO = "envios.paqueterias_unidades.gestionar";
 
 router.get("/",    authMiddleware, getUnidades);
 router.get("/:id", authMiddleware, validateId, getUnidadById);

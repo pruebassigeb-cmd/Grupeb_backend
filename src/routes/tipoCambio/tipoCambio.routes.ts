@@ -7,7 +7,7 @@ import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware"
 
 const router = Router();
 
-const PERMISO = "Modificar Catalogo de precios";
+const PERMISO = "precios.gestionar";
 
 // ── GET — cualquier autenticado (precargar formularios de cotización/pago) ──
 router.get("/actual", authMiddleware, getTipoCambioActual);

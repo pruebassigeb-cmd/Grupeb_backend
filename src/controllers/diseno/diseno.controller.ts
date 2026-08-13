@@ -1,6 +1,8 @@
 import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
+import { congelarMermaSiEsPapel } from "../../services/producto_papel/merma.service";
+import { AuthRequest } from "../../middlewares/auth.middleware";
 
 const ESTADO = {
   PENDIENTE:  1,
@@ -493,11 +495,12 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
 // ════════════════════════════════════════════════════════════════════════
 // ACTUALIZAR ESTADO DE UN PRODUCTO EN DISEÑO
 // ════════════════════════════════════════════════════════════════════════
-export const actualizarEstadoProducto = async (req: Request, res: Response) => {
+export const actualizarEstadoProducto = async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {
     const { id }                      = req.params;
     const { estadoId, observaciones } = req.body;
+    const usuarioId                   = req.user?.id ?? null;
 
     if (!estadoId) return res.status(400).json({ error: "Se requiere estadoId" });
 
@@ -647,6 +650,26 @@ export const actualizarEstadoProducto = async (req: Request, res: Response) => {
               ? `✅ Orden ${noProduccion} creada para PAPEL (sin datos de extrusión)`
               : `✅ Orden ${noProduccion} creada con metros_merma incluido`
           );
+
+          // ── MERMA DE PAPEL ── mismo punto de enganche que
+          // ordenDiseno.controller.ts::aprobarOrdenDiseno.
+          if (esPapel) {
+            const { rows: idOrdenRows } = await client.query(
+              `SELECT idproduccion FROM orden_produccion WHERE idsolicitud_producto = $1`,
+              [idsolicitudProducto]
+            );
+            const idproduccionNueva = idOrdenRows[0]?.idproduccion;
+            if (idproduccionNueva) {
+              const { aplico } = await congelarMermaSiEsPapel(
+                client,
+                Number(idproduccionNueva),
+                usuarioId
+              );
+              if (aplico) {
+                console.log(`📐 Merma de papel congelada para la orden ${noProduccion}`);
+              }
+            }
+          }
         } else {
           ordenGenerada = true;
         }

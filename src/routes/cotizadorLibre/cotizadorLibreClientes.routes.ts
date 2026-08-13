@@ -14,19 +14,19 @@ router.use(authMiddleware);
 
 router.post(
   "/buscar",
-  checkPermiso("Cotizador Libre - Buscar Cliente"),
+  checkPermiso("externos.cotizador_libre.buscar_cliente"),
   buscarClienteCotizadorLibre
 );
 
 router.post(
   "/verificar/enviar",
-  checkPermiso("Cotizador Libre - Buscar Cliente"),
+  checkPermiso("externos.cotizador_libre.buscar_cliente"),
   enviarCodigoVerificacion
 );
 
 router.post(
   "/verificar/confirmar",
-  checkPermiso("Cotizador Libre - Buscar Cliente"),
+  checkPermiso("externos.cotizador_libre.buscar_cliente"),
   confirmarCodigoVerificacion
 );
 

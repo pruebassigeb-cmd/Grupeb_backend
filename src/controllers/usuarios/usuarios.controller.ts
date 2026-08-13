@@ -64,6 +64,25 @@ function normalizarFecha(valor: any): string | null {
   return null;
 }
 
+// La base del rol se hereda por referencia (roles_privilegios), no se
+// duplica como fila individual en privilegios_has_usuarios. El frontend ya
+// no debería mandar ids que vengan de la base, pero se filtran aquí también
+// por si acaso — así privilegios_has_usuarios solo guarda extras de verdad,
+// sin importar qué mande el cliente.
+async function filtrarExtrasDeLaBase(
+  client: any,
+  rolesIdroles: number,
+  privilegios: any[]
+): Promise<number[]> {
+  if (!Array.isArray(privilegios) || privilegios.length === 0) return [];
+  const { rows } = await client.query(
+    "SELECT privilegios_idprivilegios FROM roles_privilegios WHERE roles_idroles = $1",
+    [rolesIdroles]
+  );
+  const idsBase = new Set(rows.map((r: any) => Number(r.privilegios_idprivilegios)));
+  return privilegios.map(Number).filter((id) => !idsBase.has(id));
+}
+
 // ==========================
 // CREAR USUARIO
 // ==========================
@@ -137,7 +156,8 @@ export const createUsuario = async (req: Request, res: Response) => {
         if (!privilegiosValidos) {
           throw new ErrorHttp(400, "Datos de privilegios inválidos");
         }
-        for (const idPrivilegio of privilegios) {
+        const extras = await filtrarExtrasDeLaBase(client, Number(roles_idroles), privilegios);
+        for (const idPrivilegio of extras) {
           await client.query(
             `INSERT INTO privilegios_has_usuarios (privilegios_idprivilegios, usuarios_idusuario)
              VALUES ($1, $2)`,
@@ -393,7 +413,8 @@ export const updateUsuario = async (req: Request, res: Response) => {
         if (!privilegiosValidos) {
           throw new ErrorHttp(400, "Datos de privilegios inválidos");
         }
-        for (const idPrivilegio of privilegios) {
+        const extras = await filtrarExtrasDeLaBase(client, Number(roles_idroles), privilegios);
+        for (const idPrivilegio of extras) {
           await client.query(
             `INSERT INTO privilegios_has_usuarios (privilegios_idprivilegios, usuarios_idusuario)
              VALUES ($1, $2)`, [idPrivilegio, id]

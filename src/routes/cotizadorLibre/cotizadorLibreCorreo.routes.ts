@@ -11,7 +11,7 @@ router.use(authMiddleware);
 // parte del mismo flujo de guardado, no amerita un privilegio aparte.
 router.post(
   "/:idsolicitud/enviar-pdf",
-  checkPermiso("Cotizador Libre - Crear Cotizacion"),
+  checkPermiso("externos.cotizador_libre.crear_cotizacion"),
   enviarPdfCotizadorLibre
 );
 

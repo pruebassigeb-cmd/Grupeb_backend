@@ -12,8 +12,8 @@ import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware"
 
 const router = Router();
 
-const PERMISO         = "Editar Anticipo y Liquidacion";
-const PERMISO_CREDITO = "Autorizar Anticipo por Credito";
+const PERMISO         = "cobranza.anticipo_liquidacion.gestionar";
+const PERMISO_CREDITO = "cobranza.autorizar_credito";
 
 // ── GETs — cualquier autenticado ──────────────────────────
 router.get("/metodos-pago",     authMiddleware, getMetodosPago);

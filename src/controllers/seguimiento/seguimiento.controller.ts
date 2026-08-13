@@ -1,6 +1,11 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import { getPresignedUrl } from "../../config/multer";
+// ── MERMA DE PAPEL: enganche de Fase 7 (ver merma-papel-contexto.md) ──
+// Ajusta los pliegos estimados (aquí y en el PDF) para que incluyan la
+// merma tolerada ya congelada en orden_produccion_merma, sin tocar la
+// cantidad del pedido que se le muestra al cliente.
+import { getCantidadesAProducirBatch } from "../../services/producto_papel/merma.service";
 
 // ── Descarga imagen desde S3 y la retorna como data URL base64 ──
 async function publicIdToBase64(publicId: string): Promise<string | null> {
@@ -650,6 +655,13 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
     const resumenPorIdproduccion = new Map<number, { estado: string; fecha: string | null }>();
 
+    // ── MERMA DE PAPEL (Fase 7) ──
+    // Mismo criterio de "una sola consulta en lote" que el resumen de
+    // estado de arriba. mermaPorIdproduccion.get(id) da cantidad_a_producir
+    // (pedido + merma); si una orden no aparece aquí (plástico, o papel sin
+    // snapshot) el llamador cae a la cantidad del pedido sin merma.
+    const mermaPorIdproduccion = await getCantidadesAProducirBatch(idproduccionesPapel);
+
     if (idproduccionesPapel.length > 0) {
       // Estado por orden: si NO tiene ningún registro de proceso aún -> pendiente.
       // Si todos los que existen están terminados Y la orden ya no tiene
@@ -811,8 +823,14 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       // ahora también disponible aquí para mostrarlo en el modal de
       // Hojeado/Guillotina ANTES de que existan avances reales. Cada uno
       // usa su propio rendimiento -- no son intercambiables.
-      const pliegosHojeadoCalculado = calcularPliegosPorRendimiento(row.cantidad_orden, row.hoj_rendimiento);
-      const pliegosGuillotinaCalculado = calcularPliegosPorRendimiento(row.cantidad_orden, row.rendimiento);
+      // Merma: se usa cantidad_a_producir (pedido + merma) cuando existe
+      // snapshot; si no, cantidad_orden tal cual (comportamiento anterior).
+      const cantidadProduccion = row.idproduccion != null
+        ? mermaPorIdproduccion.get(Number(row.idproduccion)) ?? row.cantidad_orden
+        : row.cantidad_orden;
+
+      const pliegosHojeadoCalculado = calcularPliegosPorRendimiento(cantidadProduccion, row.hoj_rendimiento);
+      const pliegosGuillotinaCalculado = calcularPliegosPorRendimiento(cantidadProduccion, row.rendimiento);
 
       const resumen = row.idproduccion != null
         ? resumenPorIdproduccion.get(Number(row.idproduccion))
@@ -918,6 +936,9 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         cantidad_por_caja: row.cantidad_por_caja != null ? Number(row.cantidad_por_caja) : null,
 
         cantidad_orden: row.cantidad_orden ? Number(row.cantidad_orden) : null,
+        // Meta real a producir (pedido + merma). NULL si la orden no tiene
+        // snapshot de merma (plástico no aplica; papel viejo sin sistema).
+        cantidad_produccion: cantidadProduccion != null ? Number(cantidadProduccion) : null,
         kilogramos_orden: row.kilogramos_orden ? Number(row.kilogramos_orden) : null,
         modo_cantidad: row.modo_cantidad || "unidad",
         fecha_entrega: null,
@@ -1396,11 +1417,25 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       };
     }));
 
+    // ── MERMA DE PAPEL (Fase 7) ──
+    // Mismo patrón en lote que en getSeguimiento: una sola consulta para
+    // todos los productos de papel de este pedido.
+    const idproduccionesPapelPdf = productosPapel
+      .map((r: any) => r.idproduccion)
+      .filter((id: any) => id != null);
+    const mermaPorIdproduccionPdf = await getCantidadesAProducirBatch(idproduccionesPapelPdf);
+
     const productosPapelFormateados = productosPapel.map((r: any) => {
+      // Merma: cantidad_a_producir (pedido + merma) si existe snapshot,
+      // si no cae a r.cantidad (comportamiento anterior, sin cambios).
+      const cantidadProduccion = r.idproduccion != null
+        ? mermaPorIdproduccionPdf.get(Number(r.idproduccion)) ?? r.cantidad
+        : r.cantidad;
+
       // Pliegos/bolsas se calculan con el rendimiento de HOJEADO (cómo se
       // tiene que cortar el material), no con el rendimiento general del
       // material — son dos campos distintos capturados en el alta.
-      const pliegosCalculados = calcularPliegosPorRendimiento(r.cantidad, r.hoj_rendimiento);
+      const pliegosCalculados = calcularPliegosPorRendimiento(cantidadProduccion, r.hoj_rendimiento);
       const pliegoHojeado = r.hoj_corte || r.pliego || r.medida || null;
 
       // Rollo y desarrollo de laminado: si el producto los tiene registrados
@@ -1489,7 +1524,12 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           : null,
         pantones_dentro: r.pantones_dentro || null,
         observacion: r.observacion || null,
+        // cantidad = lo que pidió el cliente, se muestra tal cual en el PDF.
         cantidad: r.cantidad != null ? Number(r.cantidad) : null,
+        // cantidad_produccion = pedido + merma. La lee
+        // ordenProduccionPapelPdf_helpers.ts::getValoresCalculadosPapel()
+        // para calcular pliegos SIN inflar la cantidad mostrada al cliente.
+        cantidad_produccion: cantidadProduccion != null ? Number(cantidadProduccion) : null,
         kilogramos: r.kilogramos != null ? Number(r.kilogramos) : null,
         modo_cantidad: r.modo_cantidad || "unidad",
         fecha_entrega: r.fecha_entrega ?? null,

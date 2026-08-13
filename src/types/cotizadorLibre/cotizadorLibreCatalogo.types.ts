@@ -25,6 +25,8 @@ export interface MedidaPlasticoItem {
   fuelle_latiz: number | null;
   fuelle_latde: number | null;
   por_kilo: number | null;
+  descripcion?: string | null;
+  imagenUrl?: string | null;
 }
 
 export interface GrupoPapelItem {

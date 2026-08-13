@@ -55,7 +55,7 @@ const generalLimiter = rateLimit({
 
 router.use(generalLimiter);
 
-const PERMISO = "Dar de alta productos";
+const PERMISO = "productos.plastico.gestionar";
 
 // ── GETs — cualquier autenticado ──────────────────────────
 router.get("/check-duplicado", authMiddleware, checkProductoDuplicado);

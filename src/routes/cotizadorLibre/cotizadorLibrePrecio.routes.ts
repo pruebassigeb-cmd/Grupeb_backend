@@ -14,7 +14,7 @@ router.use(authMiddleware);
 
 router.post(
   "/calcular-precio",
-  checkPermiso("Cotizador Libre - Calcular Precio"),
+  checkPermiso("externos.cotizador_libre.calcular_precio"),
   calcularPrecioCotizadorLibre
 );
 

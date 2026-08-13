@@ -67,7 +67,7 @@ router.use(generalLimiter);
 // ==========================
 // RUTAS — las estáticas SIEMPRE antes de /:id
 // ==========================
-const PERMISO = "Crear/Editar/Eliminar Usuarios";
+const PERMISO = "seguridad.usuarios.gestionar";
 const accesoFichaChat = checkAnyPermiso(
   PERMISO_EDITAR_DISENO,
   PERMISO_ORDEN_DISENO

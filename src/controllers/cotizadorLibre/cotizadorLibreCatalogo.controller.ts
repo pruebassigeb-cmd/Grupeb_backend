@@ -11,6 +11,23 @@ import { getPresignedUrl } from "../../config/multer";
 // ============================================================================
 const ID_PRODUCTOS_PLASTICO = 1;
 
+// ============================================================================
+// Criterio de "producto calificado para el Cotizador Interactivo" (evita que
+// el cliente externo vea tipos/medidas sin precio real registrado):
+//
+// - PAPEL: debe tener costo base (grupo_papel.precio_sugerido del Grupo 1,
+//   es decir el de menor `orden` — mismo criterio que "Costo base" en la
+//   tabla de admin, Papel.tsx) Y costo laminado
+//   (producto_papel.costo_laminado) registrados. Ambos NOT NULL. Se resuelve
+//   con un LATERAL join al grupo de menor orden (grupo1) en cada query.
+// - PLÁSTICO: debe tener configuracion_plastico.por_kilo registrado
+//   (NOT NULL y > 0 — por_kilo se deja en NULL cuando no se pudo calcular,
+//   ver producto_papel_controller.ts línea ~606).
+//
+// Se aplica en tipos, medidas Y detalle, para que ni por URL directa se
+// pueda llegar a un producto que no califica todavía.
+// ============================================================================
+
 // ==========================
 // 1. TIPOS (categoría "Tipo" — Bolsas, Cajas, Sobres, Etiquetas, etc.)
 // ==========================
@@ -20,10 +37,26 @@ export const getTiposCotizadorLibre = async (req: Request, res: Response) => {
 
     if (categoria === "papel") {
       const { rows } = await pool.query(
-        `SELECT idcat_tipo_producto_papel AS id, nombre
-         FROM cat_tipo_producto_papel
-         WHERE activo = true
-         ORDER BY nombre`
+        `SELECT t.idcat_tipo_producto_papel AS id, t.nombre
+         FROM cat_tipo_producto_papel t
+         WHERE t.activo = true
+           AND EXISTS (
+             SELECT 1
+             FROM producto_papel p
+             JOIN LATERAL (
+               SELECT g1.precio_sugerido
+               FROM grupo_papel g1
+               WHERE g1.idproducto_papel = p.idproducto_papel
+               ORDER BY g1.orden ASC
+               LIMIT 1
+             ) grupo1 ON true
+             WHERE p.idcat_tipo_producto_papel = t.idcat_tipo_producto_papel
+               AND p.activo = true
+               AND (p.origen_expo IS NOT TRUE)
+               AND grupo1.precio_sugerido IS NOT NULL
+               AND p.costo_laminado IS NOT NULL
+           )
+         ORDER BY t.nombre`
       );
       const imagenes = await resolverImagenesCatalogo(
         rows.map((r: any) => ({ key: "tipo_producto", id: r.id }))
@@ -50,6 +83,15 @@ export const getTiposCotizadorLibre = async (req: Request, res: Response) => {
          WHERE t.activo = true
            AND t.productos_idproductos = $1
            AND LOWER(t.material_plastico_producto) LIKE '%bolsa%'
+           AND EXISTS (
+             SELECT 1
+             FROM configuracion_plastico cp
+             WHERE cp.tipo_producto_plastico_plastico_idtipo_producto_plastico = t.idtipo_producto_plastico
+               AND cp.activo = true
+               AND (cp.origen_expo IS NOT TRUE)
+               AND cp.por_kilo IS NOT NULL
+               AND cp.por_kilo > 0
+           )
          ORDER BY t.material_plastico_producto`,
         [ID_PRODUCTOS_PLASTICO]
       );
@@ -81,6 +123,15 @@ export const getMedidasCotizadorLibre = async (req: Request, res: Response) => {
         `SELECT p.idproducto_papel AS id, p.medida, p.ancho, p.fuelle, p.altura, p.descripcion_papel,
                 img.public_id AS foto_public_id
          FROM producto_papel p
+         JOIN LATERAL (
+           -- Costo base = precio_sugerido del Grupo 1 (menor orden). Debe
+           -- estar registrado para que el producto sea cotizable aquí.
+           SELECT g1.precio_sugerido
+           FROM grupo_papel g1
+           WHERE g1.idproducto_papel = p.idproducto_papel
+           ORDER BY g1.orden ASC
+           LIMIT 1
+         ) grupo1 ON true
          LEFT JOIN LATERAL (
            -- Foto real del producto (mismo mecanismo que ya usa Expo:
            -- archivos.idproducto_papel, distinto del sistema de imágenes
@@ -94,6 +145,8 @@ export const getMedidasCotizadorLibre = async (req: Request, res: Response) => {
          WHERE p.activo = true
            AND (p.origen_expo IS NOT TRUE)
            AND p.idcat_tipo_producto_papel = $1
+           AND grupo1.precio_sugerido IS NOT NULL
+           AND p.costo_laminado IS NOT NULL
          ORDER BY p.medida`,
         [idTipo]
       );
@@ -118,16 +171,52 @@ export const getMedidasCotizadorLibre = async (req: Request, res: Response) => {
 
     if (categoria === "plastico") {
       const { rows } = await pool.query(
-        `SELECT idconfiguracion_plastico AS id, medida, ancho, altura,
-                fuelle_fondo, fuelle_latiz, fuelle_latde, por_kilo
-         FROM configuracion_plastico
-         WHERE activo = true
-           AND (origen_expo IS NOT TRUE)
-           AND tipo_producto_plastico_plastico_idtipo_producto_plastico = $1
-         ORDER BY medida`,
+        `SELECT cp.idconfiguracion_plastico AS id, cp.medida, cp.ancho, cp.altura,
+                cp.fuelle_fondo, cp.fuelle_latiz, cp.fuelle_latde, cp.por_kilo,
+                cp.descripcion, img.public_id AS foto_public_id
+         FROM configuracion_plastico cp
+         LEFT JOIN LATERAL (
+           -- Mismo criterio de prioridad que getArchivosProducto() en
+           -- productos-plastico_controller.ts: imagen-producto-plastico
+           -- primero, luego render-plastico, luego master-plastico.
+           SELECT public_id FROM archivos
+           WHERE idconfiguracion_plastico = cp.idconfiguracion_plastico
+             AND eliminado_at IS NULL
+           ORDER BY
+             CASE categoria
+               WHEN 'imagen-producto-plastico' THEN 1
+               WHEN 'render-plastico' THEN 2
+               WHEN 'master-plastico' THEN 3
+               ELSE 4
+             END,
+             id_archivo ASC
+           LIMIT 1
+         ) img ON true
+         WHERE cp.activo = true
+           AND (cp.origen_expo IS NOT TRUE)
+           AND cp.tipo_producto_plastico_plastico_idtipo_producto_plastico = $1
+           AND cp.por_kilo IS NOT NULL
+           AND cp.por_kilo > 0
+         ORDER BY cp.medida`,
         [idTipo]
       );
-      return res.json(rows);
+
+      const conImagen = await Promise.all(
+        rows.map(async (r: any) => {
+          let imagenUrl: string | null = null;
+          if (r.foto_public_id) {
+            try {
+              imagenUrl = await getPresignedUrl(r.foto_public_id);
+            } catch {
+              imagenUrl = null;
+            }
+          }
+          const { foto_public_id, ...resto } = r;
+          return { ...resto, imagenUrl };
+        })
+      );
+
+      return res.json(conImagen);
     }
 
     return res.status(400).json({ error: "categoria debe ser 'papel' o 'plastico'." });
@@ -213,9 +302,18 @@ export const getDetalleProductoPapelCotizadorLibre = async (req: Request, res: R
     }
 
     const { rows: productoRows } = await pool.query(
-      `SELECT idproducto_papel, medida, ancho, fuelle, altura, descripcion_papel, activo
-       FROM producto_papel
-       WHERE idproducto_papel = $1 AND activo = true AND (origen_expo IS NOT TRUE)`,
+      `SELECT p.idproducto_papel, p.medida, p.ancho, p.fuelle, p.altura, p.descripcion_papel, p.activo
+       FROM producto_papel p
+       JOIN LATERAL (
+         SELECT g1.precio_sugerido
+         FROM grupo_papel g1
+         WHERE g1.idproducto_papel = p.idproducto_papel
+         ORDER BY g1.orden ASC
+         LIMIT 1
+       ) grupo1 ON true
+       WHERE p.idproducto_papel = $1 AND p.activo = true AND (p.origen_expo IS NOT TRUE)
+         AND grupo1.precio_sugerido IS NOT NULL
+         AND p.costo_laminado IS NOT NULL`,
       [idproducto_papel]
     );
 
@@ -349,7 +447,8 @@ export const getDetalleProductoPlasticoCotizadorLibre = async (req: Request, res
        LEFT JOIN material_plastico mp
          ON mp.idmaterial_plastico = cp.material_plastico_plastico_idmaterial_plastico
        LEFT JOIN calibre c ON c.idcalibre = cp.calibre_idcalibre
-       WHERE cp.idconfiguracion_plastico = $1 AND cp.activo = true AND (cp.origen_expo IS NOT TRUE)`,
+       WHERE cp.idconfiguracion_plastico = $1 AND cp.activo = true AND (cp.origen_expo IS NOT TRUE)
+         AND cp.por_kilo IS NOT NULL AND cp.por_kilo > 0`,
       [idconfiguracion_plastico]
     );
 

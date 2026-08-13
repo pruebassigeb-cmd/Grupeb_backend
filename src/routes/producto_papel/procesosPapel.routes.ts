@@ -21,18 +21,29 @@ import {
   editarProcesoPapel,
   reiniciarProcesoPreparacionPapel,
 } from "../../controllers/producto_papel/procesosPapel.controller";
+import { authMiddleware } from "../../middlewares/auth.middleware";
+import { resolverOperadorProceso } from "../../middlewares/procesoToken.middleware";
 
 const router = Router();
 
-router.get("/procesos-papel/:idproduccion", getProcesosOrdenPapel);
-router.post("/procesos-papel/:idproduccion/iniciar", iniciarProcesoPapel);
-router.post("/procesos-papel/:idproduccion/avance", registrarAvancePapel);
-router.put("/procesos-papel/:idproduccion/finalizar", finalizarProcesoPapel);
-router.put("/procesos-papel/:idproduccion/editar/:tabla", editarProcesoPapel);
+// authMiddleware exige sesión, igual que su equivalente de plástico
+// (procesos.routes.ts) — la autorización por proceso específico (Operar
+// Hojeado, Operar Impresión (Papel), ...) se verifica en el frontend vía
+// /auth/verificar-operador (fase 4, mismo patrón de plástico).
+//
+// resolverOperadorProceso (fase 5): si la petición trae el token de
+// proceso que emite ese mismo popup, la bitácora atribuye la escritura al
+// operador real en vez de a la cuenta de sesión (Planta, compartida). No
+// exige el token — si falta, todo sigue igual que antes.
+router.get("/procesos-papel/:idproduccion", authMiddleware, getProcesosOrdenPapel);
+router.post("/procesos-papel/:idproduccion/iniciar", authMiddleware, resolverOperadorProceso, iniciarProcesoPapel);
+router.post("/procesos-papel/:idproduccion/avance", authMiddleware, resolverOperadorProceso, registrarAvancePapel);
+router.put("/procesos-papel/:idproduccion/finalizar", authMiddleware, resolverOperadorProceso, finalizarProcesoPapel);
+router.put("/procesos-papel/:idproduccion/editar/:tabla", authMiddleware, resolverOperadorProceso, editarProcesoPapel);
 
 // Único endpoint destructivo: reiniciar Hojeado o Guillotina cuando el
 // operador eligió la máquina equivocada (ver comentario en el controller).
-router.delete("/procesos-papel/:idproduccion/reiniciar/:tabla", reiniciarProcesoPreparacionPapel);
+router.delete("/procesos-papel/:idproduccion/reiniciar/:tabla", authMiddleware, resolverOperadorProceso, reiniciarProcesoPreparacionPapel);
 
 export default router;
 

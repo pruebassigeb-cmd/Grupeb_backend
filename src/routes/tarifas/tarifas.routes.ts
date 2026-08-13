@@ -34,7 +34,7 @@ const generalLimiter = rateLimit({
 
 router.use(generalLimiter);
 
-const PERMISO = "Modificar Catalogo de precios";
+const PERMISO = "precios.gestionar";
 
 // ── GET — cualquier autenticado ───────────────────────────
 router.get("/", authMiddleware, getTarifas);

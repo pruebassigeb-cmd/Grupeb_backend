@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
+import { AuthRequest } from "../../middlewares/auth.middleware";
 import {
   ESTADO_VENTA as ESTADO,
   calcularUmbralAnticipo,
@@ -11,6 +12,7 @@ import {
 } from "../../services/ventas/pagos.service";
 import { type Moneda, resolverMontoPago } from "../../utils/moneda.utils";
 import { ErrorHttp, responderError } from "../../utils/errorHttp";
+import { congelarMermaSiEsPapel } from "../../services/producto_papel/merma.service";
 
 /**
  * Resuelve primero la solicitud, toma su advisory transaccional y finalmente
@@ -269,7 +271,11 @@ async function prepararDatosOrden(client: any, idsolicitudProducto: number) {
   };
 }
 
-async function generarOrdenesPendientes(client: any, solicitudId: number): Promise<string[]> {
+async function generarOrdenesPendientes(
+  client: any,
+  solicitudId: number,
+  usuarioId?: number | null
+): Promise<string[]> {
   const { rows: pendientes } = await client.query(`
     SELECT dp.solicitud_producto_idsolicitud_producto AS idsolicitud_producto
     FROM diseno d
@@ -303,14 +309,15 @@ async function generarOrdenesPendientes(client: any, solicitudId: number): Promi
     const noProduccion = await generarNoProduccion(client);
     const datosOrden   = await prepararDatosOrden(client, productoId);
 
-    await client.query(
+    const { rows: nuevaOrdenRows } = await client.query(
       `INSERT INTO orden_produccion (
         estado_administrativo_cat_idestado_administrativo_cat,
         no_produccion, fecha, fecha_entrega,
         idsolicitud, idsolicitud_producto, idestado_produccion_cat,
         repeticion_extrusion, repeticion_metro, metros, metros_merma, ancho_bobina,
         kilos, kilos_merma, pzas, pzas_merma, repeticion_kidder, repeticion_sicosa
-      ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      RETURNING idproduccion`,
       [
         ESTADO.PENDIENTE, noProduccion, solicitudId, productoId, ESTADO.PENDIENTE,
         datosOrden.repeticion_extrusion, datosOrden.repeticion_metro,
@@ -319,6 +326,17 @@ async function generarOrdenesPendientes(client: any, solicitudId: number): Promi
         datosOrden.repeticion_kidder, datosOrden.repeticion_sicosa,
       ]
     );
+
+    // ── MERMA DE PAPEL ── mismo punto de enganche que diseno.controller.ts
+    // y ordenDiseno.controller.ts. congelarMermaSiEsPapel discrimina papel
+    // vs plástico internamente, no hace falta chequearlo aquí.
+    const idproduccionNueva = nuevaOrdenRows[0]?.idproduccion;
+    if (idproduccionNueva) {
+      const { aplico } = await congelarMermaSiEsPapel(client, Number(idproduccionNueva), usuarioId);
+      if (aplico) {
+        console.log(`📐 Merma de papel congelada para la orden ${noProduccion}`);
+      }
+    }
 
     ordenesCreadas.push(noProduccion);
     console.log(`✅ Orden ${noProduccion} creada`);
@@ -486,7 +504,7 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
 // ============================================================
 // REGISTRAR PAGO / ABONO
 // ============================================================
-export const registrarPago = async (req: Request, res: Response) => {
+export const registrarPago = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const {
@@ -572,7 +590,7 @@ export const registrarPago = async (req: Request, res: Response) => {
 
       let ordenesGeneradas: string[] = [];
       if (anticipoAhoraCubierto) {
-        ordenesGeneradas = await generarOrdenesPendientes(client, solicitudId);
+        ordenesGeneradas = await generarOrdenesPendientes(client, solicitudId, req.user?.id ?? null);
       }
 
       return {
@@ -691,7 +709,7 @@ export const eliminarPago = async (req: Request, res: Response) => {
 // ============================================================
 // AUTORIZAR ANTICIPO POR CRÉDITO
 // ============================================================
-export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
+export const autorizarAnticipoCredito = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
 
@@ -727,7 +745,7 @@ export const autorizarAnticipoCredito = async (req: Request, res: Response) => {
         [id, 1, 0, true, true, "Anticipo autorizado por crédito", monedaVenta, null, 0]
       );
 
-      const ordenesGeneradas = await generarOrdenesPendientes(client, venta.solicitud_idsolicitud);
+      const ordenesGeneradas = await generarOrdenesPendientes(client, venta.solicitud_idsolicitud, req.user?.id ?? null);
 
       return {
         message:             "Anticipo autorizado por crédito",

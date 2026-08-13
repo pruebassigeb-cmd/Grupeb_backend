@@ -9,7 +9,7 @@ import {
 const router = Router();
 
 // Reusa el mismo permiso que protege el módulo de Usuarios
-const PERMISO_USUARIOS = "Crear/Editar/Eliminar Usuarios";
+const PERMISO_USUARIOS = "seguridad.usuarios.gestionar";
 
 router.get("/destinatarios", authMiddleware, checkPermiso(PERMISO_USUARIOS), getDestinatariosReporte);
 router.put("/destinatarios/:idusuario", authMiddleware, checkPermiso(PERMISO_USUARIOS), actualizarDestinatarioReporte);

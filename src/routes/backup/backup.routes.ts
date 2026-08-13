@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { authMiddleware } from "../../middlewares/auth.middleware";
+import { authMiddleware, requireAccessTotal } from "../../middlewares/auth.middleware";
 import {
   backupManual,
   getSchedule,
@@ -19,10 +19,12 @@ router.get("/schedule",          authMiddleware, getSchedule);
 router.put("/schedule",          authMiddleware, updateSchedule);
 router.get("/historial",         authMiddleware, getHistorialBackups);
 
-// ─── Diagnóstico — SIN auth, solo para pruebas en local ─────────
-// ⚠️  IMPORTANTE: elimina o comenta esta ruta antes de subir a producción
-// o agrégale authMiddleware si quieres dejarlo permanente
-router.get("/diagnostico", diagnostico);
+// ─── Diagnóstico — expone host/puerto/usuario de la BD, así que exige
+// acceso total igual que el resto de este router, no solo sesión.
+router.get("/diagnostico", authMiddleware, requireAccessTotal, diagnostico);
+
+// Lo llama un cron externo, no un usuario — su propia verificación es el
+// header x-cron-secret (ver backupAutomatico en el controller).
 router.post("/automatico", backupAutomatico);
 
 export default router;
