@@ -76,6 +76,19 @@ const calcularPliegosPorRendimiento = (cantidad: unknown, rendimiento: unknown):
   return round2(cantidadNum / rendimientoNum);
 };
 
+// Paso intermedio confirmado por Jose (2026-08-13) con ejemplo numérico:
+// cantidad con merma 3150, PZS de suaje 0.5 => 3150/0.5 = 6300 cortes.
+// De ahí, cortes / REND. (fila principal de Tipo de Papel) = pliegos, y
+// cortes / REND. (fila Hojeado) = cantidad hojeada. Antes de este cambio
+// cantidad/rendimiento se calculaba directo, saltándose este paso -- por
+// eso pliegos/hojeado salían mal para cualquier producto con PZS != 1.
+const calcularCortes = (cantidad: unknown, piezasSuaje: unknown): number | null => {
+  const cantidadNum = toNumberOrNull(cantidad);
+  const piezasSuajeNum = toNumberOrNull(piezasSuaje);
+  if (cantidadNum === null || piezasSuajeNum === null || piezasSuajeNum <= 0) return null;
+  return round2(cantidadNum / piezasSuajeNum);
+};
+
 const calcularBolsasPorRendimiento = (pliegos: unknown, rendimiento: unknown): number | null => {
   const pliegosNum = toNumberOrNull(pliegos);
   const rendimientoNum = toNumberOrNull(rendimiento);
@@ -509,6 +522,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         dmp.hoj_bobina,
         dmp.hoj_corte,
         dmp.hoj_rendimiento,
+        suaje_seg.piezas_suaje,
         dmp.hoj_bobina_extra,
         dmp.hoj_guillotina,
 
@@ -538,6 +552,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         -- laminado/UV/foil/textura, que sí viven en solicitud_producto_papel).
         ctpegado.nombre                 AS tipo_pegue,
         ctpega.nombre                   AS pegamento,
+        ap.desarrollo_laminado,
+        rl.medida_ancho                 AS rollo_lam_medida_ancho,
         ctrefm.nombre                   AS refuerzo_material,
         ctrefmed.nombre                 AS refuerzo_medida,
         -- base_material: SIN catálogo real -- acabados_papel.idcat_base_material
@@ -570,6 +586,14 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           ON ctpp.idcat_tipo_producto_papel = pp.idcat_tipo_producto_papel
       LEFT JOIN detalle_material_papel dmp
           ON dmp.idgrupo_papel = gp.idgrupo_papel
+      -- Piezas del suaje (PZS en el alta de producto) -- paso intermedio
+      -- de la fórmula de cortes/hojeado/pliegos, ver calcularCortes().
+      LEFT JOIN LATERAL (
+        SELECT s.pzs AS piezas_suaje
+        FROM suaje_papel s
+        WHERE s.idproducto_papel = pp.idproducto_papel
+        LIMIT 1
+      ) suaje_seg ON true
       LEFT JOIN cat_tipo_papel ctp
           ON ctp.idcat_tipo_papel = dmp.idcat_tipo_papel
       LEFT JOIN cat_calibre cc
@@ -624,6 +648,11 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           ON cta.idcat_tipo_asa = spp.id_asa
       LEFT JOIN acabados_papel ap
           ON ap.idproducto_papel = pp.idproducto_papel
+      -- Bobina/desarrollo de laminado registrados en el alta (mismo dato
+      -- que ya usa el PDF en getOrdenProduccion) -- se traen aquí también
+      -- para que el modal de Seguimiento los muestre en Laminación.
+      LEFT JOIN rollo_lam rl
+          ON rl.idrollo_lam = ap.idrollo_lam
       LEFT JOIN cat_tipo_pegado ctpegado
           ON ctpegado.idcat_tipo_pegado = ap.idcat_tipo_pegado
       LEFT JOIN cat_pegamento ctpega
@@ -829,8 +858,24 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         ? mermaPorIdproduccion.get(Number(row.idproduccion)) ?? row.cantidad_orden
         : row.cantidad_orden;
 
-      const pliegosHojeadoCalculado = calcularPliegosPorRendimiento(cantidadProduccion, row.hoj_rendimiento);
-      const pliegosGuillotinaCalculado = calcularPliegosPorRendimiento(cantidadProduccion, row.rendimiento);
+      const cortes = calcularCortes(cantidadProduccion, row.piezas_suaje);
+      const pliegosHojeadoCalculado = calcularPliegosPorRendimiento(cortes, row.hoj_rendimiento);
+      const pliegosGuillotinaCalculado = calcularPliegosPorRendimiento(cortes, row.rendimiento);
+
+      // Laminación: mismo cálculo que ya usaba solo el PDF
+      // (getOrdenProduccion) -- ahora también aquí para que el modal de
+      // Seguimiento muestre Bobina/Rollos/Desarrollo/CTES-mod en vez de
+      // dejarlos en blanco (eran campos de captura manual sin ninguna
+      // referencia calculada).
+      const rolloLamRegistradoCm = row.rollo_lam_medida_ancho != null ? Number(row.rollo_lam_medida_ancho) : null;
+      const desarrolloLaminadoRegistradoCm = row.desarrollo_laminado != null ? Number(row.desarrollo_laminado) : null;
+      const bobinaLaminacionCm = rolloLamRegistradoCm ?? primeraMedidaCm(row.hoj_corte, row.pliego, row.medida);
+      const desarrolloLaminacionMm = desarrolloLaminadoRegistradoCm != null
+        ? round2(desarrolloLaminadoRegistradoCm * 10)
+        : calcularDesarrolloMm(row.hoj_corte, row.pliego, row.medida);
+      const ctesModLaminacion = calcularCtesMod(row.hoj_corte, row.pliego, row.medida);
+      const metrosLaminacionEstimados = calcularMetrosLaminacion(pliegosHojeadoCalculado, desarrolloLaminacionMm);
+      const rollosLaminacionEstimados = metrosLaminacionEstimados === null ? null : round2(metrosLaminacionEstimados / 3000);
 
       const resumen = row.idproduccion != null
         ? resumenPorIdproduccion.get(Number(row.idproduccion))
@@ -949,6 +994,13 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         // útil como referencia mientras el proceso todavía no arranca.
         pliegos_hojeado_calculado: pliegosHojeadoCalculado,
         pliegos_guillotina_calculado: pliegosGuillotinaCalculado,
+        cortes_calculados: cortes,
+
+        bobina_laminacion_cm: bobinaLaminacionCm,
+        desarrollo_laminacion_mm: desarrolloLaminacionMm,
+        ctes_mod_laminacion: ctesModLaminacion,
+        metros_laminacion_estimados: metrosLaminacionEstimados,
+        rollos_laminacion_estimados: rollosLaminacionEstimados,
 
         idorden_diseno: row.idorden_diseno ?? null,
         od_estado: row.od_estado ?? null,
@@ -1153,6 +1205,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         dmp.hoj_bobina,
         dmp.hoj_corte,
         dmp.hoj_rendimiento,
+        suaje_op.piezas_suaje,
         dmp.hoj_guillotina,
         dmp.hoj_hilo,
         dmp.hoj_bobina_extra,
@@ -1281,6 +1334,14 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ON ctpp.idcat_tipo_producto_papel = pp.idcat_tipo_producto_papel
       LEFT JOIN detalle_material_papel dmp
         ON dmp.idgrupo_papel = gp.idgrupo_papel
+      -- Piezas del suaje (PZS en el alta de producto) -- paso intermedio
+      -- de la fórmula de cortes/hojeado/pliegos, ver calcularCortes().
+      LEFT JOIN LATERAL (
+        SELECT s.pzs AS piezas_suaje
+        FROM suaje_papel s
+        WHERE s.idproducto_papel = pp.idproducto_papel
+        LIMIT 1
+      ) suaje_op ON true
       LEFT JOIN cat_tipo_papel ctp
         ON ctp.idcat_tipo_papel = dmp.idcat_tipo_papel
       LEFT JOIN cat_calibre cc
@@ -1435,7 +1496,8 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       // Pliegos/bolsas se calculan con el rendimiento de HOJEADO (cómo se
       // tiene que cortar el material), no con el rendimiento general del
       // material — son dos campos distintos capturados en el alta.
-      const pliegosCalculados = calcularPliegosPorRendimiento(cantidadProduccion, r.hoj_rendimiento);
+      const cortes = calcularCortes(cantidadProduccion, r.piezas_suaje);
+      const pliegosCalculados = calcularPliegosPorRendimiento(cortes, r.hoj_rendimiento);
       const pliegoHojeado = r.hoj_corte || r.pliego || r.medida || null;
 
       // Rollo y desarrollo de laminado: si el producto los tiene registrados
@@ -1575,6 +1637,9 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         // Impresión: cantidad de hojas/pliegos calculada desde piezas x rendimiento.
         cantidad_hojeada_calculada: pliegosCalculados,
         pliegos_impresion_estimados: pliegosCalculados,
+        pliegos_guillotina: calcularPliegosPorRendimiento(cortes, r.rendimiento),
+        cortes_calculados: cortes,
+        piezas_suaje: r.piezas_suaje != null ? Number(r.piezas_suaje) : null,
         material_impresion: [r.material, r.calibre, pliegoHojeado]
           .filter(Boolean)
           .join(" "),
