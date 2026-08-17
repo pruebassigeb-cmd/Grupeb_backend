@@ -17,6 +17,9 @@ import {
 import { cambiarMonedaSolicitud } from "../../services/ventas/cambioMoneda.service";
 import { ErrorHttp, responderError } from "../../utils/errorHttp";
 import { prepararDatosOrden } from "../diseno/diseno.controller";
+import { recalcularMermaOrden } from "../../services/producto_papel/merma.service";
+import { getPrimerProcesoPapelIniciado } from "../producto_papel/procesosPapel.controller";
+import { AuthRequest } from "../../middlewares/auth.middleware";
 
 /**
  * Borra el árbol de diseño colgado de unos productos de solicitud.
@@ -381,6 +384,7 @@ export const getPedidos = async (req: Request, res: Response) => {
           sp.perforacion,
           sp.id_color,
           sp.id_medidatro,
+          sp.id_cinta_seguridad,
 
           -- ── Discriminador + refs de PAPEL ──
           sp.tipo_material,
@@ -414,6 +418,8 @@ export const getPedidos = async (req: Request, res: Response) => {
 
           ca.color          AS color_asa_nombre,
           mt.medida         AS medida_troquel,
+          cs.nombre         AS cinta_seguridad_nombre,
+          cs.medida         AS cinta_seguridad_medida,
 
           cfg.medida        AS cfg_medida,
           cfg.altura        AS cfg_altura,
@@ -490,6 +496,8 @@ export const getPedidos = async (req: Request, res: Response) => {
           ON ca.id_color = sp.id_color
       LEFT JOIN medidas_troquel mt
           ON mt.id_medidatro = sp.id_medidatro
+      LEFT JOIN cinta_seguridad cs
+          ON cs.idcinta_seguridad = sp.id_cinta_seguridad
       LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
@@ -707,6 +715,9 @@ const nombreCompleto =
               color_asa_nombre: row.color_asa_nombre ?? null,
               id_medidatro: row.id_medidatro ?? null,
               medida_troquel: row.medida_troquel ?? null,
+              id_cinta_seguridad: row.id_cinta_seguridad ?? null,
+              cinta_seguridad_nombre: row.cinta_seguridad_nombre ?? null,
+              cinta_seguridad_medida: row.cinta_seguridad_medida ?? null,
               herramental_descripcion: row.herramental_descripcion ?? null,
               herramental_precio: row.herramental_precio != null ? Number(row.herramental_precio) : null,
               herramental_aprobado: row.herramental_aprobado ?? null,
@@ -762,7 +773,7 @@ const nombreCompleto =
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUT /pedidos/:id
 // ═══════════════════════════════════════════════════════════════════════════════
-export const actualizarPedido = async (req: Request, res: Response) => {
+export const actualizarPedido = async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
@@ -1185,6 +1196,64 @@ export const actualizarPedido = async (req: Request, res: Response) => {
           }
         }
 
+        // ── MERMA DE PAPEL: seguir la cantidad editada ──────────────────
+        // La merma se congela al crear la orden y no se recalcula sola (para
+        // que planta no tenga una meta móvil a media producción). Pero si
+        // aquí se EDITA la cantidad del pedido, la meta congelada queda
+        // apuntando a la cantidad vieja y se produciría de menos o de más.
+        // Es el equivalente papel de lo que el bloque de plástico ya hace
+        // más abajo al recalcular las metas de la orden con prepararDatosOrden.
+        //
+        // Solo se recalcula si la cantidad realmente cambió: así una edición
+        // de precios, máquinas o acabados no reescribe la merma ni ensucia
+        // el historial. El cambio queda registrado en merma_snapshot.reemplazo
+        // con los valores anteriores y este motivo.
+        if (ordenRows.length > 0) {
+          const idproduccionPapel = Number(ordenRows[0].idproduccion);
+
+          const { rows: comparacion } = await client.query(
+            `SELECT opm.cantidad_pedida AS congelada,
+                    COALESCE((
+                      SELECT SUM(sd.cantidad) FROM solicitud_detalle sd
+                      WHERE sd.solicitud_producto_id = $1 AND sd.aprobado = true
+                    ), 0) AS actual
+             FROM orden_produccion_merma opm
+             WHERE opm.orden_produccion_idproduccion = $2`,
+            [productoId, idproduccionPapel]
+          );
+
+          const congelada = comparacion[0] ? Number(comparacion[0].congelada) : null;
+          const actual = comparacion[0] ? Number(comparacion[0].actual) : null;
+
+          if (congelada !== null && actual !== null && congelada !== actual) {
+            // Si planta ya arrancó, la cantidad NO se puede mover: recalcular
+            // aquí cambiaría la meta a media corrida y los operadores verían
+            // otro número del que tienen en la orden impresa. Se corta el
+            // pedido completo con un mensaje que dice qué proceso lo bloquea.
+            const procesoIniciado = await getPrimerProcesoPapelIniciado(client, idproduccionPapel);
+            if (procesoIniciado) {
+              throw new ErrorHttp(
+                409,
+                `No se puede cambiar la cantidad del producto de papel: la orden ` +
+                `${ordenRows[0].no_produccion ?? idproduccionPapel} ya inició producción en ` +
+                `"${procesoIniciado}". La merma quedó congelada en ${congelada} pzs y cambiarla ` +
+                `ahora movería la meta de planta a media corrida. Si de verdad hay que ajustarla, ` +
+                `usa el recálculo manual de merma (requiere acceso total).`
+              );
+            }
+
+            await recalcularMermaOrden(
+              client,
+              idproduccionPapel,
+              req.user!.id, // la ruta pasa por authMiddleware, siempre hay usuario
+              `Recálculo automático: la cantidad del pedido cambió de ${congelada} a ${actual} al editarlo.`
+            );
+            console.log(
+              `📐 Merma recalculada en ${ordenRows[0].no_produccion ?? idproduccionPapel}: ${congelada} → ${actual} pzs`
+            );
+          }
+        }
+
         continue;
       }
 
@@ -1256,8 +1325,9 @@ export const actualizarPedido = async (req: Request, res: Response) => {
              perforacion     = $8,
              idsuaje         = $9,
              id_color        = $10,
-             id_medidatro    = $11
-           WHERE idsolicitud_producto = $12`,
+             id_medidatro    = $11,
+             id_cinta_seguridad = $12
+           WHERE idsolicitud_producto = $13`,
           [
             nuevo_configuracion_id,
             tintasId,
@@ -1270,6 +1340,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
             prod.idsuaje ?? null,
             prod.id_color ?? null,
             prod.id_medidatro ?? null,
+            prod.id_cinta_seguridad ?? null,
             idsolicitud_producto,
           ]
         );
@@ -1286,8 +1357,9 @@ export const actualizarPedido = async (req: Request, res: Response) => {
              perforacion     = $7,
              idsuaje         = $8,
              id_color        = $9,
-             id_medidatro    = $10
-           WHERE idsolicitud_producto = $11`,
+             id_medidatro    = $10,
+             id_cinta_seguridad = $11
+           WHERE idsolicitud_producto = $12`,
           [
             tintasId,
             carasId,
@@ -1299,6 +1371,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
             prod.idsuaje ?? null,
             prod.id_color ?? null,
             prod.id_medidatro ?? null,
+            prod.id_cinta_seguridad ?? null,
             idsolicitud_producto,
           ]
         );
@@ -1574,6 +1647,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
         idsuaje,
         id_color,
         id_medidatro,
+        id_cinta_seguridad,
       } = prod;
 
       // Resolver IDs de tintas y caras desde sus cantidades
@@ -1601,8 +1675,9 @@ export const actualizarPedido = async (req: Request, res: Response) => {
        perforacion,
        idsuaje,
        id_color,
-       id_medidatro
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       id_medidatro,
+       id_cinta_seguridad
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      RETURNING idsolicitud_producto`,
         [
           solicitudId,
@@ -1617,6 +1692,7 @@ export const actualizarPedido = async (req: Request, res: Response) => {
           idsuaje ?? null,
           id_color ?? null,
           id_medidatro ?? null,
+          id_cinta_seguridad ?? null,
         ]
       );
       const nuevoSpId: number = spRows[0].idsolicitud_producto;
@@ -2150,7 +2226,7 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
           sp.caras_idcaras,
           sp.pigmentos, sp.pantones,
           sp.observacion, sp.descripcion, sp.perforacion,
-          sp.id_color, sp.id_medidatro,
+          sp.id_color, sp.id_medidatro, sp.id_cinta_seguridad,
 
           -- ── Discriminador + refs de PAPEL ──
           sp.tipo_material,
@@ -2183,6 +2259,8 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
           asz.tipo          AS suaje_tipo,
           ca.color          AS color_asa_nombre,
           mt.medida         AS medida_troquel,
+          cs.nombre         AS cinta_seguridad_nombre,
+          cs.medida         AS cinta_seguridad_medida,
 
           cfg.medida        AS cfg_medida,
           cfg.altura        AS cfg_altura,
@@ -2220,6 +2298,7 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
       LEFT JOIN asa_suaje asz         ON asz.idsuaje = sp.idsuaje
       LEFT JOIN color_asa ca          ON ca.id_color = sp.id_color
       LEFT JOIN medidas_troquel mt    ON mt.id_medidatro = sp.id_medidatro
+      LEFT JOIN cinta_seguridad cs    ON cs.idcinta_seguridad = sp.id_cinta_seguridad
       LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
@@ -2417,6 +2496,9 @@ const nombre =
               color_asa_nombre: row.color_asa_nombre ?? null,
               id_medidatro: row.id_medidatro ?? null,
               medida_troquel: row.medida_troquel ?? null,
+              id_cinta_seguridad: row.id_cinta_seguridad ?? null,
+              cinta_seguridad_nombre: row.cinta_seguridad_nombre ?? null,
+              cinta_seguridad_medida: row.cinta_seguridad_medida ?? null,
               herramental_descripcion: row.herramental_descripcion ?? null,
               herramental_precio: row.herramental_precio != null ? Number(row.herramental_precio) : null,
               herramental_aprobado: row.herramental_aprobado ?? null,

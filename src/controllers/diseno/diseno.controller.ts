@@ -147,6 +147,15 @@ async function buscarRepeticionRodillos(
   }
 }
 
+// Kilos equivalentes de una cantidad en piezas, usando el factor bolsas/kg del
+// producto. Es la misma fórmula que aplica el front al capturar el pedido; aquí
+// sirve de respaldo cuando solicitud_detalle.kilogramos llegó vacío.
+function calcularKilosDesdePorKilo(cantidad: number, porKilo: unknown): number | null {
+  const pk = Number(porKilo);
+  if (!cantidad || cantidad <= 0 || !Number.isFinite(pk) || pk <= 0) return null;
+  return parseFloat((cantidad / pk).toFixed(4));
+}
+
 async function getMedidasParaOrden(client: any, idsolicitudProducto: number) {
   const { rows } = await client.query(`
     SELECT
@@ -159,6 +168,7 @@ async function getMedidasParaOrden(client: any, idsolicitudProducto: number) {
       COALESCE(sd.cantidad,      0) AS cantidad,
       sd.kilogramos,
       sd.modo_cantidad,
+      cfg.por_kilo,
       sp.tintas_idtintas
     FROM solicitud_producto sp
     JOIN configuracion_plastico cfg
@@ -196,7 +206,14 @@ export async function prepararDatosOrden(client: any, idsolicitudProducto: numbe
   }
 
   const cantidad = Number(medidas.cantidad);
-  const kilos    = medidas.kilogramos ? parseFloat(Number(medidas.kilogramos).toFixed(4)) : null;
+  // Fallback a cantidad / por_kilo: solicitud_detalle.kilogramos puede venir en
+  // NULL (pedidos creados sin porKilo en el payload, o editados por una versión
+  // del front que lo mandaba vacío). Sin esto la orden se congela con kilos NULL
+  // y la celda "Kilos" del PDF sale en blanco aunque el producto sí tenga
+  // por_kilo registrado en configuracion_plastico.
+  const kilos    = medidas.kilogramos
+    ? parseFloat(Number(medidas.kilogramos).toFixed(4))
+    : calcularKilosDesdePorKilo(cantidad, medidas.por_kilo);
   const tintasId = Number(medidas.tintas_idtintas) || 1;
 
   const mermaPct    = kilos ? await obtenerMerma(client, kilos, tintasId) : 0;

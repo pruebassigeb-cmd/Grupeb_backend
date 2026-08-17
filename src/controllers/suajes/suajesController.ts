@@ -17,7 +17,7 @@ export const getSuajes = async (req: Request, res: Response) => {
         p.tipo_producto
       FROM asa_suaje s
       JOIN productos p ON p.idproductos = s.idproductos
-      WHERE s.idproductos = 1
+      WHERE s.idproductos = 1 AND s.activo = true
       ORDER BY s.tipo ASC
     `);
       

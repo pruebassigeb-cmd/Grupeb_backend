@@ -337,3 +337,304 @@ export const reactivarCalibreAdmin = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Error al reactivar" });
   }
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TIPO DE TROQUEL (tabla medidas_troquel — columna "medida")
+// ═══════════════════════════════════════════════════════════════════════════
+export const getTroquelesAdmin = async (req: Request, res: Response) => {
+  try {
+    const { activo } = req.query;
+    let where = "";
+    const values: any[] = [];
+    if (activo === "true" || activo === "false") {
+      where = "WHERE activo = $1";
+      values.push(activo === "true");
+    }
+    const { rows } = await pool.query(
+      `SELECT id_medidatro AS id, medida AS nombre, activo
+       FROM medidas_troquel
+       ${where}
+       ORDER BY medida ASC`,
+      values
+    );
+    res.json(rows);
+  } catch (error: any) {
+    console.error("❌ GET TROQUELES ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener tipos de troquel" });
+  }
+};
+
+export const crearTroquelAdmin = async (req: Request, res: Response) => {
+  try {
+    const { nombre } = req.body;
+    if (!nombre || !String(nombre).trim()) {
+      return res.status(400).json({ error: "La medida es requerida" });
+    }
+    const { rows } = await qAudit(req)(
+      `INSERT INTO medidas_troquel (medida, activo)
+       VALUES ($1, true)
+       RETURNING id_medidatro AS id, medida AS nombre, activo`,
+      [String(nombre).trim()]
+    );
+    console.log("✅ Tipo de troquel creado:", rows[0].nombre);
+    res.status(201).json(rows[0]);
+  } catch (error: any) {
+    console.error("❌ CREAR TROQUEL ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al crear el tipo de troquel" });
+  }
+};
+
+export const editarTroquelAdmin = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { nombre } = req.body;
+    if (!nombre || !String(nombre).trim()) {
+      return res.status(400).json({ error: "La medida es requerida" });
+    }
+    const { rows } = await qAudit(req)(
+      `UPDATE medidas_troquel SET medida = $1
+       WHERE id_medidatro = $2
+       RETURNING id_medidatro AS id, medida AS nombre, activo`,
+      [String(nombre).trim(), id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
+    res.json(rows[0]);
+  } catch (error: any) {
+    console.error("❌ EDITAR TROQUEL ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al editar el tipo de troquel" });
+  }
+};
+
+export const desactivarTroquelAdmin = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await qAudit(req)(
+      `UPDATE medidas_troquel SET activo = false
+       WHERE id_medidatro = $1 RETURNING id_medidatro`,
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
+    res.json({ message: "Tipo de troquel desactivado" });
+  } catch (error: any) {
+    console.error("❌ DESACTIVAR TROQUEL ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al desactivar" });
+  }
+};
+
+export const reactivarTroquelAdmin = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await qAudit(req)(
+      `UPDATE medidas_troquel SET activo = true
+       WHERE id_medidatro = $1 RETURNING id_medidatro`,
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
+    res.json({ message: "Tipo de troquel reactivado" });
+  } catch (error: any) {
+    console.error("❌ REACTIVAR TROQUEL ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al reactivar" });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ASA / SUAJE (tabla asa_suaje — columna "tipo". idproductos siempre 1,
+// que es la línea "Plástico" en la tabla `productos` — ver getSuajes en
+// suajesController.ts, que ya usa este mismo criterio).
+// ═══════════════════════════════════════════════════════════════════════════
+export const getSuajesAdmin = async (req: Request, res: Response) => {
+  try {
+    const { activo } = req.query;
+    let where = "WHERE idproductos = $1";
+    const values: any[] = [ID_PRODUCTO_LINEA_PLASTICO];
+    if (activo === "true" || activo === "false") {
+      where += ` AND activo = $2`;
+      values.push(activo === "true");
+    }
+    const { rows } = await pool.query(
+      `SELECT idsuaje AS id, tipo AS nombre, activo
+       FROM asa_suaje
+       ${where}
+       ORDER BY tipo ASC`,
+      values
+    );
+    res.json(rows);
+  } catch (error: any) {
+    console.error("❌ GET SUAJES ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener asas/suajes" });
+  }
+};
+
+export const crearSuajeAdmin = async (req: Request, res: Response) => {
+  try {
+    const { nombre } = req.body;
+    if (!nombre || !String(nombre).trim()) {
+      return res.status(400).json({ error: "El nombre es requerido" });
+    }
+    const { rows } = await qAudit(req)(
+      `INSERT INTO asa_suaje (tipo, idproductos, activo)
+       VALUES ($1, $2, true)
+       RETURNING idsuaje AS id, tipo AS nombre, activo`,
+      [String(nombre).trim(), ID_PRODUCTO_LINEA_PLASTICO]
+    );
+    console.log("✅ Asa/Suaje creado:", rows[0].nombre);
+    res.status(201).json(rows[0]);
+  } catch (error: any) {
+    console.error("❌ CREAR SUAJE ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al crear el asa/suaje" });
+  }
+};
+
+export const editarSuajeAdmin = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { nombre } = req.body;
+    if (!nombre || !String(nombre).trim()) {
+      return res.status(400).json({ error: "El nombre es requerido" });
+    }
+    const { rows } = await qAudit(req)(
+      `UPDATE asa_suaje SET tipo = $1
+       WHERE idsuaje = $2
+       RETURNING idsuaje AS id, tipo AS nombre, activo`,
+      [String(nombre).trim(), id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
+    res.json(rows[0]);
+  } catch (error: any) {
+    console.error("❌ EDITAR SUAJE ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al editar el asa/suaje" });
+  }
+};
+
+export const desactivarSuajeAdmin = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await qAudit(req)(
+      `UPDATE asa_suaje SET activo = false
+       WHERE idsuaje = $1 RETURNING idsuaje`,
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
+    res.json({ message: "Asa/Suaje desactivado" });
+  } catch (error: any) {
+    console.error("❌ DESACTIVAR SUAJE ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al desactivar" });
+  }
+};
+
+export const reactivarSuajeAdmin = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await qAudit(req)(
+      `UPDATE asa_suaje SET activo = true
+       WHERE idsuaje = $1 RETURNING idsuaje`,
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
+    res.json({ message: "Asa/Suaje reactivado" });
+  } catch (error: any) {
+    console.error("❌ REACTIVAR SUAJE ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al reactivar" });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CINTA DE SEGURIDAD (tabla cinta_seguridad — nombre + medida separados,
+// tipo de bolsa de envío. Se elige por producto en el pedido/cotización,
+// igual que asa/suaje y troquel — ver id_cinta_seguridad en solicitud_producto).
+// ═══════════════════════════════════════════════════════════════════════════
+export const getCintaSeguridadAdmin = async (req: Request, res: Response) => {
+  try {
+    const { activo } = req.query;
+    let where = "";
+    const values: any[] = [];
+    if (activo === "true" || activo === "false") {
+      where = "WHERE activo = $1";
+      values.push(activo === "true");
+    }
+    const { rows } = await pool.query(
+      `SELECT idcinta_seguridad AS id, nombre, medida, activo
+       FROM cinta_seguridad
+       ${where}
+       ORDER BY nombre ASC`,
+      values
+    );
+    res.json(rows);
+  } catch (error: any) {
+    console.error("❌ GET CINTA SEGURIDAD ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener cintas de seguridad" });
+  }
+};
+
+export const crearCintaSeguridadAdmin = async (req: Request, res: Response) => {
+  try {
+    const { nombre, medida } = req.body;
+    if (!nombre || !String(nombre).trim()) {
+      return res.status(400).json({ error: "El nombre es requerido" });
+    }
+    const { rows } = await qAudit(req)(
+      `INSERT INTO cinta_seguridad (nombre, medida, activo)
+       VALUES ($1, $2, true)
+       RETURNING idcinta_seguridad AS id, nombre, medida, activo`,
+      [String(nombre).trim(), medida ? String(medida).trim() : null]
+    );
+    console.log("✅ Cinta de seguridad creada:", rows[0].nombre);
+    res.status(201).json(rows[0]);
+  } catch (error: any) {
+    console.error("❌ CREAR CINTA SEGURIDAD ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al crear la cinta de seguridad" });
+  }
+};
+
+export const editarCintaSeguridadAdmin = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { nombre, medida } = req.body;
+    if (!nombre || !String(nombre).trim()) {
+      return res.status(400).json({ error: "El nombre es requerido" });
+    }
+    const { rows } = await qAudit(req)(
+      `UPDATE cinta_seguridad SET nombre = $1, medida = $2
+       WHERE idcinta_seguridad = $3
+       RETURNING idcinta_seguridad AS id, nombre, medida, activo`,
+      [String(nombre).trim(), medida ? String(medida).trim() : null, id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
+    res.json(rows[0]);
+  } catch (error: any) {
+    console.error("❌ EDITAR CINTA SEGURIDAD ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al editar la cinta de seguridad" });
+  }
+};
+
+export const desactivarCintaSeguridadAdmin = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await qAudit(req)(
+      `UPDATE cinta_seguridad SET activo = false
+       WHERE idcinta_seguridad = $1 RETURNING idcinta_seguridad`,
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
+    res.json({ message: "Cinta de seguridad desactivada" });
+  } catch (error: any) {
+    console.error("❌ DESACTIVAR CINTA SEGURIDAD ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al desactivar" });
+  }
+};
+
+export const reactivarCintaSeguridadAdmin = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await qAudit(req)(
+      `UPDATE cinta_seguridad SET activo = true
+       WHERE idcinta_seguridad = $1 RETURNING idcinta_seguridad`,
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "No encontrado" });
+    res.json({ message: "Cinta de seguridad reactivada" });
+  } catch (error: any) {
+    console.error("❌ REACTIVAR CINTA SEGURIDAD ADMIN ERROR:", error.message);
+    res.status(500).json({ error: "Error al reactivar" });
+  }
+};

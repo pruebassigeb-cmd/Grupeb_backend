@@ -17,6 +17,21 @@ import {
   editarCalibreAdmin,
   desactivarCalibreAdmin,
   reactivarCalibreAdmin,
+  getTroquelesAdmin,
+  crearTroquelAdmin,
+  editarTroquelAdmin,
+  desactivarTroquelAdmin,
+  reactivarTroquelAdmin,
+  getSuajesAdmin,
+  crearSuajeAdmin,
+  editarSuajeAdmin,
+  desactivarSuajeAdmin,
+  reactivarSuajeAdmin,
+  getCintaSeguridadAdmin,
+  crearCintaSeguridadAdmin,
+  editarCintaSeguridadAdmin,
+  desactivarCintaSeguridadAdmin,
+  reactivarCintaSeguridadAdmin,
 } from "../../controllers/productos/catalogosPlasticoAdmin.controller";
 import { authMiddleware, checkPermiso } from "../../middlewares/auth.middleware";
 import {
@@ -131,6 +146,75 @@ router.patch(
   "/calibres/:id/reactivar",
   authMiddleware, checkPermiso(PERMISO), writeLimiter, validateId,
   reactivarCalibreAdmin
+);
+
+// ── Tipo de troquel ───────────────────────────────────────────────────────
+router.get("/troqueles", authMiddleware, getTroquelesAdmin);
+router.post(
+  "/troqueles",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, preventSQLInjection,
+  crearTroquelAdmin
+);
+router.put(
+  "/troqueles/:id",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, preventSQLInjection, validateId,
+  editarTroquelAdmin
+);
+router.delete(
+  "/troqueles/:id",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, validateId,
+  desactivarTroquelAdmin
+);
+router.patch(
+  "/troqueles/:id/reactivar",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, validateId,
+  reactivarTroquelAdmin
+);
+
+// ── Asa / Suaje ───────────────────────────────────────────────────────────
+router.get("/asa-suaje", authMiddleware, getSuajesAdmin);
+router.post(
+  "/asa-suaje",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, preventSQLInjection,
+  crearSuajeAdmin
+);
+router.put(
+  "/asa-suaje/:id",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, preventSQLInjection, validateId,
+  editarSuajeAdmin
+);
+router.delete(
+  "/asa-suaje/:id",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, validateId,
+  desactivarSuajeAdmin
+);
+router.patch(
+  "/asa-suaje/:id/reactivar",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, validateId,
+  reactivarSuajeAdmin
+);
+
+// ── Cinta de seguridad ────────────────────────────────────────────────────
+router.get("/cinta-seguridad", authMiddleware, getCintaSeguridadAdmin);
+router.post(
+  "/cinta-seguridad",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, preventSQLInjection,
+  crearCintaSeguridadAdmin
+);
+router.put(
+  "/cinta-seguridad/:id",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, preventSQLInjection, validateId,
+  editarCintaSeguridadAdmin
+);
+router.delete(
+  "/cinta-seguridad/:id",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, validateId,
+  desactivarCintaSeguridadAdmin
+);
+router.patch(
+  "/cinta-seguridad/:id/reactivar",
+  authMiddleware, checkPermiso(PERMISO), writeLimiter, validateId,
+  reactivarCintaSeguridadAdmin
 );
 
 export default router;

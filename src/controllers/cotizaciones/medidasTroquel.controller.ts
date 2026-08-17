@@ -5,7 +5,7 @@ export const getMedidasTroquel = async (_req: Request, res: Response) => {
   try {
     console.log("🔍 GET MEDIDAS TROQUEL llamado");
     const { rows } = await pool.query(
-      `SELECT id_medidatro, medida FROM medidas_troquel ORDER BY id_medidatro`
+      `SELECT id_medidatro, medida FROM medidas_troquel WHERE activo = true ORDER BY id_medidatro`
     );
     console.log("🔍 MEDIDAS TROQUEL resultado:", rows);
     return res.json(rows);

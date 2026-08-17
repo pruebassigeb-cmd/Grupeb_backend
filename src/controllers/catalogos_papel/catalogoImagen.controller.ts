@@ -25,6 +25,13 @@ const CATALOGOS_CON_IMAGEN = [
   "foil",
   "hs_ar",
   "uv",
+  // ✅ NUEVO — catálogos de plástico (medidas_troquel, asa_suaje,
+  // cinta_seguridad usan su propio idcatalogo como catalogo_id;
+  // tipo_producto_plastico también gana imagen aquí).
+  "tipo_producto_plastico",
+  "medidas_troquel",
+  "asa_suaje",
+  "cinta_seguridad",
 ] as const;
 
 type CatalogoConImagen = (typeof CATALOGOS_CON_IMAGEN)[number];

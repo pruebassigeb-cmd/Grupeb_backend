@@ -307,6 +307,7 @@ export const crearCotizacion = async (req: Request, res: Response) => {
         porKilo = null,
         colorAsaId = null,
         idMedidaTroquel = null,
+        idCintaSeguridad = null,
         herramental_descripcion = null,
         herramental_precio = null,
       } = producto;
@@ -342,6 +343,8 @@ export const crearCotizacion = async (req: Request, res: Response) => {
       const colorAsaGuardar = colorAsaId != null ? Number(colorAsaId) : null;
       const medidaTroquelGuardar =
         idMedidaTroquel != null ? Number(idMedidaTroquel) : null;
+      const cintaSeguridadGuardar =
+        idCintaSeguridad != null ? Number(idCintaSeguridad) : null;
       const descripcionGuardar =
         typeof descripcion === "string" && descripcion.trim() !== ""
           ? descripcion.trim()
@@ -356,9 +359,9 @@ export const crearCotizacion = async (req: Request, res: Response) => {
           idsuaje,
           pigmentos, pantones, observacion, descripcion,
           perforacion,
-          id_color, id_medidatro,
+          id_color, id_medidatro, id_cinta_seguridad,
           tipo_material
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'plastico')
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'plastico')
         RETURNING idsolicitud_producto`,
         [
           solicitudId,
@@ -373,6 +376,7 @@ export const crearCotizacion = async (req: Request, res: Response) => {
           perforacionGuardar,
           colorAsaGuardar,
           medidaTroquelGuardar,
+          cintaSeguridadGuardar,
         ],
       );
 
@@ -522,6 +526,7 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           sp.perforacion,
           sp.id_color,
           sp.id_medidatro,
+          sp.id_cinta_seguridad,
 
           -- ── Discriminador + refs de PAPEL ──
           sp.tipo_material,
@@ -553,6 +558,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
 
           ca.color          AS color_asa_nombre,
           mt.medida         AS medida_troquel,
+          cs.nombre         AS cinta_seguridad_nombre,
+          cs.medida         AS cinta_seguridad_medida,
 
           cfg.medida        AS cfg_medida,
           cfg.altura        AS cfg_altura,
@@ -607,6 +614,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           ON ca.id_color = sp.id_color
       LEFT JOIN medidas_troquel mt
           ON mt.id_medidatro = sp.id_medidatro
+      LEFT JOIN cinta_seguridad cs
+          ON cs.idcinta_seguridad = sp.id_cinta_seguridad
       LEFT JOIN configuracion_plastico cfg
           ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
       LEFT JOIN tipo_producto_plastico tpp
@@ -752,6 +761,9 @@ export const getCotizaciones = async (req: Request, res: Response) => {
               color_asa_nombre: row.color_asa_nombre ?? null,
               id_medidatro: null,
               medida_troquel: null,
+              id_cinta_seguridad: null,
+              cinta_seguridad_nombre: null,
+              cinta_seguridad_medida: null,
               herramental_descripcion: null,
               herramental_precio: null,
               herramental_aprobado: null,
@@ -832,6 +844,9 @@ export const getCotizaciones = async (req: Request, res: Response) => {
               color_asa_nombre: row.color_asa_nombre ?? null,
               id_medidatro: row.id_medidatro ?? null,
               medida_troquel: row.medida_troquel ?? null,
+              id_cinta_seguridad: row.id_cinta_seguridad ?? null,
+              cinta_seguridad_nombre: row.cinta_seguridad_nombre ?? null,
+              cinta_seguridad_medida: row.cinta_seguridad_medida ?? null,
               herramental_descripcion: row.herramental_descripcion ?? null,
               herramental_precio:
                 row.herramental_precio != null
@@ -1510,13 +1525,14 @@ export const actualizarCotizacionProductos = async (
              configuracion_plastico_idconfiguracion_plastico = $1,
              tintas_idtintas = $2, caras_idcaras = $3,
              pantones = $4, pigmentos = $5, observacion = $6, descripcion = $7,
-             perforacion = $8, idsuaje = $9, id_color = $10, id_medidatro = $11
-           WHERE idsolicitud_producto = $12`,
+             perforacion = $8, idsuaje = $9, id_color = $10, id_medidatro = $11,
+             id_cinta_seguridad = $12
+           WHERE idsolicitud_producto = $13`,
           [
             prod.nuevo_configuracion_id, tintasId, carasId, pantonesLimpios,
             prod.pigmentos || null, prod.observacion || null, prod.descripcion || null,
             prod.perforacion === true, prod.idsuaje ?? null, prod.id_color ?? null,
-            prod.id_medidatro ?? null, prod.idsolicitud_producto,
+            prod.id_medidatro ?? null, prod.id_cinta_seguridad ?? null, prod.idsolicitud_producto,
           ],
         );
       } else {
@@ -1524,13 +1540,13 @@ export const actualizarCotizacionProductos = async (
           `UPDATE solicitud_producto SET
              tintas_idtintas = $1, caras_idcaras = $2, pantones = $3, pigmentos = $4,
              observacion = $5, descripcion = $6, perforacion = $7,
-             idsuaje = $8, id_color = $9, id_medidatro = $10
-           WHERE idsolicitud_producto = $11`,
+             idsuaje = $8, id_color = $9, id_medidatro = $10, id_cinta_seguridad = $11
+           WHERE idsolicitud_producto = $12`,
           [
             tintasId, carasId, pantonesLimpios, prod.pigmentos || null,
             prod.observacion || null, prod.descripcion || null, prod.perforacion === true,
             prod.idsuaje ?? null, prod.id_color ?? null, prod.id_medidatro ?? null,
-            prod.idsolicitud_producto,
+            prod.id_cinta_seguridad ?? null, prod.idsolicitud_producto,
           ],
         );
       }
@@ -1678,14 +1694,14 @@ export const actualizarCotizacionProductos = async (
         `INSERT INTO solicitud_producto (
            solicitud_idsolicitud, configuracion_plastico_idconfiguracion_plastico,
            tintas_idtintas, caras_idcaras, pantones, pigmentos, observacion, descripcion,
-           perforacion, idsuaje, id_color, id_medidatro
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+           perforacion, idsuaje, id_color, id_medidatro, id_cinta_seguridad
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          RETURNING idsolicitud_producto`,
         [
           solicitudId, prod.configuracion_plastico_id, tintasIdNuevo, carasIdNuevo,
           pantonesLimpiosNuevo, prod.pigmentos || null, prod.observacion || null,
           prod.descripcion || null, prod.perforacion === true, prod.idsuaje ?? null,
-          prod.id_color ?? null, prod.id_medidatro ?? null,
+          prod.id_color ?? null, prod.id_medidatro ?? null, prod.id_cinta_seguridad ?? null,
         ],
       );
       const nuevoSpId: number = spRows[0].idsolicitud_producto;

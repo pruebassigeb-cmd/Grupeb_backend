@@ -333,6 +333,36 @@ export async function getTintasDeOrdenPapel(
   };
 }
 
+/**
+ * Nombre del primer proceso de papel que ya arrancó en esta orden, o null si
+ * ninguno ha iniciado. Se considera "iniciado" tener fecha_inicio, que es el
+ * mismo criterio que usa Seguimiento para pintar el estado "en proceso".
+ *
+ * Lo usa actualizarPedido para NO dejar cambiar la cantidad de una orden que
+ * ya está en planta: si se recalculara la merma ahí, los operadores verían
+ * cambiar su meta a media corrida (decisión de Jose, 2026-08-14).
+ */
+export async function getPrimerProcesoPapelIniciado(
+  client: any,
+  idproduccion: number
+): Promise<string | null> {
+  const union = (Object.entries(TABLA_POR_CLAVE_PAPEL) as [ClaveProcesoPapel, string][])
+    .map(([clave, tabla]) =>
+      `SELECT '${clave}' AS clave, MIN(fecha_inicio) AS inicio
+         FROM ${tabla}
+        WHERE orden_produccion_idproduccion = $1 AND fecha_inicio IS NOT NULL`
+    )
+    .join(" UNION ALL ");
+
+  const { rows } = await client.query(
+    `SELECT clave FROM (${union}) t WHERE inicio IS NOT NULL ORDER BY inicio ASC LIMIT 1`,
+    [idproduccion]
+  );
+
+  if (!rows[0]) return null;
+  return NOMBRE_PROCESO_CAT_PAPEL[rows[0].clave as ClaveProcesoPapel] ?? rows[0].clave;
+}
+
 async function getMaquinaElegidaPapel(
   client: any,
   idproduccion: number,

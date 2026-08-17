@@ -95,7 +95,15 @@ export const getTiposCotizadorLibre = async (req: Request, res: Response) => {
          ORDER BY t.material_plastico_producto`,
         [ID_PRODUCTOS_PLASTICO]
       );
-      return res.json(rows);
+      const imagenes = await resolverImagenesCatalogo(
+        rows.map((r: any) => ({ key: "tipo_producto_plastico", id: r.id }))
+      );
+      return res.json(
+        rows.map((r: any) => ({
+          ...r,
+          imagenUrl: imagenes.get(`tipo_producto_plastico:${r.id}`) ?? null,
+        }))
+      );
     }
 
     return res.status(400).json({ error: "categoria debe ser 'papel' o 'plastico'." });
