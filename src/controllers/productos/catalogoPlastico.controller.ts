@@ -108,6 +108,7 @@ const SELECT_PRODUCTO = `
     cp.fuelle_latDe  AS fuelle_lateral_derecho,
     cp.medida,
     cp.por_kilo,
+    cp.origen_expo,
     tpp.material_plastico_producto AS tipo_producto,
     mp.tipo_material               AS material,
 
