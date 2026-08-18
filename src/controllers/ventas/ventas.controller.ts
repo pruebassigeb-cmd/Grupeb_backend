@@ -14,7 +14,7 @@ import { type Moneda, resolverMontoPago } from "../../utils/moneda.utils";
 import { ErrorHttp, responderError } from "../../utils/errorHttp";
 import { congelarMermaSiEsPapel } from "../../services/producto_papel/merma.service";
 
-/**
+/*
  * Resuelve primero la solicitud, toma su advisory transaccional y finalmente
  * relee/bloquea la venta. AsÃ­ ninguna operaciÃ³n usa total/abono obsoletos
  * despuÃ©s de esperar a una ediciÃ³n de pedido o a otro pago.

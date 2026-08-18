@@ -107,9 +107,19 @@ export const createUsuario = async (req: Request, res: Response) => {
 
     const nuevoUsuario = await req.tx(async (client) => {
       const existeCorreo = await client.query(
-        "SELECT 1 FROM usuarios WHERE correo = $1 LIMIT 1", [correo]
+        `SELECT nombre, apellido, activo FROM usuarios
+         WHERE correo = $1 AND eliminado_at IS NULL LIMIT 1`,
+        [correo]
       );
       if ((existeCorreo.rowCount ?? 0) > 0) {
+        const existente = existeCorreo.rows[0];
+        if (existente.activo === false) {
+          throw new ErrorHttp(
+            400,
+            `Este correo pertenece a un usuario desactivado (${existente.nombre} ${existente.apellido}). ` +
+            `Actívalo o elimínalo antes de reutilizar el correo.`
+          );
+        }
         throw new ErrorHttp(400, "El correo ya está registrado");
       }
 
@@ -313,9 +323,19 @@ export const updateUsuario = async (req: Request, res: Response) => {
 
     const usuarioActualizado = await req.tx(async (client) => {
       const existeCorreo = await client.query(
-        "SELECT 1 FROM usuarios WHERE correo = $1 AND idusuario != $2 LIMIT 1", [correo, id]
+        `SELECT nombre, apellido, activo FROM usuarios
+         WHERE correo = $1 AND idusuario != $2 AND eliminado_at IS NULL LIMIT 1`,
+        [correo, id]
       );
       if ((existeCorreo.rowCount ?? 0) > 0) {
+        const existente = existeCorreo.rows[0];
+        if (existente.activo === false) {
+          throw new ErrorHttp(
+            400,
+            `Este correo pertenece a un usuario desactivado (${existente.nombre} ${existente.apellido}). ` +
+            `Actívalo o elimínalo antes de reutilizar el correo.`
+          );
+        }
         throw new ErrorHttp(400, "El correo ya está registrado");
       }
 
@@ -498,8 +518,16 @@ export const deleteUsuario = async (req: Request, res: Response) => {
       await client.query("DELETE FROM privilegios_has_usuarios WHERE usuarios_idusuario = $1", [id]);
 
       // eliminado_por lo llena el trigger fn_tocar_autoria.
+      //
+      // El correo se libera aquí mismo (prefijo con idusuario + timestamp),
+      // no cuando alguien lo desactiva. Así queda disponible de inmediato
+      // para un usuario nuevo. El registro (y el correo original, ya con
+      // prefijo) se conserva en la fila para no romper la auditoría.
       await client.query(
-        `UPDATE usuarios SET eliminado_at = now(), activo = false
+        `UPDATE usuarios
+            SET eliminado_at = now(),
+                activo = false,
+                correo = 'eliminado_' || idusuario || '_' || extract(epoch FROM now())::bigint || '_' || correo
           WHERE idusuario = $1 AND eliminado_at IS NULL`,
         [id]
       );
