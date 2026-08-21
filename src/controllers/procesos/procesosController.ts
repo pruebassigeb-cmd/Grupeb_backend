@@ -1,6 +1,9 @@
 import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
+import { AuthRequest } from "../../middlewares/auth.middleware";
 import { pool } from "../../config/db";
+// ── NUEVO: enganche de estado de cuenta (ver plan-estado-cuenta-cobranza-v2.md) ──
+import { generarEstadoCuentaSiPedidoCompleto } from "../../services/ventas/estadoCuenta.service";
 
 const ESTADO_PROD = {
   PENDIENTE: 1,
@@ -710,7 +713,7 @@ export const getAvancesProceso = async (req: Request, res: Response) => {
 // ============================================================
 // PUT /procesos/:idproduccion/finalizar
 // ============================================================
-export const finalizarProceso = async (req: Request, res: Response) => {
+export const finalizarProceso = async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {
     const { idproduccion } = req.params as { idproduccion: string };
@@ -883,6 +886,16 @@ export const finalizarProceso = async (req: Request, res: Response) => {
       await client.query(`
         UPDATE orden_produccion SET idestado_produccion_cat = $1, proceso_actual = NULL WHERE idproduccion = $2
       `, [ESTADO_PROD.TERMINADO, idproduccion]);
+
+      // ── NUEVO: si con esto el pedido completo (todas sus órdenes) queda
+      // terminado, se genera (o versiona) su estado de cuenta. Si el pedido
+      // tiene más productos con órdenes aún abiertas, esto no hace nada —
+      // pedidoTieneProduccionCompleta() dentro del helper se encarga de
+      // verificarlo, así que no hace falta distinguir aquí "cerré el
+      // producto 1 de 3" de "cerré el último". Va DENTRO de la transacción,
+      // antes del COMMIT: si algo falla generando el estado de cuenta, el
+      // proceso tampoco queda marcado como terminado a medias. ──
+      await generarEstadoCuentaSiPedidoCompleto(client, Number(idproduccion), req.user?.id ?? null);
     }
 
     await client.query("COMMIT");
@@ -942,7 +955,7 @@ export const resagarProceso = async (req: Request, res: Response) => {
 // ============================================================
 // PUT /procesos/:idproduccion/editar/:tabla
 // ============================================================
-export const editarProceso = async (req: Request, res: Response) => {
+export const editarProceso = async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {
     const { idproduccion, tabla } = req.params as { idproduccion: string; tabla: string };
@@ -1046,6 +1059,14 @@ export const editarProceso = async (req: Request, res: Response) => {
         );
       }
     }
+
+    // ── NUEVO: regeneración automática (plan v2, sección 10). editarProceso
+    // solo permite tocar procesos ya TERMINADOS, así que si el pedido está
+    // completo esto siempre intenta versionar. generarEstadoCuenta() es
+    // idempotente: si el recálculo da los mismos números que la versión
+    // vigente, no crea una nueva — así que no hace falta lógica extra aquí
+    // para distinguir una edición cosmética de una que sí cambia el total. ──
+    await generarEstadoCuentaSiPedidoCompleto(client, Number(idproduccion), req.user?.id ?? null);
 
     await client.query("COMMIT");
     return res.json({ message: `Proceso ${tabla} actualizado`, idproduccion: Number(idproduccion), tabla });

@@ -33,6 +33,14 @@ async function obtenerVentaBloqueada(client: any, ventaId: unknown): Promise<any
     `SELECT
        v.idventas,
        v.total,
+       -- ── NUEVO (Fase 6): total_real, para que registrarPago/eliminarPago
+       -- calculen el saldo contra el total RECALCULADO por producción real
+       -- (cuando existe) en vez del total original cotizado. En cuanto el
+       -- estado de cuenta suba el total, el primer pago que se registre ya
+       -- no debe borrar esa diferencia por cobrar. calcularUmbralAnticipo
+       -- SIGUE usando v.total, nunca v.total_real — ver el comentario en
+       -- cada función más abajo.
+       v.total_real,
        v.anticipo,
        v.saldo,
        v.abono,
@@ -355,6 +363,13 @@ const SUBQ_HERRAMENTAL = `
   ), 0) AS herramental_total
 `;
 
+// ── NUEVO (Fase 3/5): fecha del estado de cuenta vigente. AnticipoLiquidacion
+// lo usa para el orden "Más antiguo / Más reciente" y para la columna E.Cta.
+const SUBQ_ESTADO_CUENTA = `
+  (SELECT ec.fecha_generacion FROM estado_cuenta ec
+   WHERE ec.ventas_idventas = v.idventas AND ec.vigente = true) AS estado_cuenta_fecha
+`;
+
 // ============================================================
 // OBTENER TODAS LAS VENTAS
 // ============================================================
@@ -379,7 +394,8 @@ export const getVentas = async (req: Request, res: Response) => {
             AND vp.es_credito_anticipo = true
             AND vp.eliminado_at IS NULL
         ) AS es_credito_anticipo,
-        ${SUBQ_HERRAMENTAL}
+        ${SUBQ_HERRAMENTAL},
+        ${SUBQ_ESTADO_CUENTA}
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
       JOIN clientes cli  ON cli.idclientes = s.clientes_idclientes
@@ -417,7 +433,8 @@ export const getVentaById = async (req: Request, res: Response) => {
             AND vp.es_credito_anticipo = true
             AND vp.eliminado_at IS NULL
         ) AS es_credito_anticipo,
-        ${SUBQ_HERRAMENTAL}
+        ${SUBQ_HERRAMENTAL},
+        ${SUBQ_ESTADO_CUENTA}
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
       JOIN clientes cli  ON cli.idclientes = s.clientes_idclientes
@@ -471,7 +488,8 @@ export const getVentaByPedido = async (req: Request, res: Response) => {
             AND vp.es_credito_anticipo = true
             AND vp.eliminado_at IS NULL
         ) AS es_credito_anticipo,
-        ${SUBQ_HERRAMENTAL}
+        ${SUBQ_HERRAMENTAL},
+        ${SUBQ_ESTADO_CUENTA}
       FROM ventas v
       JOIN solicitud s   ON s.idsolicitud = v.solicitud_idsolicitud
       JOIN clientes cli  ON cli.idclientes = s.clientes_idclientes
@@ -550,10 +568,19 @@ export const registrarPago = async (req: AuthRequest, res: Response) => {
 
       const abonoAntes  = Number(venta.abono);
       const nuevoAbono  = Number((abonoAntes + montoMonedaVenta).toFixed(2));
-      const totalVenta  = Number(venta.total);
-      const nuevoSaldo  = Number((totalVenta - nuevoAbono).toFixed(2));
+      // Fase 6: el saldo se calcula contra el total REAL (recalculado por
+      // producción, si el estado de cuenta ya corrió) — antes usaba
+      // siempre v.total, así que el primer pago después de una corrección
+      // de producción "olvidaba" la diferencia por cobrar.
+      const totalParaSaldo = Number(venta.total_real ?? venta.total);
+      const nuevoSaldo     = Number((totalParaSaldo - nuevoAbono).toFixed(2));
 
-      const umbralActivacion = calcularUmbralAnticipo(totalVenta);
+      // El umbral del anticipo NO se toca: se pacta sobre lo COTIZADO
+      // (v.total), no sobre lo que terminó saliendo de producción. Que el
+      // total real suba o baje no debe mover cuánto anticipo hacía falta
+      // para arrancar producción — eso ya se decidió cuando se aprobó el
+      // pedido. No "arreglar" esto para que use total_real.
+      const umbralActivacion = calcularUmbralAnticipo(Number(venta.total));
 
       const anticipoAntesNoCubierto = abonoAntes  < umbralActivacion;
       const anticipoAhoraCubierto   = nuevoAbono >= umbralActivacion;
@@ -668,11 +695,14 @@ export const eliminarPago = async (req: Request, res: Response) => {
       );
       const nuevoAbono = Number(sumaRows[0].total_abonado);
 
-      const total         = Number(venta.total);
-      const nuevoSaldo    = Number((total - nuevoAbono).toFixed(2));
-      const estaLiquidado = nuevoSaldo <= 0;
+      // Fase 6 — mismo criterio que registrarPago: el saldo se recalcula
+      // contra total_real cuando existe, el umbral del anticipo sigue
+      // midiéndose contra el total cotizado.
+      const totalParaSaldo = Number(venta.total_real ?? venta.total);
+      const nuevoSaldo     = Number((totalParaSaldo - nuevoAbono).toFixed(2));
+      const estaLiquidado  = nuevoSaldo <= 0;
 
-      const umbralActivacion = calcularUmbralAnticipo(total);
+      const umbralActivacion = calcularUmbralAnticipo(Number(venta.total));
 
       // FIX: verificar si aún queda algún registro de crédito DESPUÉS de eliminar
       // (la baja lógica ya ocurrió y ventaTieneCredito filtra eliminado_at,

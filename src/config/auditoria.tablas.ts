@@ -440,6 +440,25 @@ export const TABLAS_AUDITABLES: Record<string, TablaAuditable> = {
     etiqueta: "Tipo de cambio",
     modo: "discreto",
   },
+
+
+ticket: {
+  pk: "idticket",
+  etiqueta: "Ticket",
+  modo: "principal",
+  campos: {
+    titulo: "Título", estado: "Estado", prioridad: "Prioridad",
+    ubicacion: "Ubicación", asignado_a: "Asignado a",
+    archivado: "Archivado", fecha_cierre: "Fecha de cierre",
+  },
+},
+ticket_comentario: {
+  pk: "idticket_comentario",
+  etiqueta: "Comentario de ticket",
+  modo: "discreto",
+  campos: { comentario: "Comentario", es_interno: "Nota interna" },
+},
+
 };
 
 /** Nombre legible de una columna que no tiene etiqueta explícita.

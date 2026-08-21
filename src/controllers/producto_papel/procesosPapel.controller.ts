@@ -1,6 +1,9 @@
 import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
+import { AuthRequest } from "../../middlewares/auth.middleware";
 import { pool } from "../../config/db";
+// ── NUEVO: enganche de estado de cuenta (ver plan-estado-cuenta-cobranza-v2.md) ──
+import { generarEstadoCuentaSiPedidoCompleto } from "../../services/ventas/estadoCuenta.service";
 
 // ════════════════════════════════════════════════════════════════════════
 // PROCESOS DE PAPEL — Orquestador
@@ -1094,7 +1097,7 @@ export const registrarAvancePapel = async (req: Request, res: Response) => {
 // ════════════════════════════════════════════════════════════════════════
 // PUT /procesos-papel/:idproduccion/finalizar
 // ════════════════════════════════════════════════════════════════════════
-export const finalizarProcesoPapel = async (req: Request, res: Response) => {
+export const finalizarProcesoPapel = async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {
     const { idproduccion } = req.params as { idproduccion: string };
@@ -1197,6 +1200,13 @@ export const finalizarProcesoPapel = async (req: Request, res: Response) => {
       await client.query(`
         UPDATE orden_produccion SET idestado_produccion_cat = $1, proceso_actual = NULL WHERE idproduccion = $2
       `, [ESTADO_PROD.TERMINADO, idproduccion]);
+
+      // ── NUEVO: espejo exacto del enganche en procesosController.finalizarProceso.
+      // Se dispara sin importar cuál fue el último proceso real de la cascada
+      // de papel (Empaque casi siempre, pero el motor no lo asume — usa
+      // getSiguienteEfectivoPapel, así que esta llamada va en el punto
+      // genérico correcto). Dentro de la transacción, antes del COMMIT. ──
+      await generarEstadoCuentaSiPedidoCompleto(client, Number(idproduccion), req.user?.id ?? null);
     }
 
     await client.query("COMMIT");
@@ -1233,7 +1243,7 @@ export const finalizarProcesoPapel = async (req: Request, res: Response) => {
 // ════════════════════════════════════════════════════════════════════════
 // PUT /procesos-papel/:idproduccion/editar/:tabla
 // ════════════════════════════════════════════════════════════════════════
-export const editarProcesoPapel = async (req: Request, res: Response) => {
+export const editarProcesoPapel = async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {
     const { idproduccion, tabla } = req.params as { idproduccion: string; tabla: string };
@@ -1318,6 +1328,10 @@ export const editarProcesoPapel = async (req: Request, res: Response) => {
         }
       }
     }
+
+    // ── NUEVO: regeneración automática — mismo criterio que editarProceso
+    // (plástico). Idempotente vía generarEstadoCuenta. ──
+    await generarEstadoCuentaSiPedidoCompleto(client, Number(idproduccion), req.user?.id ?? null);
 
     await client.query("COMMIT");
     return res.json({ message: `Proceso ${tabla} actualizado`, idproduccion: Number(idproduccion), tabla });

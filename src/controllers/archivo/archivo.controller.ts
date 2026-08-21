@@ -60,6 +60,12 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
     const usuarioId = req.body.usuario_id ? Number(req.body.usuario_id) : null;
     const envioId = req.body.envio_id ? Number(req.body.envio_id) : null;
     const notaId = req.body.nota_id ? Number(req.body.nota_id) : null;
+    // ✅ NUEVO — vínculo con Mesa de Tickets (imagen del ticket principal
+    // o de un comentario específico; el segundo es opcional).
+    const ticketId = req.body.ticket_id ? Number(req.body.ticket_id) : null;
+    const ticketComentarioId = req.body.ticket_comentario_id
+      ? Number(req.body.ticket_comentario_id)
+      : null;
     const idproducto_papel = req.body.idproducto_papel ? Number(req.body.idproducto_papel) : null;
     // ✅ NUEVO: vínculo con producto plástico
     const idconfiguracion_plastico = req.body.idconfiguracion_plastico
@@ -68,8 +74,8 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
 
     const result = await qAudit(req)(
       `INSERT INTO archivos 
-        (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria, usuario_id, envio_id, nota_id, idproducto_papel, idconfiguracion_plastico)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        (nombre, tipo, mime_type, url, public_id, tamano_kb, subido_por, resource_type, categoria, usuario_id, envio_id, nota_id, idproducto_papel, idconfiguracion_plastico, ticket_id, ticket_comentario_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        RETURNING *`,
       [
         req.file.originalname, tipo, req.file.mimetype, url, public_id, tamanoKb,
@@ -78,6 +84,8 @@ export const subirArchivo = async (req: RequestConArchivo, res: Response): Promi
         usuarioId, envioId, notaId,
         idproducto_papel,
         idconfiguracion_plastico,
+        ticketId,
+        ticketComentarioId,
       ]
     );
 
@@ -139,6 +147,43 @@ export const getFotosNota = async (req: Request, res: Response): Promise<void> =
     res.json(archivosConUrl);
   } catch (error) {
     console.error("❌ Error al obtener fotos de la nota:", error);
+    res.status(500).json({ error: "Error al obtener fotos" });
+  }
+};
+
+// ✅ NUEVO — GET fotos de un ticket (ticket principal + todos sus
+// comentarios). Mismo patrón que getFotosEnvio/getFotosNota. No es
+// estrictamente necesario porque GET /tickets/:id ya trae las imágenes
+// incluidas, pero sirve si en algún momento se quiere un endpoint suelto
+// solo de fotos (ej. para un carrusel aparte).
+export const getFotosTicket = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { idticket } = req.params;
+
+    const result = await pool.query(
+      `SELECT id_archivo, nombre, tipo, mime_type, public_id, tamano_kb, ticket_comentario_id, created_at
+       FROM archivos
+       WHERE (
+              ticket_id = $1
+              OR ticket_comentario_id IN (
+                   SELECT idticket_comentario FROM ticket_comentario WHERE idticket = $1
+                 )
+            )
+         AND tipo = 'image'
+       ORDER BY created_at ASC`,
+      [idticket]
+    );
+
+    const archivosConUrl = await Promise.all(
+      result.rows.map(async (archivo) => ({
+        ...archivo,
+        url: await getPresignedUrl(archivo.public_id),
+      }))
+    );
+
+    res.json(archivosConUrl);
+  } catch (error) {
+    console.error("❌ Error al obtener fotos del ticket:", error);
     res.status(500).json({ error: "Error al obtener fotos" });
   }
 };

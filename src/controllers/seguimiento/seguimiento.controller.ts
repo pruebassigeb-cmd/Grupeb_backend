@@ -6,6 +6,16 @@ import { getPresignedUrl } from "../../config/multer";
 // merma tolerada ya congelada en orden_produccion_merma, sin tocar la
 // cantidad del pedido que se le muestra al cliente.
 import { getCantidadesAProducirBatch } from "../../services/producto_papel/merma.service";
+// ── NUEVO: estado de cuenta / cuentas por cobrar (plan-estado-cuenta-cobranza-v2.md) ──
+// Reutiliza el util que ya existe para el reporte semanal — mismo
+// contarDiasHabiles, no se duplica.
+import { contarDiasHabiles } from "../../utils/diasHabiles";
+
+// Umbral de negocio, específico de este endpoint (no de contarDiasHabiles):
+// a partir de cuántos días hábiles desde la generación del estado de cuenta
+// un pedido con saldo pendiente entra a "Cuentas por cobrar". Decisión
+// cerrada con Jose: 5 días hábiles (no 8, no calendario).
+const DIAS_HABILES_VENCIMIENTO_ESTADO_CUENTA = 5;
 
 // ── Descarga imagen desde S3 y la retorna como data URL base64 ──
 async function publicIdToBase64(publicId: string): Promise<string | null> {
@@ -312,7 +322,18 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         op.es_parcialidad,
 
         od.idorden_diseno,
-        od.estado                       AS od_estado
+        od.estado                       AS od_estado,
+        -- ✅ NUEVO: ¿ya se subió al menos un archivo (render/master/feedback)
+        -- a esta orden de diseño? Sirve para distinguir en el badge "OD"
+        -- un aprobado administrativo real de uno aprobado sin que nadie
+        -- haya subido todavía el diseño en sí (caso anómalo que Jose pidió
+        -- marcar en naranja aunque el texto siga diciendo "Aprobado").
+        EXISTS (
+          SELECT 1
+          FROM revision_diseno rd_chk
+          JOIN archivos ar_chk ON ar_chk.revision_diseno_id = rd_chk.idrevision
+          WHERE rd_chk.orden_diseno_id = od.idorden_diseno
+        )                                AS od_tiene_archivos
 
       FROM solicitud s
       LEFT JOIN clientes cli
@@ -569,7 +590,18 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         sd.modo_cantidad,
 
         od.idorden_diseno,
-        od.estado                       AS od_estado
+        od.estado                       AS od_estado,
+        -- ✅ NUEVO: ¿ya se subió al menos un archivo (render/master/feedback)
+        -- a esta orden de diseño? Sirve para distinguir en el badge "OD"
+        -- un aprobado administrativo real de uno aprobado sin que nadie
+        -- haya subido todavía el diseño en sí (caso anómalo que Jose pidió
+        -- marcar en naranja aunque el texto siga diciendo "Aprobado").
+        EXISTS (
+          SELECT 1
+          FROM revision_diseno rd_chk
+          JOIN archivos ar_chk ON ar_chk.revision_diseno_id = rd_chk.idrevision
+          WHERE rd_chk.orden_diseno_id = od.idorden_diseno
+        )                                AS od_tiene_archivos
 
       FROM solicitud s
       LEFT JOIN clientes cli
@@ -841,6 +873,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
         idorden_diseno: row.idorden_diseno ?? null,
         od_estado: row.od_estado ?? null,
+        od_tiene_archivos: Boolean(row.od_tiene_archivos),
 
         es_parcialidad: Boolean(row.es_parcialidad ?? false),
       };
@@ -1004,14 +1037,84 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
         idorden_diseno: row.idorden_diseno ?? null,
         od_estado: row.od_estado ?? null,
+        od_tiene_archivos: Boolean(row.od_tiene_archivos),
       };
     });
 
-    return res.json([...resultadoPlastico, ...resultadoPapel]);
+    const resultado = [...resultadoPlastico, ...resultadoPapel];
+
+    // ── NUEVO: fecha de generación del estado de cuenta vigente, por
+    // pedido (plan-estado-cuenta-cobranza-v2.md, Fase 3/4). Query aparte
+    // en vez de meterla a los dos SELECTs de arriba, para no arriesgar los
+    // JOINs ya afinados de plástico/papel. Un pedido puede tener más de
+    // una venta histórica, por eso se filtra por vigente = true.
+    const nosPedido = resultado.map((r: any) => r.no_pedido).filter(Boolean);
+    if (nosPedido.length > 0) {
+      const { rows: ecRows } = await pool.query(`
+        SELECT s.no_pedido, ec.fecha_generacion
+        FROM estado_cuenta ec
+        JOIN ventas v    ON v.idventas = ec.ventas_idventas
+        JOIN solicitud s ON s.idsolicitud = v.solicitud_idsolicitud
+        WHERE ec.vigente = true AND s.no_pedido = ANY($1::text[])
+      `, [nosPedido]);
+      const fechaPorPedido = new Map(ecRows.map((r: any) => [r.no_pedido, r.fecha_generacion]));
+      for (const row of resultado as any[]) {
+        row.estado_cuenta_fecha = fechaPorPedido.get(row.no_pedido) ?? null;
+        row.estado_cuenta_generado = fechaPorPedido.has(row.no_pedido);
+      }
+    }
+
+    return res.json(resultado);
 
   } catch (error: any) {
     console.error("❌ GET SEGUIMIENTO ERROR:", error.message);
     return res.status(500).json({ error: "Error al obtener seguimiento" });
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════════
+// GET /api/seguimiento/cuentas-por-cobrar
+//
+// NUEVO. Alimenta el modal "💰 Cuentas por cobrar" de Seguimiento.tsx:
+// pedidos con estado de cuenta vigente, saldo > 0.01, y cuya fecha de
+// generación quedó a 5 días hábiles o más de hoy. contarDiasHabiles viene
+// del mismo utils/diasHabiles.ts que ya usa el reporte semanal, así que
+// este filtro, el badge del front y el correo semanal nunca se desalinean.
+// ════════════════════════════════════════════════════════════════════════
+export const getCuentasPorCobrar = async (req: Request, res: Response) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    const { rows } = await pool.query(`
+      SELECT
+        s.no_pedido, s.no_cotizacion, s.fecha,
+        cli.razon_social AS cliente, cli.empresa, cli.telefono, cli.correo,
+        v.idventas, v.moneda,
+        v.total, v.total_real, v.abono, v.saldo,
+        ec.fecha_generacion, ec.version, ec.motivo
+      FROM estado_cuenta ec
+      JOIN ventas v     ON v.idventas = ec.ventas_idventas
+      JOIN solicitud s  ON s.idsolicitud = v.solicitud_idsolicitud
+      JOIN clientes cli ON cli.idclientes = s.clientes_idclientes
+      WHERE ec.vigente = true
+        AND v.saldo > 0.01
+      ORDER BY ec.fecha_generacion ASC
+    `);
+
+    const hoy = new Date();
+    const conDias = rows.map((r: any) => ({
+      ...r,
+      dias_habiles_desde_generacion: contarDiasHabiles(new Date(r.fecha_generacion), hoy),
+    }));
+
+    const vencidos = conDias.filter(
+      (r: any) => r.dias_habiles_desde_generacion >= DIAS_HABILES_VENCIMIENTO_ESTADO_CUENTA,
+    );
+
+    return res.json(vencidos);
+
+  } catch (error: any) {
+    console.error("❌ GET CUENTAS POR COBRAR ERROR:", error.message);
+    return res.status(500).json({ error: "Error al obtener cuentas por cobrar" });
   }
 };
 

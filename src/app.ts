@@ -73,6 +73,7 @@ import cotizadorLibreCotizacionesRoutes from "./routes/cotizadorLibre/cotizadorL
 import { contextoAuditoria } from "./middlewares/auditoria";
 import cotizadorLibreCorreoRoutes from "./routes/cotizadorLibre/cotizadorLibreCorreo.routes";
 import cotizadorLibreLandingRoutes from "./routes/cotizadorLibre/cotizadorLibreLanding.routes";
+import ticketsRoutes from "./routes/tickets/tickets.routes";
 
 const app = express();
 
@@ -200,7 +201,7 @@ app.use("/api/cotizador-libre", cotizadorLibrePrecioRoutes);
 app.use("/api/cotizador-libre/cotizaciones", cotizadorLibreCotizacionesRoutes);
 app.use("/api/cotizador-libre/cotizaciones", cotizadorLibreCorreoRoutes);
 app.use("/api/cotizador-libre/landing", cotizadorLibreLandingRoutes);
-
+app.use("/api/tickets", ticketsRoutes);
 
 // ==========================
 // HEALTH CHECK
