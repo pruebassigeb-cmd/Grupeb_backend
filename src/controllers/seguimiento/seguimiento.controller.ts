@@ -5,7 +5,7 @@ import { getPresignedUrl } from "../../config/multer";
 // Ajusta los pliegos estimados (aquí y en el PDF) para que incluyan la
 // merma tolerada ya congelada en orden_produccion_merma, sin tocar la
 // cantidad del pedido que se le muestra al cliente.
-import { getCantidadesAProducirBatch } from "../../services/producto_papel/merma.service";
+import { getMermaDeOrdenBatch } from "../../services/producto_papel/merma.service";
 // ── NUEVO: estado de cuenta / cuentas por cobrar (plan-estado-cuenta-cobranza-v2.md) ──
 // Reutiliza el util que ya existe para el reporte semanal — mismo
 // contarDiasHabiles, no se duplica.
@@ -79,11 +79,35 @@ const ultimaMedidaCm = (...values: unknown[]): number | null => {
 // pliegos por bolsa) => 2000 / 0.5 = 4000 pliegos, no 1000. Comparte esta
 // función con el cálculo del PDF (getOrdenProduccion), así que el mismo
 // arreglo aplica ahí también.
+// CORREGIDO (2026-08-21): los pliegos se redondean SIEMPRE hacia arriba.
+// Un pliego es una hoja física — no existe medio pliego — y Jose confirmó
+// que cualquier decimal sube al entero siguiente (1.1 pliegos son 2). Antes
+// se dejaba el decimal (105.625) y se arrastraba a metros de laminación,
+// rollos y bolsas armadas.
 const calcularPliegosPorRendimiento = (cantidad: unknown, rendimiento: unknown): number | null => {
   const cantidadNum = toNumberOrNull(cantidad);
   const rendimientoNum = toNumberOrNull(rendimiento);
   if (cantidadNum === null || rendimientoNum === null || rendimientoNum <= 0) return null;
-  return round2(cantidadNum / rendimientoNum);
+  return Math.ceil(cantidadNum / rendimientoNum);
+};
+
+// La merma se suma AQUÍ: sobre los cortes ya convertidos, no sobre la
+// cantidad pedida. Ver la nota de R1 en merma.service.ts para el porqué.
+const sumarMermaACortes = (cortes: unknown, mermaTotal: unknown): number | null => {
+  const cortesNum = toNumberOrNull(cortes);
+  if (cortesNum === null) return null;
+  return round2(cortesNum + (toNumberOrNull(mermaTotal) ?? 0));
+};
+
+// Máquina real: una vez que los pliegos subieron a entero, lo que de verdad
+// entra a la máquina es pliegos x rendimiento — no el valor con decimales
+// de antes de redondear (bloque D10:N12 de "papel formula.xlsx": 106
+// pliegos x rend 4 = 424, no 422.5).
+const calcularMaquinaDesdePliegos = (pliegos: unknown, rendimiento: unknown): number | null => {
+  const pliegosNum = toNumberOrNull(pliegos);
+  const rendimientoNum = toNumberOrNull(rendimiento);
+  if (pliegosNum === null || rendimientoNum === null || rendimientoNum <= 0) return null;
+  return round2(pliegosNum * rendimientoNum);
 };
 
 // Paso intermedio confirmado por Jose (2026-08-13) con ejemplo numérico:
@@ -193,12 +217,28 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         CASE WHEN imp.fecha_fin IS NULL THEN imp.fecha_inicio ELSE NULL END AS impresion_fecha_estado,
         CASE WHEN bol.fecha_fin IS NULL THEN bol.fecha_inicio ELSE NULL END AS bolseo_fecha_estado,
         CASE WHEN asa.fecha_fin IS NULL THEN asa.fecha_inicio ELSE NULL END AS asa_flexible_fecha_estado,
+        -- ✅ NUEVO: fecha real en que terminó cada proceso. Las columnas
+        -- *_fecha_estado de arriba se ponen NULL justo al finalizar (solo
+        -- miden "desde cuándo lleva sin cambio" mientras está pendiente/en
+        -- proceso, igual que pago_fecha_estado), así que no servían para
+        -- mostrar la fecha de término bajo el badge — este campo es el que
+        -- sí, igual que ya hace papel con fecha_fin en su propio registro.
+        ext.fecha_fin AS extrusion_fecha_fin,
+        imp.fecha_fin AS impresion_fecha_fin,
+        bol.fecha_fin AS bolseo_fecha_fin,
+        asa.fecha_fin AS asa_flexible_fecha_fin,
 
         CASE WHEN v.abono < v.anticipo
               AND v.estado_administrativo_cat_idestado_administrativo_cat NOT IN (2, 6)
              THEN v.fecha_creacion ELSE NULL END                            AS anticipo_fecha_estado,
         CASE WHEN v.saldo > 0.01
              THEN v.fecha_creacion ELSE NULL END                            AS pago_fecha_estado,
+        -- ✅ NUEVO: fecha real en que el saldo llegó a 0 (registrarPago pone
+        -- fecha_liquidacion = NOW() justo cuando esto pasa — ver
+        -- ventas.controller.ts). pago_fecha_estado de arriba se queda NULL
+        -- una vez pagado (solo mide "desde cuándo lleva pendiente"), así que
+        -- no servía para mostrar cuándo se liquidó — este campo es el que sí.
+        v.fecha_liquidacion                                                 AS pago_fecha_liquidacion,
         CASE WHEN dp.estado_administrativo_cat_idestado_administrativo_cat != 3
              THEN d.fecha ELSE NULL END                                     AS diseno_fecha_estado,
         CASE WHEN od.estado != 'aprobado'
@@ -463,6 +503,12 @@ export const getSeguimiento = async (req: Request, res: Response) => {
              THEN v.fecha_creacion ELSE NULL END                            AS anticipo_fecha_estado,
         CASE WHEN v.saldo > 0.01
              THEN v.fecha_creacion ELSE NULL END                            AS pago_fecha_estado,
+        -- ✅ NUEVO: fecha real en que el saldo llegó a 0 (registrarPago pone
+        -- fecha_liquidacion = NOW() justo cuando esto pasa — ver
+        -- ventas.controller.ts). pago_fecha_estado de arriba se queda NULL
+        -- una vez pagado (solo mide "desde cuándo lleva pendiente"), así que
+        -- no servía para mostrar cuándo se liquidó — este campo es el que sí.
+        v.fecha_liquidacion                                                 AS pago_fecha_liquidacion,
         CASE WHEN dp.estado_administrativo_cat_idestado_administrativo_cat != 3
              THEN d.fecha ELSE NULL END                                     AS diseno_fecha_estado,
         CASE WHEN od.estado != 'aprobado'
@@ -718,10 +764,11 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
     // ── MERMA DE PAPEL (Fase 7) ──
     // Mismo criterio de "una sola consulta en lote" que el resumen de
-    // estado de arriba. mermaPorIdproduccion.get(id) da cantidad_a_producir
-    // (pedido + merma); si una orden no aparece aquí (plástico, o papel sin
-    // snapshot) el llamador cae a la cantidad del pedido sin merma.
-    const mermaPorIdproduccion = await getCantidadesAProducirBatch(idproduccionesPapel);
+    // estado de arriba. Ahora trae cantidad_pedida y merma_total por
+    // separado: la merma se suma a los cortes, no a la cantidad (ver R1 en
+    // merma.service.ts). Si una orden no aparece aquí (plástico, o papel
+    // sin snapshot) el llamador cae a la cantidad del pedido y merma 0.
+    const mermaPorIdproduccion = await getMermaDeOrdenBatch(idproduccionesPapel);
 
     if (idproduccionesPapel.length > 0) {
       // Estado por orden: si NO tiene ningún registro de proceso aún -> pendiente.
@@ -825,9 +872,14 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         impresion_fecha_estado: row.impresion_fecha_estado ?? null,
         bolseo_fecha_estado: row.bolseo_fecha_estado ?? null,
         asa_flexible_fecha_estado: row.asa_flexible_fecha_estado ?? null,
+        extrusion_fecha_fin: row.extrusion_fecha_fin ?? null,
+        impresion_fecha_fin: row.impresion_fecha_fin ?? null,
+        bolseo_fecha_fin: row.bolseo_fecha_fin ?? null,
+        asa_flexible_fecha_fin: row.asa_flexible_fecha_fin ?? null,
 
         anticipo_fecha_estado: row.anticipo_fecha_estado ?? null,
         pago_fecha_estado: row.pago_fecha_estado ?? null,
+        pago_fecha_liquidacion: row.pago_fecha_liquidacion ?? null,
         diseno_fecha_estado: row.diseno_fecha_estado ?? null,
         od_fecha_estado: row.od_fecha_estado ?? null,
         od_fecha_aprobacion: row.od_fecha_aprobacion ?? null,
@@ -885,15 +937,23 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       // ahora también disponible aquí para mostrarlo en el modal de
       // Hojeado/Guillotina ANTES de que existan avances reales. Cada uno
       // usa su propio rendimiento -- no son intercambiables.
-      // Merma: se usa cantidad_a_producir (pedido + merma) cuando existe
-      // snapshot; si no, cantidad_orden tal cual (comportamiento anterior).
-      const cantidadProduccion = row.idproduccion != null
-        ? mermaPorIdproduccion.get(Number(row.idproduccion)) ?? row.cantidad_orden
-        : row.cantidad_orden;
+      // Merma: la cantidad NO se infla. Se parte de la cantidad pedida y la
+      // merma se suma después, ya en cortes (ver R1 en merma.service.ts).
+      const mermaOrden = row.idproduccion != null
+        ? mermaPorIdproduccion.get(Number(row.idproduccion))
+        : undefined;
+      const cantidadPedida = mermaOrden?.cantidad_pedida ?? row.cantidad_orden;
+      const mermaTotal = mermaOrden?.merma_total ?? 0;
+      const cantidadProduccion = mermaOrden?.cantidad_a_producir ?? row.cantidad_orden;
 
-      const cortes = calcularCortes(cantidadProduccion, row.piezas_suaje);
-      const pliegosHojeadoCalculado = calcularPliegosPorRendimiento(cortes, row.hoj_rendimiento);
-      const pliegosGuillotinaCalculado = calcularPliegosPorRendimiento(cortes, row.rendimiento);
+      const cortes = calcularCortes(cantidadPedida, row.piezas_suaje);
+      const cortesConMerma = sumarMermaACortes(cortes, mermaTotal);
+      // Hojeado y Guillotina tienen rendimientos distintos a propósito (lo
+      // confirmó Jose): son dos datos separados aunque a veces coincidan.
+      const pliegosHojeadoCalculado = calcularPliegosPorRendimiento(cortesConMerma, row.hoj_rendimiento);
+      const pliegosGuillotinaCalculado = calcularPliegosPorRendimiento(cortesConMerma, row.rendimiento);
+      const maquinaHojeado = calcularMaquinaDesdePliegos(pliegosHojeadoCalculado, row.hoj_rendimiento);
+      const maquinaGuillotina = calcularMaquinaDesdePliegos(pliegosGuillotinaCalculado, row.rendimiento);
 
       // Laminación: mismo cálculo que ya usaba solo el PDF
       // (getOrdenProduccion) -- ahora también aquí para que el modal de
@@ -948,6 +1008,10 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         impresion_fecha_estado: null,
         bolseo_fecha_estado: null,
         asa_flexible_fecha_estado: null,
+        extrusion_fecha_fin: null,
+        impresion_fecha_fin: null,
+        bolseo_fecha_fin: null,
+        asa_flexible_fecha_fin: null,
 
         // Estado resumido de producción de papel (consume el modal
         // selector de procesos, no columnas individuales).
@@ -956,6 +1020,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
         anticipo_fecha_estado: row.anticipo_fecha_estado ?? null,
         pago_fecha_estado: row.pago_fecha_estado ?? null,
+        pago_fecha_liquidacion: row.pago_fecha_liquidacion ?? null,
         diseno_fecha_estado: row.diseno_fecha_estado ?? null,
         od_fecha_estado: row.od_fecha_estado ?? null,
         od_fecha_aprobacion: row.od_fecha_aprobacion ?? null,
@@ -1028,6 +1093,12 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         pliegos_hojeado_calculado: pliegosHojeadoCalculado,
         pliegos_guillotina_calculado: pliegosGuillotinaCalculado,
         cortes_calculados: cortes,
+        // Cortes ya con la merma sumada, y la máquina real que resulta tras
+        // subir los pliegos a entero (pliegos x rendimiento).
+        cortes_con_merma: cortesConMerma,
+        merma_total: mermaTotal,
+        maquina_hojeado_calculada: maquinaHojeado,
+        maquina_guillotina_calculada: maquinaGuillotina,
 
         bobina_laminacion_cm: bobinaLaminacionCm,
         desarrollo_laminacion_mm: desarrolloLaminacionMm,
@@ -1587,20 +1658,28 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
     const idproduccionesPapelPdf = productosPapel
       .map((r: any) => r.idproduccion)
       .filter((id: any) => id != null);
-    const mermaPorIdproduccionPdf = await getCantidadesAProducirBatch(idproduccionesPapelPdf);
+    const mermaPorIdproduccionPdf = await getMermaDeOrdenBatch(idproduccionesPapelPdf);
 
     const productosPapelFormateados = productosPapel.map((r: any) => {
-      // Merma: cantidad_a_producir (pedido + merma) si existe snapshot,
-      // si no cae a r.cantidad (comportamiento anterior, sin cambios).
-      const cantidadProduccion = r.idproduccion != null
-        ? mermaPorIdproduccionPdf.get(Number(r.idproduccion)) ?? r.cantidad
-        : r.cantidad;
+      // Merma: se parte de la cantidad pedida y la merma se suma después,
+      // ya en cortes (ver R1 en merma.service.ts). cantidad_a_producir se
+      // sigue exponiendo pero solo como dato informativo.
+      const mermaOrdenPdf = r.idproduccion != null
+        ? mermaPorIdproduccionPdf.get(Number(r.idproduccion))
+        : undefined;
+      const cantidadPedida = mermaOrdenPdf?.cantidad_pedida ?? r.cantidad;
+      const mermaTotal = mermaOrdenPdf?.merma_total ?? 0;
+      const cantidadProduccion = mermaOrdenPdf?.cantidad_a_producir ?? r.cantidad;
 
       // Pliegos/bolsas se calculan con el rendimiento de HOJEADO (cómo se
       // tiene que cortar el material), no con el rendimiento general del
       // material — son dos campos distintos capturados en el alta.
-      const cortes = calcularCortes(cantidadProduccion, r.piezas_suaje);
-      const pliegosCalculados = calcularPliegosPorRendimiento(cortes, r.hoj_rendimiento);
+      const cortes = calcularCortes(cantidadPedida, r.piezas_suaje);
+      const cortesConMerma = sumarMermaACortes(cortes, mermaTotal);
+      const pliegosCalculados = calcularPliegosPorRendimiento(cortesConMerma, r.hoj_rendimiento);
+      const pliegosGuillotinaCalculados = calcularPliegosPorRendimiento(cortesConMerma, r.rendimiento);
+      const maquinaHojeado = calcularMaquinaDesdePliegos(pliegosCalculados, r.hoj_rendimiento);
+      const maquinaGuillotina = calcularMaquinaDesdePliegos(pliegosGuillotinaCalculados, r.rendimiento);
       const pliegoHojeado = r.hoj_corte || r.pliego || r.medida || null;
 
       // Rollo y desarrollo de laminado: si el producto los tiene registrados
@@ -1740,10 +1819,19 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         // Impresión: cantidad de hojas/pliegos calculada desde piezas x rendimiento.
         cantidad_hojeada_calculada: pliegosCalculados,
         pliegos_impresion_estimados: pliegosCalculados,
-        pliegos_guillotina: calcularPliegosPorRendimiento(cortes, r.rendimiento),
+        pliegos_guillotina: pliegosGuillotinaCalculados,
         cortes_calculados: cortes,
+        // La merma va aparte para que el PDF pueda rehacer la cuenta igual
+        // que el backend (cortes + merma -> techo -> pliegos -> máquina).
+        cortes_con_merma: cortesConMerma,
+        merma_total: mermaTotal,
+        maquina_hojeado_calculada: maquinaHojeado,
+        maquina_guillotina_calculada: maquinaGuillotina,
         piezas_suaje: r.piezas_suaje != null ? Number(r.piezas_suaje) : null,
-        material_impresion: [r.material, r.calibre, pliegoHojeado]
+        // CORREGIDO (2026-08-21): la ficha de material de IMPRESIÓN lleva el
+        // CORTE del producto dado de alta (`corte`), no el pliego hojeado —
+        // son dos datos distintos y se estaba mandando el equivocado.
+        material_impresion: [r.material, r.calibre, r.corte]
           .filter(Boolean)
           .join(" "),
         tintas_frente: r.tintas != null ? Number(r.tintas) : null,

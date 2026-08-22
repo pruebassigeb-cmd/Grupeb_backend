@@ -10,6 +10,10 @@ import {
   tomarTicket,
   comentarTicket,
   contadorTickets,
+  usuariosAsignables,
+  asignarTicketA,
+  liberarTicket,
+  equipoActivo,
   esResolutorTickets,
 } from "../../controllers/tickets/tickets.controller";
 
@@ -34,10 +38,17 @@ router.use(authMiddleware);
 router.post("/", checkAnyPermiso("tickets.crear", "tickets.resolver"), crearTicket);
 router.get("/mios", checkAnyPermiso("tickets.crear", "tickets.resolver"), misTickets);
 router.get("/contador", checkAnyPermiso("tickets.crear", "tickets.resolver"), contadorTickets);
+router.get("/equipo-activo", checkResolutorTickets, equipoActivo);
+router.get("/usuarios-asignables", checkResolutorTickets, usuariosAsignables);
 router.get("/", checkResolutorTickets, listarTickets);
 router.get("/:id", checkAnyPermiso("tickets.crear", "tickets.resolver"), detalleTicket);
-router.patch("/:id/estado", checkResolutorTickets, cambiarEstadoTicket);
+// /estado va con checkAnyPermiso a propósito: un Admin dueño de un ticket
+// PERSONAL también necesita poder moverlo. El candado real (solo quien
+// tiene asignado_a === yo puede tocarlo) vive dentro del controller.
+router.patch("/:id/estado", checkAnyPermiso("tickets.crear", "tickets.resolver"), cambiarEstadoTicket);
 router.post("/:id/tomar", checkResolutorTickets, tomarTicket);
+router.patch("/:id/asignar", checkResolutorTickets, asignarTicketA);
+router.post("/:id/liberar", checkAnyPermiso("tickets.crear", "tickets.resolver"), liberarTicket);
 router.post("/:id/comentarios", checkAnyPermiso("tickets.crear", "tickets.resolver"), comentarTicket);
 
 export default router;

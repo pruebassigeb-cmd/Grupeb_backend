@@ -62,7 +62,7 @@ function folioDe(idticket: number): string {
 // ==========================
 export const crearTicket = async (req: AuthRequest, res: Response) => {
   try {
-    const { titulo, descripcion, ubicacion, prioridad = "Media", idticket_relacionado } = req.body;
+    const { titulo, descripcion, ubicacion, prioridad = "Media", idticket_relacionado, es_personal } = req.body;
 
     if (!titulo?.trim()) return res.status(400).json({ error: "El título es requerido" });
     if (!descripcion?.trim()) return res.status(400).json({ error: "La descripción es requerida" });
@@ -78,10 +78,12 @@ export const crearTicket = async (req: AuthRequest, res: Response) => {
       }
     }
 
+    const esPersonal = !!es_personal;
+
     const ticket = await req.tx(async (client) => {
       const { rows } = await client.query(
-        `INSERT INTO ticket (titulo, descripcion, ubicacion, prioridad, idticket_relacionado, creado_por)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO ticket (titulo, descripcion, ubicacion, prioridad, idticket_relacionado, creado_por, es_personal, asignado_a, estado)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING idticket`,
         [
           titulo.trim(),
@@ -90,6 +92,11 @@ export const crearTicket = async (req: AuthRequest, res: Response) => {
           prioridad,
           idticket_relacionado || null,
           req.user!.id,
+          esPersonal,
+          // Un ticket personal queda autoasignado a quien lo crea desde el
+          // arranque — es un pendiente propio, no algo que espera en cola.
+          esPersonal ? req.user!.id : null,
+          "Pendiente",
         ]
       );
 
@@ -103,29 +110,242 @@ export const crearTicket = async (req: AuthRequest, res: Response) => {
       return actualizado[0];
     });
 
-    // El creador siempre se entera de su propio ticket. Nadie está
-    // asignado todavía → además, correo a TODOS los que pueden resolver.
-    correosResolutores()
-      .then((destinatariosResolutores) => {
-        const destinatarios = [...new Set([req.user!.correo, ...destinatariosResolutores])];
-        return enviarCorreo({
-          para: destinatarios,
-          asunto: `🎫 Nuevo ticket ${ticket.folio}: ${ticket.titulo}`,
-          html: `
-            <p>Se reportó un ticket nuevo y todavía no tiene responsable.</p>
-            <p><strong>${ticket.titulo}</strong></p>
-            <p>${ticket.descripcion}</p>
-            <p>Prioridad: <strong>${ticket.prioridad}</strong>${ticket.ubicacion ? ` · Ubicación: ${ticket.ubicacion}` : ""}</p>
-            <p>Folio: ${ticket.folio}</p>
-          `,
-        });
-      })
-      .catch((e) => console.error("❌ Correo ticket nuevo:", e.message));
+    // Los tickets personales no avisan a nadie más — son un pendiente propio,
+    // no algo que un dev tenga que ir a tomar de la cola.
+    if (!esPersonal) {
+      correosResolutores()
+        .then((destinatariosResolutores) => {
+          const destinatarios = [...new Set([req.user!.correo, ...destinatariosResolutores])];
+          return enviarCorreo({
+            para: destinatarios,
+            asunto: `🎫 Nuevo ticket ${ticket.folio}: ${ticket.titulo}`,
+            html: `
+              <p>Se reportó un ticket nuevo y todavía no tiene responsable.</p>
+              <p><strong>${ticket.titulo}</strong></p>
+              <p>${ticket.descripcion}</p>
+              <p>Prioridad: <strong>${ticket.prioridad}</strong>${ticket.ubicacion ? ` · Ubicación: ${ticket.ubicacion}` : ""}</p>
+              <p>Folio: ${ticket.folio}</p>
+            `,
+          });
+        })
+        .catch((e) => console.error("❌ Correo ticket nuevo:", e.message));
+    }
 
     res.status(201).json(ticket);
   } catch (error: any) {
     console.error("❌ CREAR TICKET ERROR:", error.message);
     res.status(500).json({ error: "Error al crear el ticket" });
+  }
+};
+  
+// ==========================
+// GET /api/tickets/usuarios-asignables
+// Cualquiera con acceso al módulo (Admin o Super Usuario) puede ser
+// destino de una asignación directa — mismo criterio que quién puede
+// entrar al módulo (rol Admin/Super Usuario o privilegio explícito).
+// ==========================
+export const usuariosAsignables = async (req: AuthRequest, res: Response) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT u.idusuario, u.nombre, u.apellido, u.roles_idroles, r.nombre AS rol,
+              a.public_id AS foto_public_id
+         FROM usuarios u
+         JOIN roles r ON r.idroles = u.roles_idroles
+         LEFT JOIN archivos a ON a.id_archivo = u.foto_id_archivo
+         LEFT JOIN privilegios_has_usuarios phu ON phu.usuarios_idusuario = u.idusuario
+         LEFT JOIN privilegios p1 ON p1.idprivilegios = phu.privilegios_idprivilegios
+                                  AND p1.clave IN ('tickets.crear', 'tickets.resolver')
+         LEFT JOIN roles_privilegios rp ON rp.roles_idroles = r.idroles
+         LEFT JOIN privilegios p2 ON p2.idprivilegios = rp.privilegios_idprivilegios
+                                  AND p2.clave IN ('tickets.crear', 'tickets.resolver')
+        WHERE u.activo = true
+          AND u.eliminado_at IS NULL
+          AND (r.nombre IN ('Admin', 'Super Usuario') OR p1.idprivilegios IS NOT NULL OR p2.idprivilegios IS NOT NULL)
+        ORDER BY u.nombre`
+    );
+
+    const usuarios = await Promise.all(
+      rows.map(async (u: any) => ({
+        idusuario: u.idusuario,
+        nombre: u.nombre,
+        apellido: u.apellido,
+        rol: u.rol,
+        foto_url: u.foto_public_id ? await getPresignedUrl(u.foto_public_id) : null,
+      }))
+    );
+
+    res.json(usuarios);
+  } catch (error: any) {
+    console.error("❌ USUARIOS ASIGNABLES ERROR:", error.message);
+    res.status(500).json({ error: "Error al listar usuarios" });
+  }
+};
+
+// ==========================
+// PATCH /api/tickets/:id/asignar — asignación directa a cualquiera
+// (Admin o Super Usuario), exclusiva de Super Usuario. Si el ticket era
+// personal, deja de serlo — ya no es "solo para mí", ahora tiene dueño
+// asignado formalmente.
+// ==========================
+export const asignarTicketA = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { usuario_id } = req.body;
+
+    if (!Number.isInteger(Number(usuario_id))) {
+      return res.status(400).json({ error: "usuario_id es requerido" });
+    }
+
+    const destino = await pool.query(
+      "SELECT idusuario, correo FROM usuarios WHERE idusuario = $1 AND activo = true AND eliminado_at IS NULL",
+      [usuario_id]
+    );
+    if (destino.rowCount === 0) {
+      return res.status(400).json({ error: "Ese usuario no existe o está inactivo" });
+    }
+
+    const ticket = await req.tx(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE ticket
+            SET asignado_a = $1,
+                es_personal = false,
+                estado = CASE WHEN estado = 'Pendiente' THEN 'En proceso' ELSE estado END
+          WHERE idticket = $2 AND eliminado_at IS NULL
+          RETURNING *`,
+        [usuario_id, id]
+      );
+      return rows[0];
+    });
+
+    if (!ticket) return res.status(404).json({ error: "Ticket no encontrado" });
+
+    const { rows: personas } = await pool.query(
+      "SELECT correo FROM usuarios WHERE idusuario = $1",
+      [ticket.creado_por]
+    );
+    const destinatarios = [...new Set([personas[0]?.correo, destino.rows[0].correo])].filter(Boolean) as string[];
+
+    if (destinatarios.length > 0) {
+      enviarCorreo({
+        para: destinatarios,
+        asunto: `🎫 Ticket ${ticket.folio} asignado`,
+        html: `<p>El ticket <strong>${ticket.folio}</strong> — "${ticket.titulo}" fue asignado a ${destino.rows[0].correo} por ${req.user!.correo}.</p>`,
+      }).catch((e) => console.error("❌ Correo ticket asignado:", e.message));
+    }
+
+    res.json(ticket);
+  } catch (error: any) {
+    console.error("❌ ASIGNAR TICKET ERROR:", error.message);
+    res.status(500).json({ error: "Error al asignar el ticket" });
+  }
+};
+
+// ==========================
+// POST /api/tickets/:id/liberar
+// Convierte un ticket personal en uno normal y lo regresa a la cola sin
+// dueño, para que cualquier Super Usuario lo pueda tomar. Lo puede hacer
+// el propio creador (soltando su pendiente) o cualquier resolutor.
+// ==========================
+export const liberarTicket = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const actual = await pool.query(
+      "SELECT idticket, creado_por, estado FROM ticket WHERE idticket = $1 AND eliminado_at IS NULL",
+      [id]
+    );
+    if (actual.rowCount === 0) return res.status(404).json({ error: "Ticket no encontrado" });
+
+    const esDueno = actual.rows[0].creado_por === req.user!.id;
+    if (!esDueno && !esResolutorTickets(req.user)) {
+      return res.status(403).json({ error: "No puedes liberar este ticket" });
+    }
+    if (["Finalizado", "Cancelado"].includes(actual.rows[0].estado)) {
+      return res.status(400).json({ error: "Este ticket ya se cerró, no se puede liberar" });
+    }
+
+    const ticket = await req.tx(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE ticket
+            SET asignado_a = NULL,
+                es_personal = false,
+                estado = 'Pendiente'
+          WHERE idticket = $1 AND eliminado_at IS NULL
+          RETURNING *`,
+        [id]
+      );
+      return rows[0];
+    });
+
+    correosResolutores()
+      .then((destinatarios) => {
+        if (destinatarios.length === 0) return;
+        return enviarCorreo({
+          para: destinatarios,
+          asunto: `🎫 Ticket ${ticket.folio} liberado`,
+          html: `<p>El ticket <strong>${ticket.folio}</strong> — "${ticket.titulo}" quedó libre y disponible para tomarse.</p>`,
+        });
+      })
+      .catch((e) => console.error("❌ Correo ticket liberado:", e.message));
+
+    res.json(ticket);
+  } catch (error: any) {
+    console.error("❌ LIBERAR TICKET ERROR:", error.message);
+    res.status(500).json({ error: "Error al liberar el ticket" });
+  }
+};
+
+// ==========================
+// GET /api/tickets/equipo-activo
+// Para el panel "quién trae qué" del tablero: solo devs con AL MENOS un
+// ticket En proceso asignado — si nadie tiene nada, la lista sale vacía y
+// el frontend no dibuja el panel.
+// ==========================
+export const equipoActivo = async (_req: AuthRequest, res: Response) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.idusuario, u.nombre, u.apellido, a.public_id AS foto_public_id,
+              t.idticket, t.folio, t.titulo, t.prioridad
+         FROM ticket t
+         JOIN usuarios u ON u.idusuario = t.asignado_a
+         LEFT JOIN archivos a ON a.id_archivo = u.foto_id_archivo
+        WHERE t.estado = 'En proceso' AND t.eliminado_at IS NULL AND t.archivado = false
+        ORDER BY u.nombre, t.created_at DESC`
+    );
+
+    const porUsuario = new Map<number, any>();
+    for (const r of rows) {
+      if (!porUsuario.has(r.idusuario)) {
+        porUsuario.set(r.idusuario, {
+          idusuario: r.idusuario,
+          nombre: r.nombre,
+          apellido: r.apellido,
+          foto_public_id: r.foto_public_id,
+          tickets: [],
+        });
+      }
+      porUsuario.get(r.idusuario).tickets.push({
+        idticket: r.idticket,
+        folio: r.folio,
+        titulo: r.titulo,
+        prioridad: r.prioridad,
+      });
+    }
+
+    const equipo = await Promise.all(
+      [...porUsuario.values()].map(async (u) => ({
+        idusuario: u.idusuario,
+        nombre: u.nombre,
+        apellido: u.apellido,
+        foto_url: u.foto_public_id ? await getPresignedUrl(u.foto_public_id) : null,
+        tickets: u.tickets,
+      }))
+    );
+
+    res.json(equipo);
+  } catch (error: any) {
+    console.error("❌ EQUIPO ACTIVO ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener el equipo activo" });
   }
 };
 
@@ -297,7 +517,7 @@ export const cambiarEstadoTicket = async (req: AuthRequest, res: Response) => {
     if (actual.rows[0].asignado_a !== req.user!.id) {
       return res.status(403).json({
         error: actual.rows[0].asignado_a
-          ? "Solo quien tomó el ticket puede cambiar su estado"
+          ? "Solo quien tiene asignado el ticket puede cambiar su estado"
           : "Nadie ha tomado este ticket todavía — tómalo primero",
       });
     }

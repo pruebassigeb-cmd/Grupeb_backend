@@ -5,8 +5,27 @@
 // Ver merma-papel-contexto.md para el diseño completo.
 //
 // Reglas implementadas aquí:
-//   R1  La merma son PIEZAS absolutas, no porcentaje. Se suma sobre la
-//       cantidad pedida ANTES de convertir a pliegos con el rendimiento.
+//   R1  La merma son PIEZAS absolutas, no porcentaje.
+//       ⚠️ CORREGIDO (2026-08-21, fórmula validada por Jose en
+//       "papel formula.xlsx"): la merma NO se suma sobre la cantidad pedida.
+//       Se suma sobre los CORTES ya convertidos ("máquina" en la fórmula),
+//       o sea DESPUÉS de dividir entre el rendimiento del suaje:
+//
+//           cortes           = cantidad_pedida / piezas_suaje
+//           cortes_con_merma = cortes + merma_total
+//           pliegos          = techo(cortes_con_merma / rendimiento)
+//
+//       El motivo es físico: la merma se mide en PLIEGOS que se echan a
+//       perder calibrando cada máquina (100 hojas de arranque de prensa),
+//       no en producto terminado. Sumarla a la cantidad pedida la hacía
+//       pasar por la división del suaje y la encogía: con piezas_suaje=16,
+//       110 pliegos de merma se convertían en 6.9 -- se pedía 24% menos
+//       material del necesario. Con piezas_suaje=1 ambas fórmulas dan lo
+//       mismo, por eso el error pasó desapercibido tanto tiempo.
+//
+//       `cantidad_a_producir` (pedido + merma) se sigue calculando y
+//       guardando, pero SOLO como dato informativo: ya no es la base del
+//       cálculo de pliegos. Ver getMermaDeOrdenBatch().
 //   R2  merma_total = BASE (siempre) + Σ(columnas cuyo proceso aplique).
 //       Suma simple, calculada UNA sola vez. No hay merma en cascada.
 //   R3  Columnas con idproceso_cat NULL y siempre_aplica=false son INERTES:
@@ -762,16 +781,27 @@ export async function getMermaOrden(
  * (plástico, o papel creado antes de este sistema) simplemente no aparece
  * en el Map — el llamador decide el fallback (normalmente `?? cantidadPedida`).
  */
-export async function getCantidadesAProducirBatch(
+export interface MermaOrdenResumen {
+  cantidad_pedida: number;
+  merma_total: number;
+  /** pedido + merma. Solo informativo: NO es la base del cálculo de pliegos. */
+  cantidad_a_producir: number;
+}
+
+export async function getMermaDeOrdenBatch(
   idproducciones: number[],
   client?: Ejecutor
-): Promise<Map<number, number>> {
-  const mapa = new Map<number, number>();
+): Promise<Map<number, MermaOrdenResumen>> {
+  const mapa = new Map<number, MermaOrdenResumen>();
   if (!idproducciones.length) return mapa;
 
   const { rows } = await db(client).query(
     `
-    SELECT orden_produccion_idproduccion AS idproduccion, cantidad_a_producir
+    SELECT
+      orden_produccion_idproduccion AS idproduccion,
+      cantidad_pedida,
+      merma_total,
+      cantidad_a_producir
     FROM orden_produccion_merma
     WHERE orden_produccion_idproduccion = ANY($1)
     `,
@@ -779,7 +809,11 @@ export async function getCantidadesAProducirBatch(
   );
 
   for (const r of rows) {
-    mapa.set(Number(r.idproduccion), Number(r.cantidad_a_producir));
+    mapa.set(Number(r.idproduccion), {
+      cantidad_pedida: Number(r.cantidad_pedida),
+      merma_total: Number(r.merma_total),
+      cantidad_a_producir: Number(r.cantidad_a_producir),
+    });
   }
 
   return mapa;
