@@ -19,7 +19,17 @@ async function obtenerPrivilegios(
   rolId: number,
   accesoTotal: boolean
 ): Promise<string[]> {
-  if (accesoTotal) return [];
+  // ANTES: `if (accesoTotal) return [];` — con acceso_total se saltaba todo
+  // este cálculo y el JWT nunca traía privilegios reales para esas cuentas.
+  // Eso no rompía nada en el resto del sistema porque usuarioTienePermiso()
+  // ya hace bypass total con acceso_total ANTES de mirar este arreglo — pero
+  // sí rompía Mesa de Tickets, que a propósito NO bypassa con acceso_total
+  // (ver esResolutorTickets/tieneAccesoTickets en tickets.controller.ts):
+  // por más que se marcara "tickets.resolver" en Roles y Privilegios para
+  // el rol Admin, esa cuenta jamás lo veía en su token, porque aquí ni se
+  // consultaba. Ahora SIEMPRE se calculan los privilegios reales, tenga o
+  // no acceso_total — el resto del sistema sigue igual de protegido porque
+  // sigue bypasseando con el flag antes de llegar a este dato.
 
   // Fase 6: se selecciona clave, no privilegio (texto visible) — así un
   // renombre desde la pantalla de Roles no le cambia el JWT a nadie.

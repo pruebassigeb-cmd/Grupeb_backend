@@ -154,12 +154,15 @@ export const createUsuario = async (req: Request, res: Response) => {
       if (Object.keys(camposFicha).length > 0)
         await upsertDetalle(client, "usuarios_ficha_medica", "idusuario", uid, camposFicha);
 
-      const rol = await client.query(
-        "SELECT acceso_total FROM roles WHERE idroles = $1 LIMIT 1", [roles_idroles]
-      );
-      const tieneAccesoTotal = rol.rows[0]?.acceso_total;
-
-      if (!tieneAccesoTotal && privilegios && Array.isArray(privilegios) && privilegios.length > 0) {
+      // ANTES: aquí se consultaba "acceso_total" del rol y se usaba para
+      // saltar por completo el guardado de privilegios individuales
+      // ("if (!tieneAccesoTotal && ...)"). Tickets es la excepción manual:
+      // una persona con rol Admin puede necesitar el privilegio individual
+      // aunque su rol ya tenga acceso total al resto. filtrarExtrasDeLaBase
+      // ya evita duplicar lo que venga heredado del rol, así que guardar
+      // sin esa condición es seguro para cualquier rol — ya no hace falta
+      // ni consultar acceso_total aquí.
+      if (privilegios && Array.isArray(privilegios) && privilegios.length > 0) {
         const privilegiosValidos = privilegios.every(
           (id: any) => Number.isInteger(Number(id)) && Number(id) > 0
         );
@@ -421,12 +424,10 @@ export const updateUsuario = async (req: Request, res: Response) => {
 
       await client.query("DELETE FROM privilegios_has_usuarios WHERE usuarios_idusuario = $1", [id]);
 
-      const rol = await client.query(
-        "SELECT acceso_total FROM roles WHERE idroles = $1 LIMIT 1", [roles_idroles]
-      );
-      const tieneAccesoTotal = rol.rows[0]?.acceso_total;
-
-      if (!tieneAccesoTotal && privilegios && Array.isArray(privilegios) && privilegios.length > 0) {
+      // Igual que en createUsuario: ya no se salta este guardado por
+      // acceso_total — Tickets necesita poder marcarse individual aunque el
+      // rol de la persona tenga acceso total al resto.
+      if (privilegios && Array.isArray(privilegios) && privilegios.length > 0) {
         const privilegiosValidos = privilegios.every(
           (idPriv: any) => Number.isInteger(Number(idPriv)) && Number(idPriv) > 0
         );

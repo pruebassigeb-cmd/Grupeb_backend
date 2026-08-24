@@ -267,13 +267,15 @@ export async function getProcesosDeOrdenPapel(client: any, idproduccion: number)
   //
   // Hojeado y Guillotina ahora aplican SIEMPRE a toda orden de papel, y NO
   // son mutuamente excluyentes: el operador decide en planta (con el PDF
-  // físico en mano) cuál usar, y puede ser uno, el otro, o incluso ambos
-  // (parcialidades repartidas entre las dos máquinas). Son un "par
-  // intercambiable": ambos quedan disponibles hasta que uno de los dos
-  // reciba el primer registro/avance, momento en el cual el otro se oculta
-  // (ver override de estado en getProcesosOrdenPapel más abajo). El
-  // desbloqueo de Impresión también los trata como un solo escalón lógico
-  // (ver getSiguienteEfectivoPapel / resolverAnteriorEfectivoPapel).
+  // físico en mano) cuál usar, y puede ser uno, el otro, o los dos (orden
+  // físico fijo: primero Hojeado, luego Guillotina — decisión de Jose,
+  // 2026-08-24). Si solo se usa uno, ambos quedan disponibles hasta que
+  // uno reciba el primer registro/avance, momento en el cual el otro se
+  // oculta (ver override de estado en getProcesosOrdenPapel más abajo).
+  // Si al finalizar Hojeado el operador confirma que este pedido también
+  // pasa por Guillotina, esta deja de ser una alternativa y pasa a
+  // depender de Hojeado como cualquier otro proceso de la cascada (ver
+  // debeIgnorarAnteriorPapel / getSiguienteEfectivoPapel / finalizarProcesoPapel).
   clavesAplican.push("HOJEADO");
   clavesAplican.push("GUILLOTINA");
 
@@ -402,11 +404,15 @@ function getSiguienteProcesoPapel(procesos: number[], procesoActual: number): nu
   return procesos[idx + 1] ?? null;
 }
 
-// ── Par intercambiable Hojeado/Guillotina ──────────────────────────────
-// Ninguna función de cascada de aquí en adelante debe tratar a Hojeado y
-// Guillotina como una secuencia estricta entre sí. Estos helpers permiten
-// que el resto del motor (iniciar/avance/finalizar/límite de avance) los
-// trate como UN SOLO escalón lógico: "el que el operador haya elegido".
+// ── Hojeado -> Guillotina (orden físico fijo, decisión de Jose,
+// 2026-08-24) ────────────────────────────────────────────────────────────
+// Ya NO se tratan como alternativas excluyentes ("el que el operador haya
+// elegido"): un pedido puede llevar los dos, uno seguido del otro, o solo
+// uno de los dos. Hojeado es siempre el primer punto de entrada posible;
+// Guillotina depende de Hojeado únicamente cuando Hojeado sí se usó en
+// ese pedido (ver debeIgnorarAnteriorPapel más abajo). No hace falta
+// ninguna bandera de configuración por producto — se resuelve en tiempo
+// real según lo que el operador vaya registrando en planta.
 async function getParPreparacionPapel(): Promise<{ idHojeado: number; idGuillotina: number }> {
   const { claveAId } = await getMapaProcesoCatPapel();
   return {
@@ -415,9 +421,51 @@ async function getParPreparacionPapel(): Promise<{ idHojeado: number; idGuilloti
   };
 }
 
-async function esProcesoDePreparacionPapel(procesoCat: number): Promise<boolean> {
+/**
+ * ¿Ya se usó Hojeado en este pedido (arrancó, o tiene algún avance
+ * registrado)? Es lo que decide si Guillotina debe seguir actuando como
+ * punto de entrada independiente (Hojeado nunca se tocó) o si debe
+ * depender de Hojeado como cualquier proceso normal de la cascada
+ * (Hojeado ya se usó, y el orden físico fijo es Hojeado -> Guillotina —
+ * decisión de Jose, 2026-08-24).
+ */
+async function hojeadoTieneRegistroReal(client: any, idproduccion: number): Promise<boolean> {
+  const { rows } = await client.query(
+    `SELECT fecha_inicio FROM hojeado_papel WHERE orden_produccion_idproduccion = $1`,
+    [idproduccion]
+  );
+  if (rows.length > 0 && rows[0].fecha_inicio) return true;
+
+  const { rows: avRows } = await client.query(
+    `SELECT 1 FROM avance_proceso
+     WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = 'hojeado_papel' LIMIT 1`,
+    [idproduccion]
+  );
+  return avRows.length > 0;
+}
+
+/**
+ * Reemplaza el bypass ciego que antes aplicaba a TODO proceso de
+ * preparación por igual (Hojeado y Guillotina trataban como "sin
+ * anterior" sin excepción). Hojeado sigue sin depender nunca de nada
+ * anterior — es siempre el primer punto de entrada posible. Guillotina
+ * en cambio solo se ignora como "sin anterior" cuando Hojeado nunca se
+ * usó en este pedido (Guillotina actuando como su propio punto de
+ * entrada); si Hojeado sí se usó, Guillotina pasa a depender de él
+ * (límite de avance, y debe tener avance/estar terminado para poder
+ * iniciarse o finalizarse), exactamente igual que cualquier otro par de
+ * la cascada. Así un pedido puede llevar los dos, uno seguido del otro,
+ * sin necesitar ninguna bandera de configuración por producto.
+ */
+async function debeIgnorarAnteriorPapel(
+  client: any,
+  idproduccion: number,
+  procesoCat: number
+): Promise<boolean> {
   const { idHojeado, idGuillotina } = await getParPreparacionPapel();
-  return procesoCat === idHojeado || procesoCat === idGuillotina;
+  if (procesoCat === idHojeado) return true;
+  if (procesoCat === idGuillotina) return !(await hojeadoTieneRegistroReal(client, idproduccion));
+  return false;
 }
 
 /**
@@ -448,9 +496,26 @@ async function getSiguienteEfectivoPapel(
 
 /**
  * Resuelve cuál de los dos procesos de preparación (Hojeado/Guillotina)
- * es el que realmente se usó en esta orden (tiene fecha_inicio o algún
- * avance registrado). Devuelve null si ninguno de los dos ha arrancado
- * todavía — en ese caso, Impresión (o lo que siga) NO debe desbloquearse.
+ * es el que efectivamente rige como "anterior" para el resto de la
+ * cascada (o para el propio Guillotina, cuando se está resolviendo SU
+ * anterior). Devuelve null si ninguno de los dos tiene registro todavía
+ * — en ese caso, Impresión (o lo que siga) NO debe desbloquearse.
+ *
+ * Se considera "usado" en cuanto existe una FILA para ese proceso en
+ * este pedido, aunque todavía esté pendiente sin arrancar. Eso es a
+ * propósito: cuando el operador confirma al finalizar Hojeado que este
+ * pedido "también pasa por Guillotina", se le crea de una vez su fila
+ * pendiente (ver finalizarProcesoPapel) — desde ese momento Guillotina
+ * ya es el compromiso real de esta orden y el resto de la cascada
+ * (Impresión) debe esperarlo a ÉL, no conformarse con lo que ya entregó
+ * Hojeado nada más porque Guillotina aún no arrancó.
+ *
+ * IMPORTANTE: se revisa Guillotina PRIMERO. El orden físico fijo es
+ * Hojeado -> Guillotina (nunca al revés — decisión de Jose, 2026-08-24):
+ * si un pedido usó los dos, Guillotina es la etapa más avanzada de la
+ * cadena y ya depende de lo que entregó Hojeado (ver
+ * debeIgnorarAnteriorPapel). Revisar Hojeado primero aquí haría que el
+ * resto de la cascada ignorara por completo el paso de Guillotina.
  */
 async function getPreparacionUsadaPapel(
   client: any,
@@ -458,23 +523,15 @@ async function getPreparacionUsadaPapel(
 ): Promise<{ cat: number; tabla: string } | null> {
   const { idHojeado, idGuillotina } = await getParPreparacionPapel();
 
-  for (const cat of [idHojeado, idGuillotina]) {
+  for (const cat of [idGuillotina, idHojeado]) {
     const tabla = await getTablaPorIdProcesoCat(cat);
     if (!tabla) continue;
 
     const { rows } = await client.query(
-      `SELECT fecha_inicio, estado_produccion_cat_idestado_produccion_cat AS estado
-       FROM ${tabla} WHERE orden_produccion_idproduccion = $1`,
+      `SELECT 1 FROM ${tabla} WHERE orden_produccion_idproduccion = $1`,
       [idproduccion]
     );
-    if (rows.length > 0 && rows[0].fecha_inicio) return { cat, tabla };
-
-    const { rows: avRows } = await client.query(
-      `SELECT 1 FROM avance_proceso
-       WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2 LIMIT 1`,
-      [idproduccion, tabla]
-    );
-    if (avRows.length > 0) return { cat, tabla };
+    if (rows.length > 0) return { cat, tabla };
   }
   return null;
 }
@@ -562,9 +619,11 @@ async function procesoAnteriorTieneAvanceOTerminadoPapel(
   const idx = procesos.indexOf(procesoActualCat);
   if (idx <= 0) return true; // primer proceso, no tiene anterior
 
-  // Hojeado y Guillotina nunca dependen entre sí ni de nada anterior: son
-  // el par de entrada de la cascada, decidido manualmente en planta.
-  if (await esProcesoDePreparacionPapel(procesoActualCat)) return true;
+  // Hojeado nunca depende de nada anterior. Guillotina tampoco, PERO SOLO
+  // mientras Hojeado no se haya usado en este pedido — si Hojeado ya se
+  // usó, Guillotina pasa a depender de él como cualquier otro proceso de
+  // la cascada (ver debeIgnorarAnteriorPapel).
+  if (await debeIgnorarAnteriorPapel(client, idproduccion, procesoActualCat)) return true;
 
   const anterior = await resolverAnteriorEfectivoPapel(client, idproduccion, procesos, procesoActualCat);
   if (!anterior) return false;
@@ -593,7 +652,9 @@ async function procesoAnteriorEstaTerminadoPapel(
   const idx = procesos.indexOf(procesoActualCat);
   if (idx <= 0) return true;
 
-  if (await esProcesoDePreparacionPapel(procesoActualCat)) return true;
+  // Mismo criterio que procesoAnteriorTieneAvanceOTerminadoPapel arriba:
+  // Hojeado siempre bypassa, Guillotina solo bypassa si Hojeado no se usó.
+  if (await debeIgnorarAnteriorPapel(client, idproduccion, procesoActualCat)) return true;
 
   const anterior = await resolverAnteriorEfectivoPapel(client, idproduccion, procesos, procesoActualCat);
   if (!anterior) return false;
@@ -622,10 +683,12 @@ async function getLimiteAvanceAnteriorPapel(
   const catActual = await getIdProcesoCatPorTabla(tablaProceso);
   if (!catActual) return null;
 
-  // Hojeado y Guillotina no tienen límite previo: son el punto de entrada
-  // de la cascada de papel, sin importar en qué posición del array quede
-  // cada uno.
-  if (await esProcesoDePreparacionPapel(catActual)) return null;
+  // Hojeado nunca tiene límite previo (siempre puede ser el punto de
+  // entrada). Guillotina tampoco, MIENTRAS Hojeado no se haya usado en
+  // este pedido — en cuanto Hojeado se usa, Guillotina queda limitada
+  // por lo que Hojeado entregó, como cualquier proceso normal de la
+  // cascada (ver debeIgnorarAnteriorPapel).
+  if (await debeIgnorarAnteriorPapel(client, idproduccion, catActual)) return null;
 
   const idx = procesos.indexOf(catActual);
   if (idx <= 0) return null;
@@ -736,14 +799,19 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
       };
     }));
 
-    // ── Par intercambiable Hojeado/Guillotina ──────────────────────────
-    // Si uno de los dos ya tiene registro (arrancó o tiene algún avance) y
-    // el otro no, el que no tiene registro se oculta como "no_aplica": la
-    // orden ya se comprometió a una sola máquina de preparación. Si
-    // ninguno tiene registro todavía, ambos quedan visibles/disponibles
-    // para que el operador elija manualmente con el PDF físico en mano.
-    // Si excepcionalmente ambos llegan a tener registro (parcialidades
-    // repartidas entre las dos), ambos se muestran normalmente.
+    // ── Par Hojeado -> Guillotina (orden físico fijo — decisión de Jose,
+    // 2026-08-24) ────────────────────────────────────────────────────────
+    // Si Hojeado ya se usó y Guillotina NO TIENE NINGÚN REGISTRO todavía
+    // (ni siquiera pendiente), es porque al finalizar Hojeado el operador
+    // contestó que este pedido no pasa por Guillotina — se oculta como
+    // "no_aplica". Si en cambio Guillotina SÍ tiene un registro (aunque
+    // sea pendiente, sin arrancar), es porque el operador confirmó que
+    // este pedido pasa por los dos — se deja visible normalmente para
+    // que la inicie cuando le toque (ver finalizarProcesoPapel).
+    // Si es Guillotina la que arrancó primero (pedido que nunca pasa por
+    // Hojeado), Hojeado se oculta apenas Guillotina tenga registro real —
+    // ahí no hay paso de confirmación explícita, Guillotina es siempre un
+    // punto de entrada libre cuando Hojeado nunca se tocó.
     const esPrepTabla = (tabla: string) => tabla === "hojeado_papel" || tabla === "guillotina_papel";
     const idxHojeado = procesosConRegistros.findIndex((p) => p.tabla === "hojeado_papel");
     const idxGuillotina = procesosConRegistros.findIndex((p) => p.tabla === "guillotina_papel");
@@ -757,9 +825,9 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
       const hojTiene = tieneRegistroReal(hoj);
       const guiTiene = tieneRegistroReal(gui);
 
-      if (hojTiene && !guiTiene) {
+      if (hojTiene && !guiTiene && gui.registro == null) {
         procesosConRegistros[idxGuillotina] = { ...gui, estado: "no_aplica" };
-      } else if (guiTiene && !hojTiene) {
+      } else if (guiTiene && !hojTiene && hoj.registro == null) {
         procesosConRegistros[idxHojeado] = { ...hoj, estado: "no_aplica" };
       }
     }
@@ -767,20 +835,28 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
     const procesosConLimite = procesosConRegistros.map((proceso, index) => {
       let limiteAvance: number | null = null;
 
-      // Hojeado y Guillotina nunca tienen límite de un proceso anterior:
-      // son el punto de entrada de la cascada.
-      if (index > 0 && !esPrepTabla(proceso.tabla)) {
+      // Hojeado nunca tiene límite de un proceso anterior: siempre puede
+      // ser el punto de entrada de la cascada. Guillotina SÍ puede tener
+      // límite -- el que le puso Hojeado -- en cuanto Hojeado tenga
+      // registro real (si los dos tienen registro es porque el operador
+      // confirmó que van los dos, uno seguido del otro).
+      const esHojeadoTabla = proceso.tabla === "hojeado_papel";
+      if (index > 0 && !esHojeadoTabla) {
         let anterior = procesosConRegistros[index - 1];
 
         // Si lo inmediato anterior es del par Hojeado/Guillotina, usar el
-        // que de verdad se usó (el otro ya quedó marcado no_aplica arriba,
-        // o ninguno se usó todavía y no hay límite que propagar).
+        // que efectivamente rige como límite real: se prefiere Guillotina
+        // sobre Hojeado (mismo criterio que getPreparacionUsadaPapel en
+        // el backend) porque el orden físico fijo es Hojeado -> Guillotina
+        // — si Guillotina tiene registro (aunque sea pendiente), ya es el
+        // compromiso real de este pedido y Impresión debe esperarlo a él,
+        // no conformarse con lo que entregó Hojeado nada más.
         if (esPrepTabla(anterior.tabla)) {
           const candidatoDosAntes = procesosConRegistros[index - 2];
           const par = [anterior, candidatoDosAntes].filter(
             (p): p is (typeof procesosConRegistros)[number] => !!p && esPrepTabla(p.tabla)
           );
-          const usado = par.find((p) => tieneRegistroReal(p));
+          const usado = par.find((p) => p.registro != null);
           anterior = usado ?? anterior;
           if (!usado) anterior = { ...anterior, registro: null }; // ninguno arrancó -> sin límite
         }
@@ -810,7 +886,7 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
         const par = [anterior, candidatoDosAntes].filter(
           (p): p is (typeof procesosConLimite)[number] => !!p && esPrepTabla(p.tabla)
         );
-        anterior = par.find((p) => tieneRegistroReal(p)) ?? null;
+        anterior = par.find((p) => p.registro != null) ?? null;
       }
 
       const obsAnterior = anterior?.observaciones || null;
@@ -875,19 +951,15 @@ export const iniciarProcesoPapel = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Este proceso no aplica a esta orden de papel" });
     }
 
-    // Si este es Hojeado o Guillotina y el hermano ya se comprometió
-    // (tiene fecha_inicio), no se puede iniciar este también -- la orden
-    // ya eligió su máquina de preparación. Para cambiarla hay que usar
-    // /reiniciar sobre el hermano primero.
-    if (await esProcesoDePreparacionPapel(procesoActualCat)) {
-      const usado = await getPreparacionUsadaPapel(client, Number(idproduccion));
-      if (usado && usado.tabla !== tabla_proceso) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: `Esta orden ya se está preparando con ${usado.tabla === "hojeado_papel" ? "Hojeado" : "Guillotina"}. Reinicia ese proceso primero si necesitas cambiar de máquina.`,
-        });
-      }
-    }
+    // NOTA (decisión de Jose, 2026-08-24): antes había un bloqueo aquí que
+    // impedía iniciar el segundo proceso de preparación si el primero ya
+    // había arrancado -- se quitó a propósito. Un pedido puede llevar
+    // Hojeado Y Guillotina, uno seguido del otro, o solo uno de los dos.
+    // La validación normal de "proceso anterior" (más abajo, vía
+    // procesoAnteriorTieneAvanceOTerminadoPapel) ya se encarga de exigir
+    // que Hojeado tenga avance o esté terminado antes de poder iniciar
+    // Guillotina CUANDO Hojeado sí se usó (ver debeIgnorarAnteriorPapel) —
+    // no hace falta un bloqueo especial aquí.
 
     const { rows: existeRows } = await client.query(
       `SELECT * FROM ${tabla_proceso} WHERE orden_produccion_idproduccion = $1`, [idproduccion]
@@ -1154,7 +1226,21 @@ export const finalizarProcesoPapel = async (req: AuthRequest, res: Response) => 
       values
     );
 
-    const siguienteProceso = await getSiguienteEfectivoPapel(procesos, procesoActualCat);
+    // Al finalizar Hojeado, el operador puede confirmar explícitamente
+    // que este pedido también pasa por Guillotina (una máquina seguida de
+    // la otra). En ese caso se salta el "salto de hermano" normal de
+    // getSiguienteEfectivoPapel y se apunta directo a Guillotina, que
+    // desde ahí queda limitada por lo que Hojeado acaba de entregar (ver
+    // debeIgnorarAnteriorPapel / getLimiteAvanceAnteriorPapel). Si no se
+    // confirma, el comportamiento es el de siempre: se salta Guillotina y
+    // se sigue directo al proceso después del par (normalmente Impresión).
+    let siguienteProceso: number | null;
+    if (tablaProceso === "hojeado_papel" && datos?.continuar_guillotina === true) {
+      const { claveAId } = await getMapaProcesoCatPapel();
+      siguienteProceso = claveAId.get("GUILLOTINA") ?? null;
+    } else {
+      siguienteProceso = await getSiguienteEfectivoPapel(procesos, procesoActualCat);
+    }
 
     if (siguienteProceso !== null) {
       const tablaSiguiente = await getTablaPorIdProcesoCat(siguienteProceso);
@@ -1382,9 +1468,40 @@ export const reiniciarProcesoPreparacionPapel = async (req: Request, res: Respon
     const { rows: existeRows } = await client.query(
       `SELECT fecha_inicio FROM ${tabla} WHERE orden_produccion_idproduccion = $1`, [idproduccion]
     );
-    if (existeRows.length === 0 || !existeRows[0].fecha_inicio) {
+    if (existeRows.length === 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Este proceso no tiene nada que reiniciar" });
+    }
+    // NOTA: ya no se exige fecha_inicio aquí -- una fila pendiente sin
+    // arrancar también se puede "reiniciar" (quitar). Es el caso de
+    // Guillotina cuando el operador confirmó al finalizar Hojeado que
+    // este pedido también pasaba por Guillotina, pero luego se dio
+    // cuenta de que no hacía falta: sin esto, esa fila pendiente se
+    // queda huérfana para siempre (Impresión esperaría a Guillotina sin
+    // que nadie la vaya a iniciar nunca — ver debeIgnorarAnteriorPapel).
+
+    // Si se está reiniciando Hojeado y Guillotina YA tiene avances o está
+    // terminada, bloquear -- Guillotina depende de lo que entregó Hojeado
+    // (orden físico fijo Hojeado -> Guillotina), así que borrar Hojeado
+    // dejaría a Guillotina con un límite huérfano.
+    if (tabla === "hojeado_papel") {
+      const { rows: guiRows } = await client.query(
+        `SELECT estado_produccion_cat_idestado_produccion_cat AS estado
+         FROM guillotina_papel WHERE orden_produccion_idproduccion = $1`,
+        [idproduccion]
+      );
+      const guiTerminada = guiRows.length > 0 && Number(guiRows[0].estado) === ESTADO_PROD.TERMINADO;
+      const { rows: guiAvRows } = await client.query(
+        `SELECT 1 FROM avance_proceso
+         WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = 'guillotina_papel' LIMIT 1`,
+        [idproduccion]
+      );
+      if (guiTerminada || guiAvRows.length > 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `No se puede reiniciar: "Guillotina" ya tiene avances registrados o está terminada, y depende de lo que entregó Hojeado.`,
+        });
+      }
     }
 
     const siguienteCat = await getSiguienteEfectivoPapel(procesos, catActual);

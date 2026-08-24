@@ -56,19 +56,17 @@ export const getPrivilegiosByRol = async (req: Request, res: Response) => {
 
     const rol = rolExiste.rows[0];
 
-    // Si tiene acceso total, devolver base vacía
-    if (rol.acceso_total) {
-      console.log("👑 Rol con acceso total, sin privilegios específicos");
-      return res.json({
-        rol_id: rol.idroles,
-        rol_nombre: rol.nombre,
-        acceso_total: true,
-        base: [],
-      });
-    }
-
-    // Base del rol — el frontend la trata como bloqueada/heredada, no como
-    // casillas editables (ver FormularioUsuario.tsx: base vs. extras).
+    // ANTES: si el rol tenía acceso_total, se regresaba base: [] sin
+    // siquiera consultar roles_privilegios — total, ese flag ya le daba
+    // acceso a todo. Pero Mesa de Tickets es la excepción: ahí el acceso
+    // NO depende de acceso_total, depende 100% de que este privilegio esté
+    // realmente en roles_privilegios. Si seguíamos cortando camino aquí, el
+    // formulario de Roles nunca podía saber (ni mostrar) qué privilegios de
+    // tickets tenía asignados un rol como Admin o Super Usuario — por eso
+    // el frontend no dejaba ni ver la casilla. Ahora SIEMPRE se consulta la
+    // base real; acceso_total sigue viajando en la respuesta para que el
+    // frontend lo siga tratando distinto (no es una base editable normal,
+    // solo sirve para precargar la selección de tickets).
     const result = await pool.query(
       `
       SELECT privilegios_idprivilegios as privilegio_id
@@ -81,12 +79,16 @@ export const getPrivilegiosByRol = async (req: Request, res: Response) => {
 
     const base = result.rows.map(row => row.privilegio_id);
 
-    console.log(`✅ Base del rol: ${base.length} privilegios`);
+    if (rol.acceso_total) {
+      console.log(`👑 Rol con acceso total — base real (solo aplica a tickets): ${base.length} privilegios`);
+    } else {
+      console.log(`✅ Base del rol: ${base.length} privilegios`);
+    }
 
     res.json({
       rol_id: rol.idroles,
       rol_nombre: rol.nombre,
-      acceso_total: false,
+      acceso_total: rol.acceso_total,
       base,
     });
   } catch (error: any) {
@@ -174,6 +176,11 @@ export const editarRol = async (req: Request, res: Response) => {
 // ACTUALIZAR BASE DE PRIVILEGIOS DE UN ROL
 // Reemplaza por completo roles_privilegios para ese rol. Los privilegios
 // individuales de los usuarios (privilegios_has_usuarios) no se tocan aquí.
+//
+// A propósito NO valida acceso_total ni lo rechaza — un rol con acceso
+// total puede perfectamente tener filas aquí (ver el caso de tickets). El
+// resto del sistema simplemente no las necesita porque ya bypassa con el
+// flag; guardarlas de más no rompe nada.
 // ==========================
 export const actualizarPrivilegiosRol = async (req: Request, res: Response) => {
   try {

@@ -141,6 +141,17 @@ const calcularCtesMod = (...medidas: unknown[]): string | null => {
   return `${round2((largoCm - 0.5) * 0.3937)}"`;
 };
 
+// CORREGIDO (2026-08-24, confirmado por Jose): CTES/Mod se deriva del MISMO
+// desarrollo que cobra el costo de laminado (acabados_papel.desarrollo_laminado),
+// no del largo del pliego -- es la medida de la pieza que ve la película.
+// Recibe el desarrollo ya resuelto en mm, así que hereda gratis la prioridad
+// del valor capturado sobre el cálculo automático.
+const calcularCtesModDesdeDesarrollo = (desarrolloMm: unknown): string | null => {
+  const desarrolloNum = toNumberOrNull(desarrolloMm);
+  if (desarrolloNum === null || desarrolloNum <= 0) return null;
+  return `${round2((desarrolloNum / 10 - 0.5) * 0.3937)}"`;
+};
+
 const calcularMetrosLaminacion = (pliegos: unknown, desarrolloMm: unknown): number | null => {
   const pliegosNum = toNumberOrNull(pliegos);
   const desarrolloNum = toNumberOrNull(desarrolloMm);
@@ -537,10 +548,13 @@ export const getSeguimiento = async (req: Request, res: Response) => {
              )
              ELSE NULL END                                                  AS op_fecha_aprobacion,
 
-        -- ── Envío: mismo criterio que plástico (subquery por orden). Para
-        -- papel hoy siempre da 0 bultos porque los bultos aún no se ligan
-        -- a procesos de papel (pendiente adaptar cuando se implemente) —
-        -- eso cae naturalmente en "no-aplica" en el mapeo de abajo.
+        -- ── Envío: mismo criterio que plástico (subquery por orden). Ya
+        -- incluye bultos.empaque_papel_idempaque_papel — esa columna (y su
+        -- FK) ya existen en la BD con el comentario "exactamente uno de los
+        -- tres debe estar lleno por fila" (bolseo / asa_flexible / empaque
+        -- papel), pero esta query solo revisaba los dos primeros, así que
+        -- para papel siempre daba 0 bultos aunque el proceso de Empaque ya
+        -- estuviera generando "cajas" — ahora sí las cuenta.
         (
           SELECT COUNT(DISTINCT b.idbulto)
           FROM bultos b
@@ -548,6 +562,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
             b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
             OR
             b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+            OR
+            b.empaque_papel_idempaque_papel IN (SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = op.idproduccion)
           )
         ) AS envio_total_bultos,
         (
@@ -558,6 +574,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
             b.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
             OR
             b.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+            OR
+            b.empaque_papel_idempaque_papel IN (SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = op.idproduccion)
           )
         ) AS envio_bultos_enviados,
         (
@@ -569,6 +587,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
             b2.bolseo_idbolseo IN (SELECT idbolseo FROM bolseo WHERE orden_produccion_idproduccion = op.idproduccion)
             OR
             b2.asa_flexible_idasa_flexible IN (SELECT idasa_flexible FROM asa_flexible WHERE orden_produccion_idproduccion = op.idproduccion)
+            OR
+            b2.empaque_papel_idempaque_papel IN (SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = op.idproduccion)
           )
         ) AS envio_fecha_estado,
 
@@ -966,9 +986,19 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       const desarrolloLaminacionMm = desarrolloLaminadoRegistradoCm != null
         ? round2(desarrolloLaminadoRegistradoCm * 10)
         : calcularDesarrolloMm(row.hoj_corte, row.pliego, row.medida);
-      const ctesModLaminacion = calcularCtesMod(row.hoj_corte, row.pliego, row.medida);
-      const metrosLaminacionEstimados = calcularMetrosLaminacion(pliegosHojeadoCalculado, desarrolloLaminacionMm);
+      const ctesModLaminacion =
+        calcularCtesModDesdeDesarrollo(desarrolloLaminacionMm) ??
+        calcularCtesMod(row.hoj_corte, row.pliego, row.medida);
+      // CORREGIDO (2026-08-24): se multiplicaba por los PLIEGOS, dejando los
+      // metros divididos entre el rendimiento. El desarrollo es el avance de
+      // una pieza de guillotina, no del pliego completo, así que el conteo
+      // tiene que ser de piezas: maquinaGuillotina (pliegos enteros x rend).
+      const metrosLaminacionEstimados = calcularMetrosLaminacion(maquinaGuillotina, desarrolloLaminacionMm);
       const rollosLaminacionEstimados = metrosLaminacionEstimados === null ? null : round2(metrosLaminacionEstimados / 3000);
+      // Referencia sin merma (cortes de la cantidad pedida, sin el redondeo
+      // del pliego): es lo que da el cálculo a mano del cliente. Informativo.
+      const metrosLaminacionSinMerma = calcularMetrosLaminacion(cortes, desarrolloLaminacionMm);
+      const rollosLaminacionSinMerma = metrosLaminacionSinMerma === null ? null : round2(metrosLaminacionSinMerma / 3000);
 
       const resumen = row.idproduccion != null
         ? resumenPorIdproduccion.get(Number(row.idproduccion))
@@ -1105,6 +1135,8 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         ctes_mod_laminacion: ctesModLaminacion,
         metros_laminacion_estimados: metrosLaminacionEstimados,
         rollos_laminacion_estimados: rollosLaminacionEstimados,
+        metros_laminacion_sin_merma: metrosLaminacionSinMerma,
+        rollos_laminacion_sin_merma: rollosLaminacionSinMerma,
 
         idorden_diseno: row.idorden_diseno ?? null,
         od_estado: row.od_estado ?? null,
@@ -1694,9 +1726,15 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       const desarrolloMm = desarrolloLaminadoRegistradoCm != null
         ? round2(desarrolloLaminadoRegistradoCm * 10)
         : calcularDesarrolloMm(r.hoj_corte, r.pliego, r.medida);
-      const ctesMod = calcularCtesMod(r.hoj_corte, r.pliego, r.medida);
-      const metrosLaminacion = calcularMetrosLaminacion(pliegosCalculados, desarrolloMm);
+      const ctesMod =
+        calcularCtesModDesdeDesarrollo(desarrolloMm) ??
+        calcularCtesMod(r.hoj_corte, r.pliego, r.medida);
+      // CORREGIDO (2026-08-24): ver la nota en getSeguimiento -- el conteo que
+      // multiplica al desarrollo es de piezas de guillotina, no de pliegos.
+      const metrosLaminacion = calcularMetrosLaminacion(maquinaGuillotina, desarrolloMm);
       const rollosLaminacion = metrosLaminacion === null ? null : round2(metrosLaminacion / 3000);
+      const metrosLaminacionSinMerma = calcularMetrosLaminacion(cortes, desarrolloMm);
+      const rollosLaminacionSinMerma = metrosLaminacionSinMerma === null ? null : round2(metrosLaminacionSinMerma / 3000);
       const bolsasArmadas = calcularBolsasPorRendimiento(pliegosCalculados, r.hoj_rendimiento);
       const refuerzoTexto = [r.refuerzo_material, r.refuerzo_medida]
         .filter(Boolean)
@@ -1853,6 +1891,8 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         metros_laminacion_estimados: metrosLaminacion,
         // Temporal: 3000 m por rollo, porque el ejemplo usa 2700 m = 0.9 rollos.
         rollos_laminacion_estimados: rollosLaminacion,
+        metros_laminacion_sin_merma: metrosLaminacionSinMerma,
+        rollos_laminacion_sin_merma: rollosLaminacionSinMerma,
 
         tipo_pegue: r.tipo_pegue || null,
         tipo_pegado: r.tipo_pegue || null,
