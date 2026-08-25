@@ -16,7 +16,7 @@ import { getPresignedUrl } from "../../config/multer";
 // ==========================
 const HORA_INICIO = 8;
 const HORA_FIN = 18;
-const HORAS_POR_DIA = HORA_FIN - HORA_INICIO; // 10
+export const HORAS_POR_DIA = HORA_FIN - HORA_INICIO; // 10
 
 const esFinDeSemana = (d: Date) => d.getDay() === 0 || d.getDay() === 6;
 
@@ -62,7 +62,7 @@ function sumarHorasHabiles(desde: Date, horas: number): Date {
 
 /** Horas hábiles transcurridas entre dos fechas — para saber cuánto se
  *  tardó "de verdad" en tiempo de trabajo, no en tiempo de reloj. */
-function horasHabilesEntre(inicio: Date, fin: Date): number {
+export function horasHabilesEntre(inicio: Date, fin: Date): number {
   if (fin <= inicio) return 0;
   let actual = inicioJornadaSiguiente(inicio);
   let total = 0;
@@ -753,19 +753,15 @@ export const detalleTicket = async (req: AuthRequest, res: Response) => {
     const ticket = rows[0];
     if (!ticket) return res.status(404).json({ error: "Ticket no encontrado" });
 
-    const puedeResolver = esResolutorTickets(req.user);
-    // "Dueño" ahora es dos cosas: quien lo reportó, O a quien se lo
-    // asignaron directo (asignarTicketA) — antes solo miraba creado_por, así
-    // que alguien con un ticket asignado no pasaba ni este chequeo.
-    const esDueno = ticket.creado_por === req.user!.id || ticket.asignado_a === req.user!.id;
-
+    // Ya no se restringe a "dueño o resolutor" — desde que la cola completa
+    // se abrió a todo el mundo (cualquiera con acceso al módulo VE todos los
+    // tickets no-personales en el tablero), el detalle tiene que poder
+    // abrirse igual, si no la lista miente ("lo veo pero no lo puedo abrir").
+    // Lo único que sigue bloqueado de verdad es un personal de alguien más.
     if (ticket.es_personal && ticket.creado_por !== req.user!.id) {
       // Un personal es privado de verdad: ni un Super Usuario puede
       // curiosear el de alguien más entrando por la URL/id directo.
       return res.status(403).json({ error: "Este ticket es personal de otra persona" });
-    }
-    if (!puedeResolver && !esDueno) {
-      return res.status(403).json({ error: "No tienes acceso a este ticket" });
     }
 
     // Marca como visto AHORA — así la campanita de no-leído de este ticket
@@ -779,6 +775,11 @@ export const detalleTicket = async (req: AuthRequest, res: Response) => {
         [id, req.user!.id]
       )
       .catch((e) => console.error("❌ Marcar ticket visto:", e.message));
+
+    // Sigue haciendo falta para UNA cosa: filtrar notas internas del hilo
+    // de comentarios (esas sí quedan exclusivas de resolutor, aunque el
+    // ticket completo ya sea visible para cualquiera).
+    const puedeResolver = esResolutorTickets(req.user);
 
     const { rows: comentarios } = await pool.query(
       `SELECT c.idticket_comentario, c.comentario, c.es_interno, c.created_at,
@@ -916,6 +917,13 @@ export const cambiarEstadoTicket = async (req: AuthRequest, res: Response) => {
     }
 
     const esFinal = estado === "Finalizado";
+    // "Cierre" ahora es Finalizado O Cancelado — los dos necesitan
+    // fecha_cierre guardada para que el cron de archivado (ver
+    // jobs/archivarTicketsFinalizados.cron.ts) sepa desde cuándo contar los
+    // 5 días hábiles. tiempo_real_horas sigue siendo exclusivo de
+    // Finalizado — no tiene sentido comparar tiempo real vs. estimado en
+    // uno que se canceló.
+    const esCierre = esFinal || estado === "Cancelado";
     // Se calcula ANTES de la transacción porque necesita tomado_en, que ya
     // se leyó arriba — evita una segunda vuelta a la base para lo mismo.
     const tiempoReal =
@@ -927,11 +935,11 @@ export const cambiarEstadoTicket = async (req: AuthRequest, res: Response) => {
       const { rows } = await client.query(
         `UPDATE ticket
             SET estado = $1,
-                fecha_cierre = CASE WHEN $3 THEN now() ELSE fecha_cierre END,
+                fecha_cierre = CASE WHEN $5 THEN now() ELSE fecha_cierre END,
                 tiempo_real_horas = CASE WHEN $3 THEN $4 ELSE tiempo_real_horas END
           WHERE idticket = $2 AND eliminado_at IS NULL
           RETURNING *`,
-        [estado, id, esFinal, tiempoReal]
+        [estado, id, esFinal, tiempoReal, esCierre]
       );
       return rows[0];
     });
@@ -980,7 +988,8 @@ export const tomarTicket = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     const diasHabiles = Number(req.body?.dias_habiles) || 0;
     const horasHabiles = Number(req.body?.horas_habiles) || 0;
-    const duracionTotal = diasHabiles * HORAS_POR_DIA + horasHabiles;
+    const minutosHabiles = Number(req.body?.minutos_habiles) || 0;
+    const duracionTotal = Math.round((diasHabiles * HORAS_POR_DIA + horasHabiles + minutosHabiles / 60) * 100) / 100;
 
     if (duracionTotal < 0) return res.status(400).json({ error: "La duración no puede ser negativa" });
 

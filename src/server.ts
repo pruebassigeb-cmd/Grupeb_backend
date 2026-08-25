@@ -5,6 +5,7 @@ import cron from "node-cron";
 import { pool } from "./config/db";
 import { iniciarCronReporteSemanal } from "./jobs/reporteSemanal.cron";
 import { iniciarCronTipoCambio } from "./jobs/tipoCambio.cron";
+import { iniciarCronArchivarTickets } from "./jobs/archivarTicketsFinalizados.cron";
 
 const PORT = process.env.PORT || 3000;
 
@@ -28,6 +29,12 @@ iniciarCronReporteSemanal();
 // Corre todos los días a las 2:00 PM, más una sincronización al arrancar
 // ============================================================
 iniciarCronTipoCambio();
+
+// ============================================================
+// CRON JOB — Archivar tickets Finalizado con más de 5 días hábiles
+// cerrados (Mesa de Tickets). Corre cada hora.
+// ============================================================
+iniciarCronArchivarTickets();
 
 // ============================================================
 // CRON JOB — Limpieza de chats aprobados hace más de 30 días
