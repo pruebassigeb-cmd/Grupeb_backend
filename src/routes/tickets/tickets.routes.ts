@@ -8,6 +8,7 @@ import {
   detalleTicket,
   cambiarEstadoTicket,
   cambiarPrioridadTicket,
+  cambiarEstrellasTicket,
   tomarTicket,
   comentarTicket,
   contadorTickets,
@@ -68,6 +69,7 @@ router.patch("/:id/estado", checkAccesoTickets, cambiarEstadoTicket);
 // /prioridad es más permisivo a propósito: dueño, asignado o resolutor,
 // en cualquier momento — el candado fino vive dentro del controller.
 router.patch("/:id/prioridad", checkAccesoTickets, cambiarPrioridadTicket);
+router.patch("/:id/estrellas", checkAccesoTickets, cambiarEstrellasTicket);
 // checkAccesoTickets, no un candado exclusivo de resolutor — tomarTicket()
 // ahora sirve también para que alguien confirme una reserva que ya es
 // suya (asignada directo), y eso lo puede hacer cualquiera con acceso al

@@ -146,11 +146,14 @@ function folioDe(idticket: number): string {
 // ==========================
 export const crearTicket = async (req: AuthRequest, res: Response) => {
   try {
-    const { titulo, descripcion, ubicacion, prioridad = "Media", idticket_relacionado, es_personal } = req.body;
+    const { titulo, descripcion, ubicacion, prioridad = "Media", idticket_relacionado, es_personal, estrellas = 1 } = req.body;
 
     if (!titulo?.trim()) return res.status(400).json({ error: "El título es requerido" });
     if (!descripcion?.trim()) return res.status(400).json({ error: "La descripción es requerida" });
     if (!PRIORIDADES.includes(prioridad)) return res.status(400).json({ error: "Prioridad inválida" });
+    if (!Number.isInteger(Number(estrellas)) || Number(estrellas) < 1 || Number(estrellas) > 5) {
+      return res.status(400).json({ error: "Las estrellas deben ser un número del 1 al 5" });
+    }
 
     if (idticket_relacionado != null) {
       const relCheck = await pool.query(
@@ -166,14 +169,15 @@ export const crearTicket = async (req: AuthRequest, res: Response) => {
 
     const ticket = await req.tx(async (client) => {
       const { rows } = await client.query(
-        `INSERT INTO ticket (titulo, descripcion, ubicacion, prioridad, idticket_relacionado, creado_por, es_personal, asignado_a, estado)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO ticket (titulo, descripcion, ubicacion, prioridad, estrellas, idticket_relacionado, creado_por, es_personal, asignado_a, estado)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING idticket`,
         [
           titulo.trim(),
           descripcion.trim(),
           ubicacion?.trim() || null,
           prioridad,
+          Number(estrellas),
           idticket_relacionado || null,
           req.user!.id,
           esPersonal,
@@ -851,6 +855,41 @@ export const cambiarPrioridadTicket = async (req: AuthRequest, res: Response) =>
   } catch (error: any) {
     console.error("❌ CAMBIAR PRIORIDAD ERROR:", error.message);
     res.status(500).json({ error: "Error al cambiar la prioridad" });
+  }
+};
+
+// ==========================
+// PATCH /api/tickets/:id/estrellas
+// 1 a 3 — desempata importancia entre tickets de la MISMA prioridad. Mismo
+// candado que la prioridad: solo quien reportó el ticket la puede tocar.
+// ==========================
+export const cambiarEstrellasTicket = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { estrellas } = req.body;
+    if (!Number.isInteger(Number(estrellas)) || Number(estrellas) < 1 || Number(estrellas) > 5) {
+      return res.status(400).json({ error: "Las estrellas deben ser un número del 1 al 5" });
+    }
+
+    const actual = await pool.query(
+      "SELECT idticket, creado_por FROM ticket WHERE idticket = $1 AND eliminado_at IS NULL",
+      [id]
+    );
+    if (actual.rowCount === 0) return res.status(404).json({ error: "Ticket no encontrado" });
+
+    if (actual.rows[0].creado_por !== req.user!.id) {
+      return res.status(403).json({ error: "Solo quien reportó el ticket puede cambiar sus estrellas" });
+    }
+
+    const ticket = await qAudit(req)(
+      "UPDATE ticket SET estrellas = $1 WHERE idticket = $2 AND eliminado_at IS NULL RETURNING *",
+      [Number(estrellas), id]
+    );
+
+    res.json(ticket.rows[0]);
+  } catch (error: any) {
+    console.error("❌ CAMBIAR ESTRELLAS ERROR:", error.message);
+    res.status(500).json({ error: "Error al cambiar las estrellas" });
   }
 };
 
