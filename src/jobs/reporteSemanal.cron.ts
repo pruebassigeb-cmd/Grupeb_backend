@@ -1,6 +1,7 @@
 // src/jobs/reporteSemanal.cron.ts
 import cron from "node-cron";
 import { enviarCorreo } from "../services/email/mailer";
+import { hoyMX } from "../utils/fecha";
 import {
   obtenerOrdenesHabilitadasNuevas,
   obtenerOrdenesSinAvance,
@@ -71,7 +72,9 @@ export async function ejecutarReporteSemanal() {
     }
 
     const asunto = armarAsuntoReporteCombinado();
-    const fechaArchivo = hoy.toISOString().slice(0, 10); // YYYY-MM-DD
+    // El proceso corre en UTC: toISOString() daría el día siguiente si el
+    // cron se moviera después de las 18:00 hora de México.
+    const fechaArchivo = hoyMX(hoy); // YYYY-MM-DD en hora de México
 
     // 3. Un correo por usuario, con solo sus secciones activas — HTML +
     //    el mismo contenido en PDF adjunto, por si lo quieren compartir.

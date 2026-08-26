@@ -9,6 +9,7 @@ import type {
   AnticipoPendiente,
   TipoReporte,
 } from "../../reportes/reporteSemanal.queries";
+import { fmtFecha } from "../../../utils/fecha";
 
 const FRONTEND_URL = (process.env.FRONTEND_URL || "https://sigeb.grupoeb.com.mx").replace(/\/+$/, "");
 
@@ -35,11 +36,6 @@ const ICONO_POR_REPORTE: Record<TipoReporte, string> = {
   diseno: "🎨",
   anticipos: "💰",
 };
-
-function fmtFecha(f: Date | string | null): string {
-  if (!f) return "—";
-  return new Date(f).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" });
-}
 
 function fmtMoneda(n: number | null | undefined): string {
   if (n == null) return "—";
@@ -95,7 +91,7 @@ function wrapper(contenido: string): string {
 }
 
 export function armarAsuntoReporteCombinado(): string {
-  const hoy = new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" });
+  const hoy = fmtFecha(new Date());
   return `Reporte semanal SIGEB — ${hoy}`;
 }
 

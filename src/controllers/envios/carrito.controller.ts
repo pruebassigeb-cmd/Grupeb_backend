@@ -367,7 +367,7 @@ export const procesarCarrito = async (req: Request, res: Response) => {
         if (esLocal) {
           await client.query(
             `INSERT INTO bitacora_reparto (envio_idenvio, usuarios_idusuario, unidades_idunidad, fecha)
-             VALUES ($1,$2,$3,CURRENT_DATE)`,
+             VALUES ($1,$2,$3,(NOW() AT TIME ZONE 'America/Mexico_City')::date)`,
             [idenvio, usuarios_idusuario, unidades_idunidad]
           );
         }

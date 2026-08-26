@@ -511,7 +511,7 @@ export const marcarEnvioCompletado = async (req: Request, res: Response) => {
         envio_idenvio, usuarios_idusuario, unidades_idunidad,
         fecha, hora_salida, hora_llegada,
         recoleccion_nombre_quien_recogio, observacion_extra
-      ) VALUES ($1,$2,$3, CURRENT_DATE, NOW(), NOW(), $4, $5)`,
+      ) VALUES ($1,$2,$3, (NOW() AT TIME ZONE 'America/Mexico_City')::date, NOW(), NOW(), $4, $5)`,
       [
         idenvio,
         tipo === "local" ? (usuarios_idusuario || null) : null,

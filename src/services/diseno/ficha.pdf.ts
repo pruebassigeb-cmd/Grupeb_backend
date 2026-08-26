@@ -2,6 +2,7 @@ import PDFDocument from "pdfkit";
 import { PoolClient } from "pg";
 import { pool } from "../../config/db";
 import { getPresignedUrl, uploadToS3, MulterFile } from "../../config/multer";
+import { fmtFecha } from "../../utils/fecha";
 
 /**
  * PDF DE LA ORDEN DE DISEÑO
@@ -72,19 +73,6 @@ const CAMPOS_PLASTICO: [string, string][] = [
   ["pigmentos", "Pigmentos"],
   ["observacion", "Observación"],
 ];
-
-const fmtFecha = (valor: any): string => {
-  if (!valor) return "—";
-  try {
-    return new Date(valor).toLocaleDateString("es-MX", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
-  } catch {
-    return String(valor);
-  }
-};
 
 const colorDe = (tipo: string) =>
   tipo === "red_social" ? MORADO : tipo === "texto" ? VERDE : AZUL;

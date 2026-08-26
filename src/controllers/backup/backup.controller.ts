@@ -7,6 +7,7 @@ import { PutObjectCommand }  from "@aws-sdk/client-s3";
 import { getPresignedUrl }   from "../../config/multer";
 import { v4 as uuidv4 }      from "uuid";
 import bcrypt                from "bcrypt";
+import { selloArchivoMX }    from "../../utils/fecha";
 
 const execAsync = promisify(exec);
 
@@ -110,7 +111,8 @@ export const ejecutarBackup = async (subidoPor: number | null = null): Promise<s
 
   const { user, password, host, port, dbname } = parseDatabaseUrl(dbUrl);
 
-  const fecha    = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  // Hora de México, no UTC: el nombre lo lee un humano.
+  const fecha    = selloArchivoMX();
   const filename = `backup-${dbname}-${fecha}.sql`;
 
   const env = { ...process.env, PGPASSWORD: password };

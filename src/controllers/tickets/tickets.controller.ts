@@ -101,8 +101,23 @@ export const tieneAccesoTickets = (user?: AuthRequest["user"]): boolean => {
   return p.includes("tickets.crear") || p.includes("tickets.resolver");
 };
 
-const PRIORIDADES = ["Baja", "Media", "Alta", "Urgente"];
+const PRIORIDADES = ["Baja", "Media", "Alta", "Urgente", "Prioritario"];
 const ESTADOS = ["Pendiente", "En proceso", "Finalizado", "Cancelado"];
+
+// ==========================
+// HELPER — ¿esta persona es una de las responsables reales del ticket?
+// Ya NO es solo "asignado_a === yo" — la fuente de verdad es la tabla
+// ticket_asignado, que puede tener a varias personas. Se usa en todos los
+// puntos donde antes se checaba asignado_a a secas (cambiar estado,
+// rebotar, comentar).
+// ==========================
+async function esCoAsignado(idticket: number | string, usuarioId: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    "SELECT 1 FROM ticket_asignado WHERE idticket = $1 AND usuario_id = $2 LIMIT 1",
+    [idticket, usuarioId]
+  );
+  return rows.length > 0;
+}
 
 // ==========================
 // HELPER — correos de todos los que pueden resolver tickets.
@@ -302,6 +317,18 @@ export const asignarTicketA = async (req: AuthRequest, res: Response) => {
           RETURNING *`,
         [usuario_id, id]
       );
+      if (rows[0]) {
+        // Reserva nueva = arranque limpio. Si el ticket ya traía
+        // co-asignados de antes (ej. venía de estar "en proceso" con 2
+        // personas y se reasigna en frío), se reemplazan por la persona
+        // nueva — no tendría sentido que alguien más siguiera en la lista
+        // de un ticket que se está reservando desde cero para alguien más.
+        await client.query("DELETE FROM ticket_asignado WHERE idticket = $1", [id]);
+        await client.query(
+          "INSERT INTO ticket_asignado (idticket, usuario_id) VALUES ($1, $2)",
+          [id, usuario_id]
+        );
+      }
       return rows[0];
     });
 
@@ -325,6 +352,78 @@ export const asignarTicketA = async (req: AuthRequest, res: Response) => {
   } catch (error: any) {
     console.error("❌ ASIGNAR TICKET ERROR:", error.message);
     res.status(500).json({ error: "Error al asignar el ticket" });
+  }
+};
+
+// ==========================
+// POST /api/tickets/:id/unirse
+// El botón "➕👥" — otro resolutor (Super Usuario o quien tenga
+// tickets.resolver) se suma como responsable de un ticket que YA está en
+// proceso con alguien más. No le quita nada al que ya lo tenía: ahora los
+// dos (o más) son responsables por igual — cualquiera puede cambiar el
+// estado, comentar o finalizarlo, y al finalizar queda finalizado para
+// todos.
+//
+// A propósito NO sirve para "reservar" un ticket libre (para eso está
+// tomarTicket) — unirse solo aplica a uno que YA tiene dueño y ya está
+// activo. Así se evita confundir "tomar de la cola" con "sumarme a algo
+// que ya empezó".
+// ==========================
+export const unirseTicket = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    if (!esResolutorTickets(req.user)) {
+      return res.status(403).json({ error: "Solo un resolutor puede sumarse a un ticket" });
+    }
+
+    const actual = await pool.query(
+      "SELECT idticket, folio, titulo, estado, asignado_a, creado_por FROM ticket WHERE idticket = $1 AND eliminado_at IS NULL",
+      [id]
+    );
+    if (actual.rowCount === 0) return res.status(404).json({ error: "Ticket no encontrado" });
+
+    const t = actual.rows[0];
+
+    if (["Finalizado", "Cancelado"].includes(t.estado)) {
+      return res.status(400).json({ error: "Este ticket ya se cerró" });
+    }
+    if (t.estado !== "En proceso") {
+      return res.status(400).json({ error: "Solo puedes sumarte a un ticket que ya está confirmado (En proceso) — este todavía está pendiente de confirmar" });
+    }
+    if (t.asignado_a === null) {
+      return res.status(400).json({ error: "Este ticket todavía no lo toma nadie — usa 'Tomar ticket' en vez de unirte" });
+    }
+    if (await esCoAsignado(String(id), req.user!.id)) {
+      return res.status(400).json({ error: "Ya eres responsable de este ticket" });
+    }
+
+    await pool.query(
+      "INSERT INTO ticket_asignado (idticket, usuario_id) VALUES ($1, $2) ON CONFLICT (idticket, usuario_id) DO NOTHING",
+      [id, req.user!.id]
+    );
+
+    const { rows: yaAsignados } = await pool.query(
+      `SELECT u.correo FROM ticket_asignado ta
+       JOIN usuarios u ON u.idusuario = ta.usuario_id
+       WHERE ta.idticket = $1`,
+      [id]
+    );
+    const { rows: creadorRows } = await pool.query("SELECT correo FROM usuarios WHERE idusuario = $1", [t.creado_por]);
+    const destinatarios = [...new Set([creadorRows[0]?.correo, ...yaAsignados.map((r) => r.correo)])].filter(Boolean) as string[];
+
+    if (destinatarios.length > 0) {
+      enviarCorreo({
+        para: destinatarios,
+        asunto: `🎫 ${req.user!.correo} se sumó al ticket ${t.folio}`,
+        html: `<p><strong>${req.user!.correo}</strong> se sumó como responsable del ticket <strong>${t.folio}</strong> — "${t.titulo}". Ahora son varios trabajando en él.</p>`,
+      }).catch((e) => console.error("❌ Correo unirse ticket:", e.message));
+    }
+
+    res.json({ mensaje: "Te uniste al ticket" });
+  } catch (error: any) {
+    console.error("❌ UNIRSE TICKET ERROR:", error.message);
+    res.status(500).json({ error: "Error al unirte al ticket" });
   }
 };
 
@@ -404,7 +503,8 @@ export const equipoActivo = async (_req: AuthRequest, res: Response) => {
       `SELECT u.idusuario, u.nombre, u.apellido, a.public_id AS foto_public_id,
               t.idticket, t.folio, t.titulo, t.prioridad, t.estado, t.rebotado
          FROM ticket t
-         JOIN usuarios u ON u.idusuario = t.asignado_a
+         JOIN ticket_asignado ta ON ta.idticket = t.idticket
+         JOIN usuarios u ON u.idusuario = ta.usuario_id
          LEFT JOIN archivos a ON a.id_archivo = u.foto_id_archivo
         WHERE t.eliminado_at IS NULL AND t.archivado = false AND t.es_personal = false
           AND (t.estado = 'En proceso' OR (t.estado = 'Pendiente' AND t.asignado_a IS NOT NULL))
@@ -450,6 +550,99 @@ export const equipoActivo = async (_req: AuthRequest, res: Response) => {
 };
 
 // ==========================
+// GET /api/tickets/estadisticas/:usuarioId
+// Exclusivo de resolutor (Super Usuario o quien tenga tickets.resolver) —
+// mismo criterio de privilegio real que todo lo demás del módulo, no un
+// atajo por nombre de rol.
+//
+// Junta lo que hay disponible en la base hoy: cuántos ha resuelto/tiene en
+// proceso/canceló, cuántos ha reportado, qué tan seguido cumple el
+// compromiso, y qué tan cerca anda su tiempo real del estimado. No hay
+// bitácora de "quién rebotó qué" todavía, así que eso no se puede
+// desglosar histórico — solo el estado actual de lo que tiene asignado.
+// ==========================
+export const estadisticasResponsable = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!esResolutorTickets(req.user)) {
+      return res.status(403).json({ error: "Solo un resolutor puede ver estadísticas de otros" });
+    }
+
+    const { usuarioId } = req.params;
+    if (!Number.isInteger(Number(usuarioId))) {
+      return res.status(400).json({ error: "usuarioId inválido" });
+    }
+
+    const usuarioRow = await pool.query(
+      `SELECT u.idusuario, u.nombre, u.apellido, r.nombre AS rol, a.public_id AS foto_public_id
+         FROM usuarios u
+         LEFT JOIN roles r ON r.idroles = u.roles_idroles
+         LEFT JOIN archivos a ON a.id_archivo = u.foto_id_archivo
+        WHERE u.idusuario = $1 AND u.eliminado_at IS NULL`,
+      [usuarioId]
+    );
+    if (usuarioRow.rowCount === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    const u = usuarioRow.rows[0];
+
+    const { rows: statsRows } = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE t.estado = 'Finalizado')  AS finalizados,
+         COUNT(*) FILTER (WHERE t.estado = 'En proceso')  AS en_proceso,
+         COUNT(*) FILTER (WHERE t.estado = 'Cancelado')   AS cancelados,
+         COUNT(*) FILTER (WHERE t.estado = 'Finalizado' AND t.fecha_compromiso IS NOT NULL) AS con_compromiso,
+         COUNT(*) FILTER (WHERE t.estado = 'Finalizado' AND t.fecha_compromiso IS NOT NULL
+                                AND t.fecha_cierre <= t.fecha_compromiso) AS a_tiempo,
+         ROUND(AVG(
+           CASE WHEN t.estado = 'Finalizado' AND t.duracion_estimada_horas > 0 AND t.tiempo_real_horas IS NOT NULL
+                THEN ((t.tiempo_real_horas - t.duracion_estimada_horas) / t.duracion_estimada_horas) * 100
+           END
+         )::numeric, 1) AS pct_promedio_vs_estimado,
+         COUNT(*) FILTER (WHERE t.estado = 'Finalizado' AND t.prioridad = 'Prioritario') AS prioritario,
+         COUNT(*) FILTER (WHERE t.estado = 'Finalizado' AND t.prioridad = 'Urgente') AS urgente,
+         COUNT(*) FILTER (WHERE t.estado = 'Finalizado' AND t.prioridad = 'Alta')    AS alta,
+         COUNT(*) FILTER (WHERE t.estado = 'Finalizado' AND t.prioridad = 'Media')   AS media,
+         COUNT(*) FILTER (WHERE t.estado = 'Finalizado' AND t.prioridad = 'Baja')    AS baja
+       FROM ticket t
+       JOIN ticket_asignado ta ON ta.idticket = t.idticket
+      WHERE ta.usuario_id = $1 AND t.eliminado_at IS NULL`,
+      [usuarioId]
+    );
+    const stats = statsRows[0];
+
+    const { rows: reportadosRows } = await pool.query(
+      `SELECT COUNT(*)::int AS reportados
+         FROM ticket
+        WHERE creado_por = $1 AND eliminado_at IS NULL`,
+      [usuarioId]
+    );
+
+    res.json({
+      idusuario: u.idusuario,
+      nombre: u.nombre,
+      apellido: u.apellido,
+      rol: u.rol,
+      foto_url: u.foto_public_id ? await getPresignedUrl(u.foto_public_id) : null,
+      finalizados: Number(stats.finalizados),
+      en_proceso: Number(stats.en_proceso),
+      cancelados: Number(stats.cancelados),
+      reportados: reportadosRows[0].reportados,
+      con_compromiso: Number(stats.con_compromiso),
+      a_tiempo: Number(stats.a_tiempo),
+      pct_promedio_vs_estimado: stats.pct_promedio_vs_estimado != null ? Number(stats.pct_promedio_vs_estimado) : null,
+      por_prioridad: {
+        Prioritario: Number(stats.prioritario),
+        Urgente: Number(stats.urgente),
+        Alta: Number(stats.alta),
+        Media: Number(stats.media),
+        Baja: Number(stats.baja),
+      },
+    });
+  } catch (error: any) {
+    console.error("❌ ESTADISTICAS RESPONSABLE ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener estadísticas" });
+  }
+};
+
+// ==========================
 // POST /api/tickets/:id/rebotar
 // Solo quien TIENE asignado el ticket lo puede rebotar (mismo criterio de
 // dueño que /estado). Vuelve a Pendiente sin nadie asignado, marcado como
@@ -468,7 +661,7 @@ export const rebotarTicket = async (req: AuthRequest, res: Response) => {
     );
     if (actual.rowCount === 0) return res.status(404).json({ error: "Ticket no encontrado" });
 
-    if (actual.rows[0].asignado_a !== req.user!.id) {
+    if (!(await esCoAsignado(String(id), req.user!.id))) {
       return res.status(403).json({ error: "Solo quien tiene asignado el ticket lo puede rebotar" });
     }
     if (["Finalizado", "Cancelado"].includes(actual.rows[0].estado)) {
@@ -505,6 +698,13 @@ export const rebotarTicket = async (req: AuthRequest, res: Response) => {
           RETURNING *`,
         [motivo?.trim() || null, id, destino?.idusuario ?? null, !!destino]
       );
+      // Rebotar limpia TODA la lista de responsables — si eran 2 personas
+      // trabajando en el ticket, las 2 se sueltan; si hay destino, arranca
+      // limpio con esa sola persona (igual que en asignarTicketA).
+      await client.query("DELETE FROM ticket_asignado WHERE idticket = $1", [id]);
+      if (destino) {
+        await client.query("INSERT INTO ticket_asignado (idticket, usuario_id) VALUES ($1, $2)", [id, destino.idusuario]);
+      }
       return rows[0];
     });
 
@@ -643,14 +843,25 @@ export const contadorTickets = async (req: AuthRequest, res: Response) => {
 // ==========================
 /** Le agrega asignado_foto_url a una lista de tickets que ya trae
  *  asignado_foto_public_id en el SELECT — evita repetir el Promise.all en
- *  cada endpoint que lista tickets. */
+ *  cada endpoint que lista tickets. También resuelve la foto de CADA
+ *  responsable dentro de "asignados" (el json_agg trae foto_public_id en
+ *  crudo, aquí se convierte a URL firmada igual que la del principal). */
 async function conFotoAsignado(rows: any[]): Promise<any[]> {
   return Promise.all(
     rows.map(async (r) => {
-      const { asignado_foto_public_id, ...resto } = r;
+      const { asignado_foto_public_id, asignados, ...resto } = r;
+      const asignadosConFoto = await Promise.all(
+        (asignados ?? []).map(async (a: any) => ({
+          idusuario: a.idusuario,
+          nombre: a.nombre,
+          apellido: a.apellido,
+          foto_url: a.foto_public_id ? await getPresignedUrl(a.foto_public_id) : null,
+        }))
+      );
       return {
         ...resto,
         asignado_foto_url: asignado_foto_public_id ? await getPresignedUrl(asignado_foto_public_id) : null,
+        asignados: asignadosConFoto,
       };
     })
   );
@@ -666,12 +877,26 @@ export const misTickets = async (req: AuthRequest, res: Response) => {
       `SELECT t.*,
               creador.nombre AS creador_nombre, creador.apellido AS creador_apellido,
               resp.nombre AS asignado_nombre, resp.apellido AS asignado_apellido,
-              fotoResp.public_id AS asignado_foto_public_id
+              fotoResp.public_id AS asignado_foto_public_id,
+              (
+                SELECT COALESCE(json_agg(json_build_object(
+                         'idusuario', u2.idusuario,
+                         'nombre', u2.nombre,
+                         'apellido', u2.apellido,
+                         'foto_public_id', af2.public_id
+                       ) ORDER BY ta2.asignado_en), '[]'::json)
+                  FROM ticket_asignado ta2
+                  JOIN usuarios u2 ON u2.idusuario = ta2.usuario_id
+                  LEFT JOIN archivos af2 ON af2.id_archivo = u2.foto_id_archivo
+                 WHERE ta2.idticket = t.idticket
+              ) AS asignados
          FROM ticket t
          JOIN usuarios creador ON creador.idusuario = t.creado_por
          LEFT JOIN usuarios resp ON resp.idusuario = t.asignado_a
          LEFT JOIN archivos fotoResp ON fotoResp.id_archivo = resp.foto_id_archivo
-        WHERE (t.creado_por = $1 OR t.asignado_a = $1) AND t.eliminado_at IS NULL
+        WHERE (t.creado_por = $1 OR t.asignado_a = $1
+               OR EXISTS (SELECT 1 FROM ticket_asignado ta WHERE ta.idticket = t.idticket AND ta.usuario_id = $1))
+          AND t.eliminado_at IS NULL
         ORDER BY t.created_at DESC`,
       [req.user!.id]
     );
@@ -713,7 +938,19 @@ export const listarTickets = async (req: AuthRequest, res: Response) => {
       `SELECT t.*,
               creador.nombre AS creador_nombre, creador.apellido AS creador_apellido,
               resp.nombre AS asignado_nombre, resp.apellido AS asignado_apellido,
-              fotoResp.public_id AS asignado_foto_public_id
+              fotoResp.public_id AS asignado_foto_public_id,
+              (
+                SELECT COALESCE(json_agg(json_build_object(
+                         'idusuario', u2.idusuario,
+                         'nombre', u2.nombre,
+                         'apellido', u2.apellido,
+                         'foto_public_id', af2.public_id
+                       ) ORDER BY ta2.asignado_en), '[]'::json)
+                  FROM ticket_asignado ta2
+                  JOIN usuarios u2 ON u2.idusuario = ta2.usuario_id
+                  LEFT JOIN archivos af2 ON af2.id_archivo = u2.foto_id_archivo
+                 WHERE ta2.idticket = t.idticket
+              ) AS asignados
          FROM ticket t
          JOIN usuarios creador ON creador.idusuario = t.creado_por
          LEFT JOIN usuarios resp ON resp.idusuario = t.asignado_a
@@ -812,7 +1049,29 @@ export const detalleTicket = async (req: AuthRequest, res: Response) => {
       }))
     );
 
-    res.json({ ...ticket, comentarios, archivos });
+    // Lista completa de responsables reales — puede ser más de uno desde
+    // que existe "unirse". asignado_nombre/asignado_apellido (arriba) se
+    // quedan como el "principal" para no romper nada que ya los use; esto
+    // es la lista completa para mostrar todos los avatares.
+    const { rows: asignadosRaw } = await pool.query(
+      `SELECT u.idusuario, u.nombre, u.apellido, a.public_id AS foto_public_id
+         FROM ticket_asignado ta
+         JOIN usuarios u ON u.idusuario = ta.usuario_id
+         LEFT JOIN archivos a ON a.id_archivo = u.foto_id_archivo
+        WHERE ta.idticket = $1
+        ORDER BY ta.asignado_en ASC`,
+      [id]
+    );
+    const asignados = await Promise.all(
+      asignadosRaw.map(async (u: any) => ({
+        idusuario: u.idusuario,
+        nombre: u.nombre,
+        apellido: u.apellido,
+        foto_url: u.foto_public_id ? await getPresignedUrl(u.foto_public_id) : null,
+      }))
+    );
+
+    res.json({ ...ticket, comentarios, archivos, asignados });
   } catch (error: any) {
     console.error("❌ DETALLE TICKET ERROR:", error.message);
     res.status(500).json({ error: "Error al obtener el ticket" });
@@ -908,7 +1167,11 @@ export const cambiarEstadoTicket = async (req: AuthRequest, res: Response) => {
       [id]
     );
     if (actual.rowCount === 0) return res.status(404).json({ error: "Ticket no encontrado" });
-    if (actual.rows[0].asignado_a !== req.user!.id) {
+    // Ya no es "asignado_a === yo" a secas — cualquiera de los responsables
+    // reales (ticket_asignado) puede mover el estado. Si son 2 personas
+    // trabajando en el mismo ticket, cualquiera de las dos lo puede
+    // finalizar por igual.
+    if (!(await esCoAsignado(String(id), req.user!.id))) {
       return res.status(403).json({
         error: actual.rows[0].asignado_a
           ? "Solo quien tiene asignado el ticket puede cambiar su estado"
@@ -1031,6 +1294,13 @@ export const tomarTicket = async (req: AuthRequest, res: Response) => {
           RETURNING *`,
         [req.user!.id, id, duracionTotal > 0 ? duracionTotal : null, fechaCompromiso]
       );
+      if (rows[0]) {
+        await client.query(
+          `INSERT INTO ticket_asignado (idticket, usuario_id) VALUES ($1, $2)
+           ON CONFLICT (idticket, usuario_id) DO NOTHING`,
+          [id, req.user!.id]
+        );
+      }
       return rows[0];
     });
 
@@ -1080,11 +1350,14 @@ export const comentarTicket = async (req: AuthRequest, res: Response) => {
     const esInterno = !!es_interno && esResolutor;
 
     if (!esResolutor) {
-      // "Tuyo" es lo mismo que en detalleTicket: lo reportaste, o te lo
-      // asignaron directo. Antes solo miraba creado_por, así que alguien
-      // con un ticket asignado no podía ni comentar en el suyo propio.
+      // "Tuyo" es lo mismo que en detalleTicket: lo reportaste, te lo
+      // asignaron directo, o eres uno de los co-asignados de la lista real
+      // (ticket_asignado) — ya no solo asignado_a a secas.
       const propio = await pool.query(
-        "SELECT 1 FROM ticket WHERE idticket = $1 AND (creado_por = $2 OR asignado_a = $2) AND eliminado_at IS NULL",
+        `SELECT 1 FROM ticket t
+          WHERE t.idticket = $1 AND t.eliminado_at IS NULL
+            AND (t.creado_por = $2 OR t.asignado_a = $2
+                 OR EXISTS (SELECT 1 FROM ticket_asignado ta WHERE ta.idticket = t.idticket AND ta.usuario_id = $2))`,
         [id, req.user!.id]
       );
       if (propio.rowCount === 0) {

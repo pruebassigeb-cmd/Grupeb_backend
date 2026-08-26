@@ -15,9 +15,11 @@ import {
   notificacionesTickets,
   usuariosAsignables,
   asignarTicketA,
+  unirseTicket,
   liberarTicket,
   rebotarTicket,
   equipoActivo,
+  estadisticasResponsable,
   tieneAccesoTickets,
 } from "../../controllers/tickets/tickets.controller";
 
@@ -50,6 +52,7 @@ router.get("/mios", checkAccesoTickets, misTickets);
 router.get("/contador", checkAccesoTickets, contadorTickets);
 router.get("/notificaciones", checkAccesoTickets, notificacionesTickets);
 router.get("/equipo-activo", checkAccesoTickets, equipoActivo);
+router.get("/estadisticas/:usuarioId", checkAccesoTickets, estadisticasResponsable);
 // Abierto a cualquiera con acceso al módulo — un Admin también necesita
 // esta lista para poder rebotar SU propio ticket directo a alguien (ver
 // rebotarTicket). La acción de asignar en frío (PATCH /asignar) sigue
@@ -80,6 +83,7 @@ router.post("/:id/tomar", checkAccesoTickets, tomarTicket);
 // directamente. El ticket queda "reservado" en Pendiente, no salta solo a
 // En proceso — la persona destino confirma con /tomar (ver arriba).
 router.patch("/:id/asignar", checkAccesoTickets, asignarTicketA);
+router.post("/:id/unirse", checkAccesoTickets, unirseTicket);
 router.post("/:id/liberar", checkAccesoTickets, liberarTicket);
 router.post("/:id/rebotar", checkAccesoTickets, rebotarTicket);
 router.post("/:id/comentarios", checkAccesoTickets, comentarTicket);

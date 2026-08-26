@@ -1371,10 +1371,15 @@ export const editarProcesoPapel = async (req: AuthRequest, res: Response) => {
       setClauses.push(`observaciones = $${paramIdx}`); values.push(datos.observaciones || null); paramIdx++;
     }
     if (datos.fecha_inicio !== undefined) {
-      setClauses.push(`fecha_inicio = $${paramIdx}`); values.push(datos.fecha_inicio || null); paramIdx++;
+      // Ver nota en procesosController: el cast explícito evita que Postgres
+      // tire el offset del ISO y termine guardando hora de México en una
+      // columna que NOW() llena en UTC.
+      setClauses.push(`fecha_inicio = $${paramIdx}::timestamptz AT TIME ZONE 'UTC'`);
+      values.push(datos.fecha_inicio || null); paramIdx++;
     }
     if (datos.fecha_fin !== undefined) {
-      setClauses.push(`fecha_fin = $${paramIdx}`); values.push(datos.fecha_fin || null); paramIdx++;
+      setClauses.push(`fecha_fin = $${paramIdx}::timestamptz AT TIME ZONE 'UTC'`);
+      values.push(datos.fecha_fin || null); paramIdx++;
     }
 
     if (setClauses.length === 0) {

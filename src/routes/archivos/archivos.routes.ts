@@ -7,6 +7,7 @@ import {
   obtenerUrlFirmada,
   obtenerUrlFirmadaLarga,
   verArchivo,
+  obtenerContenidoArchivo,
   obtenerEstadisticas,
   getFotosEnvio,
   getFotosNota,
@@ -25,6 +26,9 @@ router.get("/",                    authMiddleware, listarArchivos);
 router.get("/:id_archivo/url",     authMiddleware, obtenerUrlFirmada);
 router.get("/:id_archivo/url-larga", authMiddleware, obtenerUrlFirmadaLarga);
 router.get("/:id_archivo/ver",     authMiddleware, verArchivo);
+// Sirve los BYTES desde esta API (sin redirigir a S3) para que el visor
+// interno pueda hacer fetch sin toparse con el CORS del bucket.
+router.get("/:id_archivo/contenido", authMiddleware, obtenerContenidoArchivo);
 router.delete("/:id_archivo",      authMiddleware, eliminarArchivo);
 
 export default router;

@@ -261,7 +261,7 @@ export const marcarEntregadoLocalNota = async (req: Request, res: Response) => {
     const result = await qAudit(req)(
       `UPDATE nota_remision
        SET estado                  = 'entregado',
-           local_hora_llegada      = COALESCE($1::timestamp, NOW()),
+           local_hora_llegada      = COALESCE($1::timestamptz AT TIME ZONE 'UTC', NOW()),
            local_observacion       = COALESCE($2, local_observacion),
            local_observacion_extra = COALESCE($3, local_observacion_extra),
            local_firma             = COALESCE($4, local_firma)

@@ -1001,11 +1001,17 @@ export const editarProceso = async (req: AuthRequest, res: Response) => {
       const maquinaCompleta = datos.repeticion ? `${datos.maquina} | ${datos.repeticion}` : datos.maquina;
       setClauses.push(`maquina = $${paramIdx}`); values.push(maquinaCompleta); paramIdx++;
     }
+    // El cliente manda un ISO en UTC. El cast explícito a timestamptz lee el
+    // offset y AT TIME ZONE 'UTC' lo baja a la misma convención con la que
+    // NOW() escribe estas columnas (ver el arranque de proceso, más arriba).
+    // Sin el cast, Postgres tiraba el offset y guardaba hora de México.
     if (datos.fecha_inicio !== undefined) {
-      setClauses.push(`fecha_inicio = $${paramIdx}`); values.push(datos.fecha_inicio || null); paramIdx++;
+      setClauses.push(`fecha_inicio = $${paramIdx}::timestamptz AT TIME ZONE 'UTC'`);
+      values.push(datos.fecha_inicio || null); paramIdx++;
     }
     if (datos.fecha_fin !== undefined) {
-      setClauses.push(`fecha_fin = $${paramIdx}`); values.push(datos.fecha_fin || null); paramIdx++;
+      setClauses.push(`fecha_fin = $${paramIdx}::timestamptz AT TIME ZONE 'UTC'`);
+      values.push(datos.fecha_fin || null); paramIdx++;
     }
 
     if (setClauses.length === 0) {

@@ -10,6 +10,7 @@ import type {
   AnticipoPendiente,
   TipoReporte,
 } from "./reporteSemanal.queries";
+import { fmtFecha, fmtFechaLarga } from "../../utils/fecha";
 
 export interface DatasetsReporte {
   nuevasProd: OrdenHabilitadaNueva[];
@@ -33,11 +34,6 @@ const TITULO_POR_REPORTE: Record<TipoReporte, string> = {
   anticipos: "Anticipos",
 };
 
-function fmtFecha(f: Date | string | null): string {
-  if (!f) return "—";
-  return new Date(f).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" });
-}
-
 function fmtMoneda(n: number | null | undefined): string {
   if (n == null) return "—";
   return Number(n).toLocaleString("es-MX", { style: "currency", currency: "MXN" });
@@ -48,9 +44,7 @@ function encabezadoDocumento(doc: PDFKit.PDFDocument) {
   doc.fontSize(16).fillColor("#0D0D0D").font("Helvetica-Bold").text("GRUPO EB");
   doc.fontSize(9).fillColor("#666").font("Helvetica").text("Reporte semanal — SIGEB");
   doc.moveDown(0.3);
-  doc.fontSize(8).fillColor("#999").text(
-    new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "long", year: "numeric" })
-  );
+  doc.fontSize(8).fillColor("#999").text(fmtFechaLarga(new Date()));
   doc.moveDown(1);
   doc.strokeColor("#e5e5e5").moveTo(MARGEN, doc.y).lineTo(MARGEN + ANCHO_UTIL, doc.y).stroke();
   doc.moveDown(0.8);

@@ -629,7 +629,7 @@ export const marcarSalidaEnvio = async (req: Request, res: Response) => {
     } else {
       const nuevaBitacora = await client.query(
         `INSERT INTO bitacora_reparto (envio_idenvio, usuarios_idusuario, unidades_idunidad, fecha, hora_salida)
-         VALUES ($1, $2, $3, CURRENT_DATE, NOW()) RETURNING idbitacora`,
+         VALUES ($1, $2, $3, (NOW() AT TIME ZONE 'America/Mexico_City')::date, NOW()) RETURNING idbitacora`,
         [idenvio, datosEnvio.usuarios_idusuario || null, datosEnvio.unidades_idunidad || null],
       );
       idbitacora = Number(nuevaBitacora.rows[0].idbitacora);
@@ -692,8 +692,8 @@ export const marcarEntregaEnvio = async (req: RequestConArchivo, res: Response) 
       idbitacora = Number(bitacoraExistente.rows[0].idbitacora);
       await client.query(
         `UPDATE bitacora_reparto
-         SET hora_salida       = COALESCE($1::timestamp, hora_salida),
-             hora_llegada      = COALESCE($2::timestamp, NOW()),
+         SET hora_salida       = COALESCE($1::timestamptz AT TIME ZONE 'UTC', hora_salida),
+             hora_llegada      = COALESCE($2::timestamptz AT TIME ZONE 'UTC', NOW()),
              observacion       = COALESCE($3::text, observacion),
              observacion_extra = COALESCE($4::text, observacion_extra),
              firma             = COALESCE($5::text, firma),
@@ -704,7 +704,9 @@ export const marcarEntregaEnvio = async (req: RequestConArchivo, res: Response) 
     } else {
       const nuevaBitacora = await client.query(
         `INSERT INTO bitacora_reparto (envio_idenvio, fecha, hora_salida, hora_llegada, observacion, observacion_extra, firma)
-         VALUES ($1, CURRENT_DATE, $2::timestamp, COALESCE($3::timestamp, NOW()), $4, $5, $6)
+         VALUES ($1, (NOW() AT TIME ZONE 'America/Mexico_City')::date,
+                 $2::timestamptz AT TIME ZONE 'UTC',
+                 COALESCE($3::timestamptz AT TIME ZONE 'UTC', NOW()), $4, $5, $6)
          RETURNING idbitacora`,
         [idenvio, hora_salida || null, horaLlegadaFinal, observacion || null, observacion_extra || null, firma || null],
       );

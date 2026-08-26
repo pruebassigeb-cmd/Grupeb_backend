@@ -11,7 +11,10 @@ import {
   SUBCARPETAS_PDF,
   SUBCARPETAS_SUAJE,
   SUBCARPETAS_CATALOGO,
-} from "../../config/multer";import { pool } from "../../config/db";
+} from "../../config/multer";
+import { GetObjectCommand } from "@aws-sdk/client-s3";
+import { s3Client, S3_BUCKET } from "../../config/s3";
+import { pool } from "../../config/db";
 
 type RequestConArchivo = Request & { file?: MulterFile };
 
@@ -353,6 +356,78 @@ export const verArchivo = async (req: Request, res: Response): Promise<void> => 
   } catch (error) {
     console.error("❌ Error al ver archivo:", error);
     res.status(500).json({ error: "Error al obtener archivo" });
+  }
+};
+
+/**
+ * Devuelve el CONTENIDO del archivo servido por esta misma API, en vez de
+ * redirigir a S3.
+ *
+ * Por qué existe: el visor interno (components/visor/VisorPdf.tsx) necesita
+ * los bytes del PDF para dibujarlo con pdf.js, así que hace `fetch` del
+ * archivo desde el navegador. Contra una URL firmada de S3 ese fetch lo
+ * bloquea CORS: el bucket no publica Access-Control-Allow-Origin para el
+ * dominio de la app. `verArchivo` tampoco sirve para eso — un 302 hacia S3
+ * termina igual, porque el navegador aplica CORS al destino final.
+ *
+ * Aquí el archivo se baja de S3 del lado del servidor (donde CORS no
+ * aplica: es una llamada del SDK, no del navegador) y se reenvía al cliente
+ * desde el mismo origen de la API, que ya tiene su CORS configurado. Así el
+ * visor funciona sin tocar la configuración del bucket.
+ */
+export const obtenerContenidoArchivo = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { id_archivo } = req.params;
+
+    const result = await pool.query(
+      "SELECT public_id, nombre, mime_type FROM archivos WHERE id_archivo = $1",
+      [id_archivo]
+    );
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "Archivo no encontrado" });
+      return;
+    }
+
+    const { public_id, nombre, mime_type } = result.rows[0];
+
+    const objeto = await s3Client.send(
+      new GetObjectCommand({ Bucket: S3_BUCKET, Key: public_id })
+    );
+
+    if (!objeto.Body) {
+      res.status(404).json({ error: "El archivo no tiene contenido en S3" });
+      return;
+    }
+
+    res.setHeader("Content-Type", mime_type || "application/octet-stream");
+    // inline: el visor lo dibuja en pantalla, no dispara descarga del sistema
+    // (ver el problema de kiosko documentado en utils/entregarPdf.ts).
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(nombre || id_archivo)}"`
+    );
+    if (objeto.ContentLength != null) {
+      res.setHeader("Content-Length", String(objeto.ContentLength));
+    }
+
+    // El Body del SDK v3 en Node es un Readable: se transmite por partes en
+    // vez de cargar el archivo completo en memoria.
+    const cuerpo = objeto.Body as NodeJS.ReadableStream;
+    cuerpo.on("error", (e) => {
+      console.error("❌ Error transmitiendo archivo desde S3:", e);
+      if (!res.headersSent) res.status(500).end();
+      else res.destroy();
+    });
+    cuerpo.pipe(res);
+  } catch (error) {
+    console.error("❌ Error al obtener contenido del archivo:", error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Error al obtener el archivo" });
+    }
   }
 };
 
