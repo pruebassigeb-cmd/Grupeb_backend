@@ -8,6 +8,7 @@ import {
   calcularPreciosPlasticoBatch,
   ErrorCalculoPrecioPlastico,
 } from "../../services/plastico/calculadorPrecioPlastico.service";
+import { calcularIncrementoPlasticoCotizadorLibre } from "../../services/cotizadorLibre/incrementoPlasticoCotizadorLibre.service";
 import type {
   CalcularPrecioCotizadorLibreRequest,
   CalcularPrecioCotizadorLibreResponse,
@@ -107,6 +108,26 @@ export const calcularPrecioCotizadorLibre = async (req: Request, res: Response) 
       return res.status(400).json({ error: "Falta el objeto 'plastico' en la solicitud." });
     }
 
+    if (!body.plastico.idTipoProductoPlastico) {
+      return res.status(400).json({ error: "Falta idTipoProductoPlastico en la solicitud." });
+    }
+
+    // ✅ NUEVO — incremento por rango de cantidad para asa flexible / cinta
+    // de seguridad. Vive fuera de calcularPreciosPlasticoBatch a propósito:
+    // esa función también la usa el cotizador interno normal, y este
+    // incremento es exclusivo del Cotizador Interactivo.
+    const incremento = await calcularIncrementoPlasticoCotizadorLibre({
+      idTipoProductoPlastico: body.plastico.idTipoProductoPlastico,
+      cantidad: body.cantidad,
+      cintaSeguridadId: body.plastico.cintaSeguridadId,
+    });
+
+    if (incremento.cintaSeguridadFaltante) {
+      return res.status(400).json({
+        error: "Este producto requiere seleccionar una cinta de seguridad.",
+      });
+    }
+
     const resultadoMotor = await calcularPreciosPlasticoBatch({
       cantidades: [body.cantidad],
       porKilo: body.plastico.porKilo,
@@ -114,7 +135,18 @@ export const calcularPrecioCotizadorLibre = async (req: Request, res: Response) 
       tintasCantidad: body.plastico.tintasCantidad,
     });
 
-    return res.json(respuestaPublicaPlastico(resultadoMotor));
+    const respuesta = respuestaPublicaPlastico(resultadoMotor);
+
+    // El incremento solo se suma si hay un precio_unitario real que
+    // incrementar (si "sin_tintas" o si no hubo tarifa aplicable,
+    // precio_unitario ya viene null y se deja tal cual).
+    if (respuesta.disponible && respuesta.precio_unitario !== null && incremento.incrementoTotal > 0) {
+      respuesta.precio_unitario = Number(
+        (respuesta.precio_unitario + incremento.incrementoTotal).toFixed(2)
+      );
+    }
+
+    return res.json(respuesta);
   } catch (error: any) {
     if (error instanceof ErrorCalculoPrecioPapel || error instanceof ErrorCalculoPrecioPlastico) {
       // Errores de validación de entrada — responsabilidad del frontend,

@@ -6,6 +6,11 @@ import { armarAsuntoDocumento, armarHtmlDocumento } from "../../services/email/t
 
 const MAX_PDF_BYTES = 8 * 1024 * 1024; // 8MB de margen — un PDF de estos nunca debería acercarse a esto
 
+// Copia interna de todo documento enviado a un cliente (cotización, pedido
+// o agradecimiento de Expo) — para verificar que el envío se completó y ver
+// exactamente qué está recibiendo el cliente de nuestra parte.
+const CORREO_COPIA_INTERNA = "sistemaeb@grupoeb.com.mx";
+
 export const enviarCorreoDocumento = async (req: Request, res: Response) => {
   try {
     const {
@@ -39,6 +44,7 @@ export const enviarCorreoDocumento = async (req: Request, res: Response) => {
 
     await enviarCorreo({
       para: destinatario.trim(),
+      bcc: CORREO_COPIA_INTERNA,
       asunto,
       html,
       adjuntos: [{

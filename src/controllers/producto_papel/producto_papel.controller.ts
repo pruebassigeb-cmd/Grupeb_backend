@@ -56,6 +56,30 @@ function limpiarMedidasProducto<T extends { ancho?: unknown; fuelle?: unknown; a
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ALCANCE (SCOPE): producto normal vs. componente de un producto especial
+// ═══════════════════════════════════════════════════════════════════════════
+// Fase 1 (migración) le agregó idcomponente_papel a suaje_papel, acabados_papel
+// y las 14 maquinaria_* como columna NULLABLE con índice único parcial dual:
+// un producto normal sigue usando idproducto_papel (idcomponente_papel queda
+// NULL, exactamente como hoy); un producto especial reparte esas mismas
+// tablas por componente (una fila por componente, idcomponente_papel poblado,
+// idproducto_papel viaja igual como referencia denormalizada porque la
+// columna es NOT NULL en las 14 tablas de maquinaria).
+//
+// Scope encapsula "a quién le pertenece este renglón" para que las funciones
+// de suaje/acabados/maquinaria no se dupliquen: una única implementación de
+// cada una sirve tanto al producto (scope.idcomponente_papel = null) como a
+// cada componente (scope.idcomponente_papel = <id>).
+type Scope = { idproducto_papel: number; idcomponente_papel: number | null };
+
+function scopeWhere(scope: Scope, paramIndex: number, alias: string = ""): { sql: string; value: number } {
+  const col = (name: string) => (alias ? `${alias}.${name}` : name);
+  return scope.idcomponente_papel != null
+    ? { sql: `${col("idcomponente_papel")} = $${paramIndex}`, value: scope.idcomponente_papel }
+    : { sql: `${col("idproducto_papel")} = $${paramIndex} AND ${col("idcomponente_papel")} IS NULL`, value: scope.idproducto_papel };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // HELPERS MAQUINARIA MULTISELECT
 // ═══════════════════════════════════════════════════════════════════════════
 const MAQ_PIVOTS: Record<string, { tabla: string; col: string }> = {
@@ -71,6 +95,12 @@ const MAQ_PIVOTS: Record<string, { tabla: string; col: string }> = {
   desbarbe:           { tabla: "maquinaria_desbarbe",           col: "idcat_desbarbe"           },
   laminado_maquina:   { tabla: "maquinaria_laminado",           col: "idcat_laminado_maquina"   },
   empaque_maquina:    { tabla: "maquinaria_empaque",            col: "idcat_empaque_maquina"    },
+  // NOTA: maquinaria_alto_relieve y maquinaria_textura existen en BD (y ya
+  // quedaron preparadas en Fase 1 con el mismo idcomponente_papel) pero hoy
+  // ningún formulario las captura — no se agregan aquí para no inventar una
+  // capacidad que el producto normal tampoco tiene. El día que se exponga
+  // esa selección de máquina, entra a este mapa igual que las demás y queda
+  // servida por componente sin más cambios.
 };
 
 const CAT_TABLES: Record<string, string> = {
@@ -88,30 +118,29 @@ const CAT_TABLES: Record<string, string> = {
   empaque_maquina:    "cat_empaque_maquina",
 };
 
-async function insertarMaquinaria(client: any, idproducto_papel: number, maquinaria: Record<string, number[]>) {
+async function insertarMaquinaria(client: any, scope: Scope, maquinaria: Record<string, number[]>) {
   for (const [key, pivot] of Object.entries(MAQ_PIVOTS)) {
     const ids: number[] = maquinaria[key] ?? [];
     for (const id of ids) {
       await client.query(
-        `INSERT INTO ${pivot.tabla} (idproducto_papel, ${pivot.col})
-         VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [idproducto_papel, id]
+        `INSERT INTO ${pivot.tabla} (idproducto_papel, idcomponente_papel, ${pivot.col})
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [scope.idproducto_papel, scope.idcomponente_papel, id]
       );
     }
   }
 }
 
-async function eliminarMaquinaria(client: any, idproducto_papel: number) {
+async function eliminarMaquinaria(client: any, scope: Scope) {
+  const where = scopeWhere(scope, 1);
   for (const pivot of Object.values(MAQ_PIVOTS)) {
-    await client.query(
-      `DELETE FROM ${pivot.tabla} WHERE idproducto_papel = $1`,
-      [idproducto_papel]
-    );
+    await client.query(`DELETE FROM ${pivot.tabla} WHERE ${where.sql}`, [where.value]);
   }
 }
 
-async function getMaquinaria(id: number) {
+async function getMaquinaria(scope: Scope) {
   const result: Record<string, { id: number; nombre: string; numero_maquina?: string | null; tipo_maquina?: string | null }[]> = {};
+  const where = scopeWhere(scope, 1, "m");
   for (const [key, pivot] of Object.entries(MAQ_PIVOTS)) {
     const cat = CAT_TABLES[key];
     const extraSelect = key === "hojeado_guillotina"
@@ -121,9 +150,9 @@ async function getMaquinaria(id: number) {
       `SELECT m.${pivot.col} AS id, c.nombre${extraSelect}
        FROM ${pivot.tabla} m
        JOIN ${cat} c ON c.${pivot.col} = m.${pivot.col}
-       WHERE m.idproducto_papel = $1
+       WHERE ${where.sql}
        ORDER BY c.nombre ASC`,
-      [id]
+      [where.value]
     );
     result[key] = rows;
   }
@@ -155,6 +184,385 @@ async function getLaminado(idacabados_papel: number) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HELPERS SUAJE / ACABADOS — upsert por scope (producto o componente)
+// ═══════════════════════════════════════════════════════════════════════════
+// Extraídos de lo que antes vivía inline, duplicado, en crearProductoPapel y
+// actualizarProductoPapel. Ahora una sola implementación sirve a ambos y,
+// con scope.idcomponente_papel, también a cada componente de un producto
+// especial — que es exactamente donde antes se hubiera tenido que duplicar
+// por tercera vez.
+async function upsertSuaje(client: any, scope: Scope, suaje: any): Promise<void> {
+  if (!suaje) return;
+
+  const where = scopeWhere(scope, 1);
+  const { rows: existe } = await client.query(
+    `SELECT idsuaje_papel FROM suaje_papel WHERE ${where.sql}`,
+    [where.value]
+  );
+
+  const valores = [
+    suaje.numero              ?? null,
+    suaje.pzs                 ?? null,
+    suaje.tamano              ?? null,
+    suaje.corte1_tipo         ?? null,
+    suaje.corte1_medida       ?? null,
+    suaje.idcat_corte         ?? null,
+    suaje.idcat_punto_corte   ?? null,
+    suaje.dobles1_tipo        ?? null,
+    suaje.dobles1_medida      ?? null,
+    suaje.idcat_doble         ?? null,
+    suaje.idcat_punto_doble   ?? null,
+    suaje.metros              ?? null,
+    suaje.idcat_matrix        ?? null,
+    suaje.tiempo_arreglo      ?? null,
+    suaje.idcat_sacabocados   ?? null,
+    suaje.cantidad_sacabocado ?? null,
+    suaje.idcat_perforado     ?? null,
+    suaje.cantidad_perforado  ?? null,
+    suaje.herramental_desbarbe === true,
+    suaje.no_desbarbe         ?? null,
+  ];
+
+  if (existe.length > 0) {
+    await client.query(`
+      UPDATE suaje_papel SET
+        numero = $1, pzs = $2, tamano = $3,
+        corte1_tipo = $4, corte1_medida = $5, idcat_corte = $6, idcat_punto_corte = $7,
+        dobles1_tipo = $8, dobles1_medida = $9, idcat_doble = $10, idcat_punto_doble = $11,
+        metros = $12, idcat_matrix = $13, tiempo_arreglo = $14,
+        idcat_sacabocados = $15, cantidad_sacabocado = $16,
+        idcat_perforado   = $17, cantidad_perforado  = $18,
+        herramental_desbarbe = $19, no_desbarbe = $20
+      WHERE idsuaje_papel = $21
+    `, [...valores, existe[0].idsuaje_papel]);
+  } else {
+    await client.query(`
+      INSERT INTO suaje_papel (
+        idproducto_papel, idcomponente_papel,
+        numero, pzs, tamano,
+        corte1_tipo, corte1_medida, idcat_corte, idcat_punto_corte,
+        dobles1_tipo, dobles1_medida, idcat_doble, idcat_punto_doble,
+        metros, idcat_matrix, tiempo_arreglo,
+        idcat_sacabocados, cantidad_sacabocado,
+        idcat_perforado,   cantidad_perforado,
+        herramental_desbarbe, no_desbarbe
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+    `, [scope.idproducto_papel, scope.idcomponente_papel, ...valores]);
+  }
+}
+
+async function getSuaje(scope: Scope) {
+  const where = scopeWhere(scope, 1, "s");
+  const { rows } = await pool.query(`
+    SELECT
+      s.*,
+      sc.nombre  AS sacabocado_nombre,
+      sc.medida  AS sacabocado_medida,
+      pe.nombre  AS perforado_nombre,
+      pe.medida  AS perforado_medida,
+      mx.medida_matrix AS matrix_nombre,
+      mx.idmatrix      AS idcat_matrix,
+      pc.puntos  AS puntos_corte,
+      pd.puntos  AS puntos_doble
+    FROM suaje_papel s
+    LEFT JOIN cat_sacabocados sc ON sc.idcat_sacabocados = s.idcat_sacabocados
+    LEFT JOIN cat_perforado   pe ON pe.idcat_perforado   = s.idcat_perforado
+    LEFT JOIN matrix          mx ON mx.idmatrix          = s.idcat_matrix
+    LEFT JOIN cat_puntos      pc ON pc.idcat_punto       = s.idcat_punto_corte
+    LEFT JOIN cat_puntos      pd ON pd.idcat_punto       = s.idcat_punto_doble
+    WHERE ${where.sql}
+  `, [where.value]);
+  return rows[0] ?? null;
+}
+
+async function upsertAcabados(client: any, scope: Scope, acabados: any): Promise<void> {
+  if (!acabados) return;
+
+  const where = scopeWhere(scope, 1);
+  const { rows: existe } = await client.query(
+    `SELECT idacabados_papel FROM acabados_papel WHERE ${where.sql}`,
+    [where.value]
+  );
+
+  const valores = [
+    acabados.idcat_tipo_pegado       ?? null,
+    acabados.idcat_pegamento         ?? null,
+    acabados.idrollo_lam             ?? null,
+    acabados.desarrollo_laminado     ?? null,
+    acabados.idcat_refuerzo_material ?? null,
+    acabados.idcat_refuerzo_medidas  ?? null,
+    acabados.idcat_base_material     ?? null,
+    acabados.base_medida             ?? null,
+    acabados.idcat_empaque           ?? null,
+    acabados.pzs_caja                ?? null,
+    acabados.lleva_uv               === true,
+    acabados.lleva_alto_relieve     === true,
+    acabados.lleva_textura          === true,
+    acabados.lleva_hot_stamping     === true,
+  ];
+
+  let idacabados_papel: number;
+  if (existe.length > 0) {
+    idacabados_papel = existe[0].idacabados_papel;
+    await client.query(`
+      UPDATE acabados_papel SET
+        idcat_tipo_pegado = $1, idcat_pegamento = $2,
+        idrollo_lam = $3, desarrollo_laminado = $4,
+        idcat_refuerzo_material = $5, idcat_refuerzo_medidas = $6,
+        idcat_base_material = $7, base_medida = $8,
+        idcat_empaque = $9, pzs_caja = $10,
+        lleva_uv = $11, lleva_alto_relieve = $12,
+        lleva_textura = $13, lleva_hot_stamping = $14
+      WHERE idacabados_papel = $15
+    `, [...valores, idacabados_papel]);
+  } else {
+    const { rows: nuevo } = await client.query(`
+      INSERT INTO acabados_papel (
+        idproducto_papel, idcomponente_papel,
+        idcat_tipo_pegado, idcat_pegamento,
+        idrollo_lam, desarrollo_laminado,
+        idcat_refuerzo_material, idcat_refuerzo_medidas,
+        idcat_base_material, base_medida,
+        idcat_empaque, pzs_caja,
+        lleva_uv, lleva_alto_relieve, lleva_textura, lleva_hot_stamping
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      RETURNING idacabados_papel
+    `, [scope.idproducto_papel, scope.idcomponente_papel, ...valores]);
+    idacabados_papel = nuevo[0].idacabados_papel;
+  }
+
+  await client.query(`DELETE FROM acabados_asas WHERE idacabados_papel = $1`, [idacabados_papel]);
+  const asas: number[] = acabados.asas ?? [];
+  for (const idcat_tipo_asa of asas) {
+    await client.query(`
+      INSERT INTO acabados_asas (idacabados_papel, idcat_tipo_asa)
+      VALUES ($1, $2) ON CONFLICT DO NOTHING
+    `, [idacabados_papel, idcat_tipo_asa]);
+  }
+
+  await client.query(`DELETE FROM acabados_laminado WHERE idacabados_papel = $1`, [idacabados_papel]);
+  await insertarLaminado(client, idacabados_papel, acabados.laminados ?? []);
+}
+
+async function getAcabados(scope: Scope) {
+  const where = scopeWhere(scope, 1, "a");
+  const { rows } = await pool.query(`
+    SELECT
+      a.*,
+      tp.nombre   AS tipo_pegado,
+      pg.nombre   AS pegamento,
+      rl.nombre        AS rollo_lam,
+      rl.medida_ancho  AS rollo_lam_medida_ancho,
+      rm.nombre        AS refuerzo_material,
+      rmed.nombre AS refuerzo_medida,
+      bm.nombre   AS base_material,
+      em.nombre   AS empaque
+    FROM acabados_papel a
+    LEFT JOIN cat_tipo_pegado       tp   ON tp.idcat_tipo_pegado       = a.idcat_tipo_pegado
+    LEFT JOIN cat_pegamento         pg   ON pg.idcat_pegamento         = a.idcat_pegamento
+    LEFT JOIN rollo_lam             rl   ON rl.idrollo_lam             = a.idrollo_lam
+    LEFT JOIN cat_refuerzo_material rm   ON rm.idcat_refuerzo_material = a.idcat_refuerzo_material
+    LEFT JOIN cat_refuerzo_medidas  rmed ON rmed.idcat_refuerzo_medidas = a.idcat_refuerzo_medidas
+    LEFT JOIN cat_refuerzo_material bm   ON bm.idcat_refuerzo_material = a.idcat_base_material
+    LEFT JOIN cat_empaque           em   ON em.idcat_empaque           = a.idcat_empaque
+    WHERE ${where.sql}
+  `, [where.value]);
+
+  if (rows.length === 0) return null;
+  const acabados = rows[0];
+
+  const { rows: asasRows } = await pool.query(`
+    SELECT aa.idacabados_asa, ta.idcat_tipo_asa, ta.nombre AS tipo_asa
+    FROM acabados_asas aa
+    JOIN cat_tipo_asa ta ON ta.idcat_tipo_asa = aa.idcat_tipo_asa
+    WHERE aa.idacabados_papel = $1
+  `, [acabados.idacabados_papel]);
+
+  acabados.asas      = asasRows;
+  acabados.laminados = await getLaminado(acabados.idacabados_papel);
+  return acabados;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPERS COMPONENTE_PAPEL (Fase 2: productos especiales)
+// ═══════════════════════════════════════════════════════════════════════════
+// Un componente = una orden de producción planeada (ver modulo-productos-
+// especiales.html, sección "Modelo de datos"). Aquí solo vive el alta/lectura
+// de la DEFINICIÓN del producto: componente_papel, su ruta de procesos
+// (componente_papel_proceso) y qué material trabaja cada proceso
+// (componente_papel_proceso_material). Convertir esto en N órdenes de
+// producción reales es motor de seguimiento — Fase 7, no esta.
+
+async function getComponentes(idproducto_papel: number) {
+  const { rows: compRows } = await pool.query(`
+    SELECT idcomponente_papel, tipo, orden, nombre, es_union
+    FROM componente_papel
+    WHERE idproducto_papel = $1
+    ORDER BY es_union ASC, orden ASC NULLS LAST, idcomponente_papel ASC
+  `, [idproducto_papel]);
+
+  const componentes: any[] = [];
+  for (const comp of compRows) {
+    const scope: Scope = { idproducto_papel, idcomponente_papel: comp.idcomponente_papel };
+
+    const { rows: procesoRows } = await pool.query(`
+      SELECT cpp.idcomponente_papel_proceso, cpp.idproceso_cat, cpp.orden, cpp.observaciones,
+             pc.nombre_proceso
+      FROM componente_papel_proceso cpp
+      JOIN proceso_cat pc ON pc.idproceso_cat = cpp.idproceso_cat
+      WHERE cpp.idcomponente_papel = $1
+      ORDER BY cpp.orden ASC
+    `, [comp.idcomponente_papel]);
+
+    for (const proceso of procesoRows) {
+      const { rows: matRows } = await pool.query(
+        `SELECT iddetalle_material FROM componente_papel_proceso_material WHERE idcomponente_papel_proceso = $1`,
+        [proceso.idcomponente_papel_proceso]
+      );
+      proceso.materiales = matRows.map((r: any) => r.iddetalle_material);
+    }
+
+    componentes.push({
+      ...comp,
+      procesos:   procesoRows,
+      suaje:      await getSuaje(scope),
+      acabados:   await getAcabados(scope),
+      maquinaria: await getMaquinaria(scope),
+    });
+  }
+  return componentes;
+}
+
+// Crea/actualiza únicamente el "caparazón" del componente (tipo, orden,
+// nombre, es_union) — mismo patrón de preservar id que grupos/materiales:
+// si trae idcomponente_papel y ya existía, UPDATE; si no, INSERT. Devuelve
+// el mapa client_key → idcomponente_papel real (para resolver la asignación
+// de materiales y las referencias de proceso más abajo, en la misma
+// petición) y el set de ids conservados (para poder borrar los que ya no
+// vinieron, al final de actualizarProductoPapel).
+async function upsertComponentesShell(
+  client: any,
+  idproducto_papel: number,
+  componentesEntrantes: any[],
+  idusuario: number | null,
+  idsExistentes: Set<number>
+): Promise<{ clientKeyToId: Map<string, number>; idsConservados: Set<number> }> {
+  const clientKeyToId = new Map<string, number>();
+  const idsConservados = new Set<number>();
+
+  for (const comp of componentesEntrantes) {
+    const idEntrante = Number(comp.idcomponente_papel) || null;
+    let idcomponente_papel: number;
+
+    if (idEntrante && idsExistentes.has(idEntrante)) {
+      await client.query(`
+        UPDATE componente_papel SET
+          tipo = $1, orden = $2, nombre = $3, es_union = $4,
+          actualizado_por = $5, updated_at = NOW()
+        WHERE idcomponente_papel = $6 AND idproducto_papel = $7
+      `, [comp.tipo, comp.orden ?? null, comp.nombre ?? null, comp.es_union === true, idusuario, idEntrante, idproducto_papel]);
+      idcomponente_papel = idEntrante;
+    } else {
+      const { rows } = await client.query(`
+        INSERT INTO componente_papel (idproducto_papel, tipo, orden, nombre, es_union, creado_por, actualizado_por)
+        VALUES ($1, $2, $3, $4, $5, $6, $6)
+        RETURNING idcomponente_papel
+      `, [idproducto_papel, comp.tipo, comp.orden ?? null, comp.nombre ?? null, comp.es_union === true, idusuario]);
+      idcomponente_papel = rows[0].idcomponente_papel;
+    }
+
+    idsConservados.add(idcomponente_papel);
+    if (comp.client_key != null) clientKeyToId.set(String(comp.client_key), idcomponente_papel);
+  }
+
+  return { clientKeyToId, idsConservados };
+}
+
+// Ruta de procesos de UN componente ya resuelto (idcomponente_papel real).
+// materialClientKeyToId resuelve las referencias a materiales nuevos
+// (creados en esta misma petición, sin id todavía); un número plano en
+// proceso.materiales se toma como iddetalle_material ya existente.
+async function upsertComponenteProcesos(
+  client: any,
+  idcomponente_papel: number,
+  procesosEntrantes: any[],
+  materialClientKeyToId: Map<string, number>,
+  idusuario: number | null
+): Promise<void> {
+  const { rows: existentes } = await client.query(
+    `SELECT idcomponente_papel_proceso FROM componente_papel_proceso WHERE idcomponente_papel = $1`,
+    [idcomponente_papel]
+  );
+  const idsExistentes = new Set<number>(existentes.map((r: any) => r.idcomponente_papel_proceso));
+  const idsConservados = new Set<number>();
+
+  for (let pi = 0; pi < procesosEntrantes.length; pi++) {
+    const proceso = procesosEntrantes[pi];
+    const ordenProceso = proceso.orden ?? pi + 1;
+    const idProcesoEntrante = Number(proceso.idcomponente_papel_proceso) || null;
+    let idcomponente_papel_proceso: number;
+
+    if (idProcesoEntrante && idsExistentes.has(idProcesoEntrante)) {
+      await client.query(`
+        UPDATE componente_papel_proceso SET
+          idproceso_cat = $1, orden = $2, observaciones = $3,
+          actualizado_por = $4, updated_at = NOW()
+        WHERE idcomponente_papel_proceso = $5 AND idcomponente_papel = $6
+      `, [proceso.idproceso_cat, ordenProceso, proceso.observaciones ?? null, idusuario, idProcesoEntrante, idcomponente_papel]);
+      idcomponente_papel_proceso = idProcesoEntrante;
+    } else {
+      const { rows } = await client.query(`
+        INSERT INTO componente_papel_proceso (idcomponente_papel, idproceso_cat, orden, observaciones, creado_por, actualizado_por)
+        VALUES ($1, $2, $3, $4, $5, $5)
+        RETURNING idcomponente_papel_proceso
+      `, [idcomponente_papel, proceso.idproceso_cat, ordenProceso, proceso.observaciones ?? null, idusuario]);
+      idcomponente_papel_proceso = rows[0].idcomponente_papel_proceso;
+    }
+    idsConservados.add(idcomponente_papel_proceso);
+
+    // Qué material(es) trabaja este proceso. Se recalcula completo en cada
+    // guardado (borrar + reinsertar el vínculo, no el material ni el
+    // proceso) porque es una tabla puente sin datos propios que preservar.
+    await client.query(
+      `DELETE FROM componente_papel_proceso_material WHERE idcomponente_papel_proceso = $1`,
+      [idcomponente_papel_proceso]
+    );
+    const materialesRefs: (string | number)[] = proceso.materiales ?? [];
+    for (const ref of materialesRefs) {
+      const iddetalle_material = typeof ref === "number" ? ref : materialClientKeyToId.get(String(ref));
+      if (!iddetalle_material) continue; // referencia que no se pudo resolver: se ignora, no tumba el alta completa
+      await client.query(`
+        INSERT INTO componente_papel_proceso_material (idcomponente_papel_proceso, iddetalle_material)
+        VALUES ($1, $2) ON CONFLICT DO NOTHING
+      `, [idcomponente_papel_proceso, iddetalle_material]);
+    }
+  }
+
+  const idsAEliminar = [...idsExistentes].filter(pid => !idsConservados.has(pid));
+  if (idsAEliminar.length > 0) {
+    await client.query(
+      `DELETE FROM componente_papel_proceso WHERE idcomponente_papel_proceso = ANY($1::int[])`,
+      [idsAEliminar]
+    );
+  }
+}
+
+// Borra los componentes que existían y ya no vinieron en esta edición.
+// CASCADE se encarga de su suaje/acabados/maquinaria/procesos; SET NULL
+// desasigna (no borra) los materiales que le apuntaban. Si algún componente
+// ya generó una orden de producción real (Fase 7), la FK orden_produccion
+// .idcomponente_papel (ON DELETE NO ACTION) rechaza el borrado y el error
+// sube tal cual al catch de arriba — proteger el historial de producción
+// importa más que dejar borrar cualquier cosa desde este formulario.
+async function eliminarComponentesNoConservados(client: any, idproducto_papel: number, idsConservados: Set<number>): Promise<void> {
+  const ids = [...idsConservados];
+  await client.query(
+    `DELETE FROM componente_papel WHERE idproducto_papel = $1 AND NOT (idcomponente_papel = ANY($2::int[]))`,
+    [idproducto_papel, ids]
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // GET /productos-papel
 // ═══════════════════════════════════════════════════════════════════════════
 export const getProductosPapel = async (_req: Request, res: Response) => {
@@ -174,6 +582,11 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
         pp.activo,
         pp.created_at,
         pp.origen_expo,
+        -- NUEVO (reestructura de especiales): nadie lo pedía aquí porque el
+        -- listado enumera columnas a mano (a diferencia de getProductoPapelById,
+        -- que hace pp.* y por eso ya lo traía). Papel.tsx y ProductoEspecial.tsx
+        -- lo necesitan para mostrar cada quien solo lo suyo.
+        pp.es_especial,
         tp.nombre                        AS tipo_producto,
         u.nombre || ' ' || u.apellido    AS creado_por,
 
@@ -295,7 +708,11 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
         LIMIT 1
       ) suaje_info ON true
 
-      -- Archivos para preview (max 3, priorizando imagen primero)
+      -- Archivos para preview (max 3, priorizando imagen primero).
+      -- 'imagen-producto-especial' (Fase 6: foto del producto especial, ver
+      -- nota en getProductoPapelById) va primero que todo: es la portada del
+      -- producto, y en un especial no hay imagen de suaje que le compita por
+      -- el primer lugar.
       LEFT JOIN LATERAL (
         SELECT json_agg(
           json_build_object(
@@ -307,10 +724,11 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
           )
           ORDER BY
             CASE a.categoria
-              WHEN 'imagen-suaje-papel'      THEN 1
-              WHEN 'catalogo-suaje-papel'    THEN 2
-              WHEN 'rendimiento-suaje-papel' THEN 3
-              ELSE 4
+              WHEN 'imagen-producto-especial' THEN 1
+              WHEN 'imagen-suaje-papel'        THEN 2
+              WHEN 'catalogo-suaje-papel'      THEN 3
+              WHEN 'rendimiento-suaje-papel'   THEN 4
+              ELSE 5
             END,
             a.id_archivo ASC
         ) AS archivos_raw
@@ -319,10 +737,11 @@ export const getProductosPapel = async (_req: Request, res: Response) => {
           WHERE idproducto_papel = pp.idproducto_papel
           ORDER BY
             CASE categoria
-              WHEN 'imagen-suaje-papel'      THEN 1
-              WHEN 'catalogo-suaje-papel'    THEN 2
-              WHEN 'rendimiento-suaje-papel' THEN 3
-              ELSE 4
+              WHEN 'imagen-producto-especial' THEN 1
+              WHEN 'imagen-suaje-papel'        THEN 2
+              WHEN 'catalogo-suaje-papel'      THEN 3
+              WHEN 'rendimiento-suaje-papel'   THEN 4
+              ELSE 5
             END,
             id_archivo ASC
           LIMIT 3
@@ -457,6 +876,19 @@ export const getProductoPapelById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
+    // Guarda de id numérico. Sin esto, cualquier ruta hermana que se
+    // registre DESPUÉS de ":id" (por ejemplo /productos-papel/algo) cae
+    // aquí, Postgres truena con "invalid input syntax for type integer" y
+    // el catch de abajo lo convierte en un 500 que no dice nada. Pasó justo
+    // eso con el catálogo de procesos. Ahora responde 404, que es lo que
+    // realmente significa.
+    //
+    // String(id): en estas tipificaciones de Express req.params viene como
+    // string | string[], así que test(id) directo no compila.
+    if (!/^\d+$/.test(String(id))) {
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
     const { rows: prodRows } = await pool.query(`
       SELECT
         pp.*,
@@ -492,6 +924,12 @@ export const getProductoPapelById = async (req: Request, res: Response) => {
         dm.hoj_hilo,
         dm.hoj_bobina_extra,
         dm.orden             AS material_orden,
+        dm.idcomponente_papel,
+        dm.ancho              AS material_ancho,
+        dm.fuelle             AS material_fuelle,
+        dm.altura             AS material_altura,
+        dm.medida             AS material_medida,
+        dm.metodo_preparacion,
         tp.nombre            AS tipo_papel,
         tp.idcat_tipo_papel,
         cal.nombre           AS calibre,
@@ -515,8 +953,17 @@ export const getProductoPapelById = async (req: Request, res: Response) => {
         };
       }
       if (row.iddetalle_material) {
+        const medidasMaterial = limpiarMedidasProducto({
+          ancho:  row.material_ancho,
+          fuelle: row.material_fuelle,
+          altura: row.material_altura,
+          medida: row.material_medida,
+        });
         gruposMap[row.idgrupo_papel].materiales.push({
           iddetalle_material: row.iddetalle_material,
+          // NUEVO (Fase 2): a qué componente está asignado este material.
+          // NULL en un producto normal — no cambia nada de lo existente.
+          idcomponente_papel: row.idcomponente_papel,
           tipo_papel:         row.tipo_papel,
           idcat_tipo_papel:   row.idcat_tipo_papel,
           calibre:            row.calibre,
@@ -532,76 +979,31 @@ export const getProductoPapelById = async (req: Request, res: Response) => {
             hilo:        row.hoj_hilo,
             bobina_extra: row.hoj_bobina_extra,
           },
+          // NUEVO (Fase 2): medida por material y método de preparación.
+          ancho:              medidasMaterial.ancho,
+          fuelle:             medidasMaterial.fuelle,
+          altura:             medidasMaterial.altura,
+          medida:             medidasMaterial.medida,
+          metodo_preparacion: row.metodo_preparacion,
           orden: row.material_orden,
         });
       }
     }
     producto.grupos = Object.values(gruposMap);
 
-    // ── Suaje ─────────────────────────────────────────────────────────────
-    const { rows: suajeRows } = await pool.query(`
-      SELECT
-        s.*,
-        sc.nombre  AS sacabocado_nombre,
-        sc.medida  AS sacabocado_medida,
-        pe.nombre  AS perforado_nombre,
-        pe.medida  AS perforado_medida,
-        mx.medida_matrix AS matrix_nombre,
-        mx.idmatrix      AS idcat_matrix,
-        pc.puntos  AS puntos_corte,
-        pd.puntos  AS puntos_doble
-      FROM suaje_papel s
-      LEFT JOIN cat_sacabocados sc ON sc.idcat_sacabocados = s.idcat_sacabocados
-      LEFT JOIN cat_perforado   pe ON pe.idcat_perforado   = s.idcat_perforado
-      LEFT JOIN matrix          mx ON mx.idmatrix          = s.idcat_matrix
-      LEFT JOIN cat_puntos      pc ON pc.idcat_punto       = s.idcat_punto_corte
-      LEFT JOIN cat_puntos      pd ON pd.idcat_punto       = s.idcat_punto_doble
-      WHERE s.idproducto_papel = $1
-    `, [id]);
-    producto.suaje = suajeRows[0] ?? null;
+    // ── Suaje / Acabados / Maquinaria (a nivel producto) ────────────────────
+    // scope con idcomponente_papel: null = "lo del producto", exactamente lo
+    // mismo que se leía antes de Fase 1. En un producto especial (es_especial
+    // = true) estas tres vienen vacías a propósito: viven repartidas por
+    // componente (ver producto.componentes más abajo), no en el producto.
+    const scopeProducto: Scope = { idproducto_papel: Number(id), idcomponente_papel: null };
+    producto.suaje      = await getSuaje(scopeProducto);
+    producto.acabados   = await getAcabados(scopeProducto);
+    producto.maquinaria = await getMaquinaria(scopeProducto);
 
-    // ── Acabados ──────────────────────────────────────────────────────────
-    const { rows: acabadosRows } = await pool.query(`
-      SELECT
-        a.*,
-        tp.nombre   AS tipo_pegado,
-        pg.nombre   AS pegamento,
-        rl.nombre        AS rollo_lam,
-        rl.medida_ancho  AS rollo_lam_medida_ancho,
-        rm.nombre        AS refuerzo_material,
-        rmed.nombre AS refuerzo_medida,
-        bm.nombre   AS base_material,
-        em.nombre   AS empaque
-      FROM acabados_papel a
-      LEFT JOIN cat_tipo_pegado       tp   ON tp.idcat_tipo_pegado       = a.idcat_tipo_pegado
-      LEFT JOIN cat_pegamento         pg   ON pg.idcat_pegamento         = a.idcat_pegamento
-      LEFT JOIN rollo_lam             rl   ON rl.idrollo_lam             = a.idrollo_lam
-      LEFT JOIN cat_refuerzo_material rm   ON rm.idcat_refuerzo_material = a.idcat_refuerzo_material
-      LEFT JOIN cat_refuerzo_medidas  rmed ON rmed.idcat_refuerzo_medidas = a.idcat_refuerzo_medidas
-      LEFT JOIN cat_refuerzo_material bm   ON bm.idcat_refuerzo_material = a.idcat_base_material
-      LEFT JOIN cat_empaque           em   ON em.idcat_empaque           = a.idcat_empaque
-      WHERE a.idproducto_papel = $1
-    `, [id]);
-
-    if (acabadosRows.length > 0) {
-      const acabados = acabadosRows[0];
-
-      const { rows: asasRows } = await pool.query(`
-        SELECT aa.idacabados_asa, ta.idcat_tipo_asa, ta.nombre AS tipo_asa
-        FROM acabados_asas aa
-        JOIN cat_tipo_asa ta ON ta.idcat_tipo_asa = aa.idcat_tipo_asa
-        WHERE aa.idacabados_papel = $1
-      `, [acabados.idacabados_papel]);
-
-      acabados.asas      = asasRows;
-      acabados.laminados = await getLaminado(acabados.idacabados_papel);
-      producto.acabados  = acabados;
-    } else {
-      producto.acabados = null;
-    }
-
-    // ── Maquinaria ────────────────────────────────────────────────────────
-    producto.maquinaria = await getMaquinaria(Number(id));
+    // ── Componentes (Fase 2: productos especiales) ──────────────────────────
+    // Vacío ([]) en cualquier producto normal — no cambia nada de lo anterior.
+    producto.componentes = await getComponentes(Number(id));
 
     // ── Archivos ──────────────────────────────────────────────────────────
     const { rows: archivosRows } = await pool.query(`
@@ -644,6 +1046,15 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       suaje,
       acabados,
       maquinaria,
+      // NUEVO (Fase 2): productos especiales de papel.
+      // es_especial = false (default): todo se comporta exactamente igual
+      // que hoy — suaje/acabados/maquinaria a nivel producto, sin componentes.
+      // es_especial = true: suaje/acabados/maquinaria de arriba se IGNORAN
+      // (deben venir NULL/omitidos desde el formulario) y en su lugar cada
+      // componente trae los suyos. Ver "El diseño" y "Modelo de datos" en
+      // modulo-productos-especiales.html para el porqué de esta forma.
+      es_especial = false,
+      componentes = [],
     } = req.body;
 
     const idusuario = (req as any).user?.id ?? null;
@@ -705,9 +1116,9 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       INSERT INTO producto_papel (
         idproductos, idcat_tipo_producto_papel,
         descripcion_papel, ancho, fuelle, altura, medida, tamano_asa_default,
-        tamano_prod, costo_laminado,
+        tamano_prod, costo_laminado, es_especial,
         creado_por, actualizado_por
-      ) VALUES (2, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+      ) VALUES (2, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
       RETURNING idproducto_papel
     `, [
       idcat_tipo_producto_papel,
@@ -718,12 +1129,27 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
         : null,
       tamano_prod || null,
       costoLaminadoValidado,
+      es_especial === true,
       idusuario,
     ]);
 
     const idproducto_papel = prodRows[0].idproducto_papel;
 
-    // ── 2. Grupos y materiales ────────────────────────────────────────────
+    // ── 2. Componentes — solo el "caparazón" (tipo/orden/nombre/es_union) ───
+    // Va ANTES de materiales porque detalle_material_papel.idcomponente_papel
+    // necesita que el componente ya exista para poder apuntarle. clientKeyToId
+    // resuelve, más abajo, a qué componente va cada material entrante (todavía
+    // sin id real porque el producto se está creando desde cero).
+    const { clientKeyToId: componenteClientKeyToId } = await upsertComponentesShell(
+      client, idproducto_papel, componentes, idusuario, new Set<number>()
+    );
+
+    // ── 3. Grupos y materiales ────────────────────────────────────────────
+    // materialClientKeyToId resuelve, en el paso 4, a qué material apunta
+    // cada proceso de cada componente (mat.client_key → iddetalle_material
+    // real, recién creado aquí).
+    const materialClientKeyToId = new Map<string, number>();
+
     for (let gi = 0; gi < grupos.length; gi++) {
       const grupo = grupos[gi];
 
@@ -738,16 +1164,30 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       const materiales = grupo.materiales ?? [];
       for (let mi = 0; mi < materiales.length; mi++) {
         const mat = materiales[mi];
-        await client.query(`
+        // A qué componente se asigna este material (columna "Asignación"
+        // del diseño). NULL si el producto no es especial o el material no
+        // trae asignación — igual que hoy.
+        const idcomponente_papel = mat.componente_client_key != null
+          ? componenteClientKeyToId.get(String(mat.componente_client_key)) ?? null
+          : null;
+
+        const medidasMaterial = limpiarMedidasProducto({
+          ancho: mat.ancho, fuelle: mat.fuelle, altura: mat.altura, medida: mat.medida,
+        });
+
+        const { rows: detalleRows } = await client.query(`
           INSERT INTO detalle_material_papel (
-            idgrupo_papel,
+            idgrupo_papel, idcomponente_papel,
             idcat_tipo_papel, idcat_calibre,
             pliego, rendimiento, corte,
             hoj_bobina, hoj_corte, hoj_rendimiento, hoj_guillotina, hoj_hilo, hoj_bobina_extra,
+            ancho, fuelle, altura, medida, metodo_preparacion,
             orden, creado_por, actualizado_por
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$20)
+          RETURNING iddetalle_material
         `, [
           idgrupo_papel,
+          idcomponente_papel,
           mat.idcat_tipo_papel ?? null,
           mat.idcat_calibre    ?? null,
           mat.pliego           ?? null,
@@ -759,98 +1199,49 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
           mat.hojeado?.guillotina   ?? null,
           mat.hojeado?.hilo         ?? null,
           mat.hojeado?.bobina_extra ?? null,
+          medidasMaterial.ancho,
+          medidasMaterial.fuelle,
+          medidasMaterial.altura,
+          medidasMaterial.medida,
+          mat.metodo_preparacion ?? null,
           mi + 1,
           idusuario,
         ]);
+
+        if (mat.client_key != null) {
+          materialClientKeyToId.set(String(mat.client_key), detalleRows[0].iddetalle_material);
+        }
       }
     }
 
-    // ── 3. Suaje ──────────────────────────────────────────────────────────
-    if (suaje) {
-      await client.query(`
-        INSERT INTO suaje_papel (
-          idproducto_papel,
-          numero, pzs, tamano,
-          corte1_tipo, corte1_medida, idcat_corte, idcat_punto_corte,
-          dobles1_tipo, dobles1_medida, idcat_doble, idcat_punto_doble,
-          metros, idcat_matrix, tiempo_arreglo,
-          idcat_sacabocados, cantidad_sacabocado,
-          idcat_perforado,   cantidad_perforado,
-          herramental_desbarbe, no_desbarbe
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-      `, [
-        idproducto_papel,
-        suaje.numero              ?? null,
-        suaje.pzs                 ?? null,
-        suaje.tamano              ?? null,
-        suaje.corte1_tipo         ?? null,
-        suaje.corte1_medida       ?? null,
-        suaje.idcat_corte         ?? null,
-        suaje.idcat_punto_corte   ?? null,
-        suaje.dobles1_tipo        ?? null,
-        suaje.dobles1_medida      ?? null,
-        suaje.idcat_doble         ?? null,
-        suaje.idcat_punto_doble   ?? null,
-        suaje.metros              ?? null,
-        suaje.idcat_matrix        ?? null,
-        suaje.tiempo_arreglo      ?? null,
-        suaje.idcat_sacabocados   ?? null,
-        suaje.cantidad_sacabocado ?? null,
-        suaje.idcat_perforado     ?? null,
-        suaje.cantidad_perforado  ?? null,
-        suaje.herramental_desbarbe === true,
-        suaje.no_desbarbe         ?? null,
-      ]);
+    // ── 4. Ruta de procesos de cada componente + suaje/acabados/maquinaria ──
+    // Producto normal (es_especial = false, componentes = []): este for no
+    // itera nada y el flujo de abajo (suaje/acabados/maquinaria "sueltos")
+    // corre exactamente como antes de Fase 2.
+    for (const comp of componentes) {
+      if (comp.client_key == null) continue;
+      const idcomponente_papel = componenteClientKeyToId.get(String(comp.client_key));
+      if (!idcomponente_papel) continue;
+
+      await upsertComponenteProcesos(client, idcomponente_papel, comp.procesos ?? [], materialClientKeyToId, idusuario);
+
+      const scopeComponente: Scope = { idproducto_papel, idcomponente_papel };
+      await upsertSuaje(client, scopeComponente, comp.suaje);
+      await upsertAcabados(client, scopeComponente, comp.acabados);
+      if (comp.maquinaria) await insertarMaquinaria(client, scopeComponente, comp.maquinaria);
     }
 
-    // ── 4. Acabados ───────────────────────────────────────────────────────
-    if (acabados) {
-      const { rows: acabadosRows } = await client.query(`
-        INSERT INTO acabados_papel (
-          idproducto_papel,
-          idcat_tipo_pegado, idcat_pegamento,
-          idrollo_lam, desarrollo_laminado,
-          idcat_refuerzo_material, idcat_refuerzo_medidas,
-          idcat_base_material, base_medida,
-          idcat_empaque, pzs_caja,
-          lleva_uv, lleva_alto_relieve, lleva_textura, lleva_hot_stamping
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-        RETURNING idacabados_papel
-      `, [
-        idproducto_papel,
-        acabados.idcat_tipo_pegado       ?? null,
-        acabados.idcat_pegamento         ?? null,
-        acabados.idrollo_lam         ?? null,
-        acabados.desarrollo_laminado     ?? null,
-        acabados.idcat_refuerzo_material ?? null,
-        acabados.idcat_refuerzo_medidas  ?? null,
-        acabados.idcat_base_material     ?? null,
-        acabados.base_medida             ?? null,
-        acabados.idcat_empaque           ?? null,
-        acabados.pzs_caja               ?? null,
-        acabados.lleva_uv               === true,
-        acabados.lleva_alto_relieve     === true,
-        acabados.lleva_textura          === true,
-        acabados.lleva_hot_stamping     === true,
-      ]);
-
-      const idacabados_papel = acabadosRows[0].idacabados_papel;
-
-      const asas: number[] = acabados.asas ?? [];
-      for (const idcat_tipo_asa of asas) {
-        await client.query(`
-          INSERT INTO acabados_asas (idacabados_papel, idcat_tipo_asa)
-          VALUES ($1, $2) ON CONFLICT DO NOTHING
-        `, [idacabados_papel, idcat_tipo_asa]);
-      }
-
-      await insertarLaminado(client, idacabados_papel, acabados.laminados ?? []);
-    }
-
-    // ── 5. Maquinaria ─────────────────────────────────────────────────────
-    if (maquinaria) {
-      await insertarMaquinaria(client, idproducto_papel, maquinaria);
-    }
+    // ── 5. Suaje / Acabados / Maquinaria — a nivel producto ─────────────────
+    // Solo aplica al producto normal. En un producto especial, el formulario
+    // no debe mandar estos tres a nivel raíz (ya viajaron por componente
+    // arriba) — si los manda de todos modos, aquí no se ignoran a propósito:
+    // se guardarían como "lo del producto", conviviendo con lo de sus
+    // componentes, que es justo lo que NO se quiere. Fase 4 (UI) es quien
+    // debe garantizar que nunca se manden ambos a la vez.
+    const scopeProducto: Scope = { idproducto_papel, idcomponente_papel: null };
+    await upsertSuaje(client, scopeProducto, suaje);
+    await upsertAcabados(client, scopeProducto, acabados);
+    if (maquinaria) await insertarMaquinaria(client, scopeProducto, maquinaria);
 
     await client.query("COMMIT");
     console.log(`✅ Producto papel creado: id=${idproducto_papel}`);
@@ -883,6 +1274,9 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
       suaje,
       acabados,
       maquinaria,
+      // NUEVO (Fase 2): ver el comentario equivalente en crearProductoPapel.
+      es_especial = false,
+      componentes = [],
     } = req.body;
 
     const idusuario = (req as any).user?.id ?? null;
@@ -945,9 +1339,10 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
         tamano_asa_default = $7,
         tamano_prod = $8,
         costo_laminado = $9,
-        actualizado_por = $10,
+        es_especial = $10,
+        actualizado_por = $11,
         updated_at = NOW()
-      WHERE idproducto_papel = $11
+      WHERE idproducto_papel = $12
     `, [
       idcat_tipo_producto_papel,
       descripcion_papel ?? null,
@@ -957,10 +1352,47 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
         : null,
       tamano_prod || null,
       costoLaminadoValidado,
+      es_especial === true,
       idusuario, id,
     ]);
 
-    // ── 2. Grupos y materiales — actualizar en vez de recrear ──────────────
+    // ── 2. Componentes — mismo patrón de preservar id que grupos/materiales ─
+    // Va antes de materiales por la misma razón que en crearProductoPapel:
+    // detalle_material_papel.idcomponente_papel necesita que el componente
+    // ya exista (o siga existiendo con el mismo id) antes de asignarle nada.
+    const { rows: componentesExistentesRows } = await client.query(
+      `SELECT idcomponente_papel FROM componente_papel WHERE idproducto_papel = $1`, [id]
+    );
+    const idsComponenteExistentes = new Set<number>(componentesExistentesRows.map((r: any) => r.idcomponente_papel));
+
+    // CORREGIDO (llave duplicada "componente_papel_union_uq"): antes se
+    // borraban los componentes que el cliente ya no traía DESPUÉS de hacer
+    // los upserts (ver el borrado que había al final, sobre
+    // idsComponenteConservados). Si el usuario cambiaba de modo de
+    // asignación ("Misma orden" ↔ "Órdenes independientes") en un producto
+    // YA guardado, el formulario manda una OP de unión/única nueva sin
+    // idcomponente_papel (MaterialesAsignacion.tsx las reconstruye desde
+    // cero a propósito, ver elegirMisma/elegirIndependientes) mientras la
+    // vieja todavía existe en la base -- el INSERT de la nueva chocaba con
+    // esa vieja antes de que le tocara su turno de borrarse, y la
+    // restricción de unicidad (una sola fila es_union/tipo='unica' por
+    // producto) tronaba en el acto.
+    //
+    // El fix es de orden, no de la restricción: se borra ANTES de insertar,
+    // usando como "lo que se conserva" únicamente los ids que el cliente
+    // mandó y que YA existían (los sin idcomponente_papel son nuevos por
+    // definición y no hay nada que protegerles borrando antes de tiempo).
+    const idsComponenteRetenidosPorCliente = new Set<number>(
+      componentes
+        .map((c: any) => Number(c.idcomponente_papel) || null)
+        .filter((v: number | null): v is number => v != null && idsComponenteExistentes.has(v))
+    );
+    await eliminarComponentesNoConservados(client, Number(id), idsComponenteRetenidosPorCliente);
+
+    const { clientKeyToId: componenteClientKeyToId } =
+      await upsertComponentesShell(client, Number(id), componentes, idusuario, idsComponenteExistentes);
+
+    // ── 3. Grupos y materiales — actualizar en vez de recrear ──────────────
     // Antes esto borraba TODOS los grupo_papel/detalle_material_papel del
     // producto y los volvía a insertar con ids nuevos. El problema: un
     // pedido ya creado guarda una referencia fija a esos ids
@@ -987,6 +1419,12 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
 
     const idsGrupoConservados = new Set<number>();
     const idsDetalleConservados = new Set<number>();
+    // materialClientKeyToId resuelve, en el paso 4, a qué material apunta
+    // cada proceso de cada componente. Los materiales que ya existían (traen
+    // iddetalle_material) también se registran aquí bajo su propio id como
+    // client_key, para que un proceso pueda referenciarlos con cualquiera de
+    // los dos (ver upsertComponenteProcesos: acepta número plano o client_key).
+    const materialClientKeyToId = new Map<string, number>();
 
     for (let gi = 0; gi < grupos.length; gi++) {
       const grupo = grupos[gi];
@@ -1015,18 +1453,35 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
         const mat = materiales[mi];
         const idDetalleEntrante = Number(mat.iddetalle_material) || null;
 
+        // A qué componente se asigna este material ("Asignación" del
+        // diseño). Se resuelve por client_key — cubre tanto un componente
+        // nuevo en esta misma edición como uno que ya existía (ver el
+        // comentario en upsertComponentesShell: el mapa se llena para
+        // ambos casos). NULL si el producto no es especial.
+        const idcomponente_papel = mat.componente_client_key != null
+          ? componenteClientKeyToId.get(String(mat.componente_client_key)) ?? null
+          : null;
+
+        const medidasMaterial = limpiarMedidasProducto({
+          ancho: mat.ancho, fuelle: mat.fuelle, altura: mat.altura, medida: mat.medida,
+        });
+
+        let iddetalle_material: number;
+
         if (idDetalleEntrante && idsDetalleExistentes.has(idDetalleEntrante)) {
           await client.query(`
             UPDATE detalle_material_papel SET
-              idgrupo_papel = $1,
-              idcat_tipo_papel = $2, idcat_calibre = $3,
-              pliego = $4, rendimiento = $5, corte = $6,
-              hoj_bobina = $7, hoj_corte = $8, hoj_rendimiento = $9,
-              hoj_guillotina = $10, hoj_hilo = $11, hoj_bobina_extra = $12,
-              orden = $13, actualizado_por = $14
-            WHERE iddetalle_material = $15
+              idgrupo_papel = $1, idcomponente_papel = $2,
+              idcat_tipo_papel = $3, idcat_calibre = $4,
+              pliego = $5, rendimiento = $6, corte = $7,
+              hoj_bobina = $8, hoj_corte = $9, hoj_rendimiento = $10,
+              hoj_guillotina = $11, hoj_hilo = $12, hoj_bobina_extra = $13,
+              ancho = $14, fuelle = $15, altura = $16, medida = $17, metodo_preparacion = $18,
+              orden = $19, actualizado_por = $20
+            WHERE iddetalle_material = $21
           `, [
             idgrupo_papel,
+            idcomponente_papel,
             mat.idcat_tipo_papel ?? null,
             mat.idcat_calibre    ?? null,
             mat.pliego           ?? null,
@@ -1038,23 +1493,31 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
             mat.hojeado?.guillotina   ?? null,
             mat.hojeado?.hilo         ?? null,
             mat.hojeado?.bobina_extra ?? null,
+            medidasMaterial.ancho,
+            medidasMaterial.fuelle,
+            medidasMaterial.altura,
+            medidasMaterial.medida,
+            mat.metodo_preparacion ?? null,
             mi + 1,
             idusuario,
             idDetalleEntrante,
           ]);
           idsDetalleConservados.add(idDetalleEntrante);
+          iddetalle_material = idDetalleEntrante;
         } else {
           const { rows: detalleRows } = await client.query(`
             INSERT INTO detalle_material_papel (
-              idgrupo_papel,
+              idgrupo_papel, idcomponente_papel,
               idcat_tipo_papel, idcat_calibre,
               pliego, rendimiento, corte,
               hoj_bobina, hoj_corte, hoj_rendimiento, hoj_guillotina, hoj_hilo, hoj_bobina_extra,
+              ancho, fuelle, altura, medida, metodo_preparacion,
               orden, creado_por, actualizado_por
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$20)
             RETURNING iddetalle_material
           `, [
             idgrupo_papel,
+            idcomponente_papel,
             mat.idcat_tipo_papel ?? null,
             mat.idcat_calibre    ?? null,
             mat.pliego           ?? null,
@@ -1066,11 +1529,20 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
             mat.hojeado?.guillotina   ?? null,
             mat.hojeado?.hilo         ?? null,
             mat.hojeado?.bobina_extra ?? null,
+            medidasMaterial.ancho,
+            medidasMaterial.fuelle,
+            medidasMaterial.altura,
+            medidasMaterial.medida,
+            mat.metodo_preparacion ?? null,
             mi + 1,
             idusuario,
           ]);
           idsDetalleConservados.add(detalleRows[0].iddetalle_material);
+          iddetalle_material = detalleRows[0].iddetalle_material;
         }
+
+        if (mat.client_key != null) materialClientKeyToId.set(String(mat.client_key), iddetalle_material);
+        materialClientKeyToId.set(String(iddetalle_material), iddetalle_material);
       }
     }
 
@@ -1097,170 +1569,38 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
       );
     }
 
-    // ── 3. Suaje — upsert ─────────────────────────────────────────────────
-    if (suaje) {
-      const { rows: suajeCheck } = await client.query(
-        `SELECT idsuaje_papel FROM suaje_papel WHERE idproducto_papel = $1`, [id]
-      );
+    // ── 4. Ruta de procesos de cada componente + su suaje/acabados/maquinaria
+    // Producto normal (es_especial = false, componentes = []): este for no
+    // itera nada, igual que en crearProductoPapel.
+    for (const comp of componentes) {
+      if (comp.client_key == null) continue;
+      const idcomponente_papel = componenteClientKeyToId.get(String(comp.client_key));
+      if (!idcomponente_papel) continue;
 
-      if (suajeCheck.length > 0) {
-        await client.query(`
-          UPDATE suaje_papel SET
-            numero = $1, pzs = $2, tamano = $3,
-            corte1_tipo = $4, corte1_medida = $5, idcat_corte = $6, idcat_punto_corte = $7,
-            dobles1_tipo = $8, dobles1_medida = $9, idcat_doble = $10, idcat_punto_doble = $11,
-            metros = $12, idcat_matrix = $13, tiempo_arreglo = $14,
-            idcat_sacabocados = $15, cantidad_sacabocado = $16,
-            idcat_perforado   = $17, cantidad_perforado  = $18,
-            herramental_desbarbe = $19, no_desbarbe = $20
-          WHERE idproducto_papel = $21
-        `, [
-          suaje.numero              ?? null,
-          suaje.pzs                 ?? null,
-          suaje.tamano              ?? null,
-          suaje.corte1_tipo         ?? null,
-          suaje.corte1_medida       ?? null,
-          suaje.idcat_corte         ?? null,
-          suaje.idcat_punto_corte   ?? null,
-          suaje.dobles1_tipo        ?? null,
-          suaje.dobles1_medida      ?? null,
-          suaje.idcat_doble         ?? null,
-          suaje.idcat_punto_doble   ?? null,
-          suaje.metros              ?? null,
-          suaje.idcat_matrix        ?? null,
-          suaje.tiempo_arreglo      ?? null,
-          suaje.idcat_sacabocados   ?? null,
-          suaje.cantidad_sacabocado ?? null,
-          suaje.idcat_perforado     ?? null,
-          suaje.cantidad_perforado  ?? null,
-          suaje.herramental_desbarbe === true,
-          suaje.no_desbarbe         ?? null,
-          id,
-        ]);
-      } else {
-        await client.query(`
-          INSERT INTO suaje_papel (
-            idproducto_papel,
-            numero, pzs, tamano,
-            corte1_tipo, corte1_medida, idcat_corte, idcat_punto_corte,
-            dobles1_tipo, dobles1_medida, idcat_doble, idcat_punto_doble,
-            metros, idcat_matrix, tiempo_arreglo,
-            idcat_sacabocados, cantidad_sacabocado,
-            idcat_perforado,   cantidad_perforado,
-            herramental_desbarbe, no_desbarbe
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-        `, [
-          id,
-          suaje.numero              ?? null,
-          suaje.pzs                 ?? null,
-          suaje.tamano              ?? null,
-          suaje.corte1_tipo         ?? null,
-          suaje.corte1_medida       ?? null,
-          suaje.idcat_corte         ?? null,
-          suaje.idcat_punto_corte   ?? null,
-          suaje.dobles1_tipo        ?? null,
-          suaje.dobles1_medida      ?? null,
-          suaje.idcat_doble         ?? null,
-          suaje.idcat_punto_doble   ?? null,
-          suaje.metros              ?? null,
-          suaje.idcat_matrix        ?? null,
-          suaje.tiempo_arreglo      ?? null,
-          suaje.idcat_sacabocados   ?? null,
-          suaje.cantidad_sacabocado ?? null,
-          suaje.idcat_perforado     ?? null,
-          suaje.cantidad_perforado  ?? null,
-          suaje.herramental_desbarbe === true,
-          suaje.no_desbarbe         ?? null,
-        ]);
+      await upsertComponenteProcesos(client, idcomponente_papel, comp.procesos ?? [], materialClientKeyToId, idusuario);
+
+      const scopeComponente: Scope = { idproducto_papel: Number(id), idcomponente_papel };
+      await upsertSuaje(client, scopeComponente, comp.suaje);
+      await upsertAcabados(client, scopeComponente, comp.acabados);
+      if (comp.maquinaria) {
+        await eliminarMaquinaria(client, scopeComponente);
+        await insertarMaquinaria(client, scopeComponente, comp.maquinaria);
       }
     }
 
-    // ── 4. Acabados — upsert ──────────────────────────────────────────────
-    if (acabados) {
-      const { rows: acabadosCheck } = await client.query(
-        `SELECT idacabados_papel FROM acabados_papel WHERE idproducto_papel = $1`, [id]
-      );
+    // El borrado de componentes que ya no vinieron en esta edición se movió
+    // ANTES del upsert (ver el comentario junto a
+    // idsComponenteRetenidosPorCliente, más arriba) -- ya no va aquí.
 
-      let idacabados_papel: number;
-
-      if (acabadosCheck.length > 0) {
-        idacabados_papel = acabadosCheck[0].idacabados_papel;
-        await client.query(`
-          UPDATE acabados_papel SET
-            idcat_tipo_pegado = $1, idcat_pegamento = $2,
-            idrollo_lam = $3, desarrollo_laminado = $4,
-            idcat_refuerzo_material = $5, idcat_refuerzo_medidas = $6,
-            idcat_base_material = $7, base_medida = $8,
-            idcat_empaque = $9, pzs_caja = $10,
-            lleva_uv = $11, lleva_alto_relieve = $12,
-            lleva_textura = $13, lleva_hot_stamping = $14
-          WHERE idacabados_papel = $15
-        `, [
-          acabados.idcat_tipo_pegado       ?? null,
-          acabados.idcat_pegamento         ?? null,
-          acabados.idrollo_lam         ?? null,
-          acabados.desarrollo_laminado     ?? null,
-          acabados.idcat_refuerzo_material ?? null,
-          acabados.idcat_refuerzo_medidas  ?? null,
-          acabados.idcat_base_material     ?? null,
-          acabados.base_medida             ?? null,
-          acabados.idcat_empaque           ?? null,
-          acabados.pzs_caja               ?? null,
-          acabados.lleva_uv               === true,
-          acabados.lleva_alto_relieve     === true,
-          acabados.lleva_textura          === true,
-          acabados.lleva_hot_stamping     === true,
-          idacabados_papel,
-        ]);
-      } else {
-        const { rows: newAcabados } = await client.query(`
-          INSERT INTO acabados_papel (
-            idproducto_papel,
-            idcat_tipo_pegado, idcat_pegamento,
-            idrollo_lam, desarrollo_laminado,
-            idcat_refuerzo_material, idcat_refuerzo_medidas,
-            idcat_base_material, base_medida,
-            idcat_empaque, pzs_caja,
-            lleva_uv, lleva_alto_relieve, lleva_textura, lleva_hot_stamping
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-          RETURNING idacabados_papel
-        `, [
-          id,
-          acabados.idcat_tipo_pegado       ?? null,
-          acabados.idcat_pegamento         ?? null,
-          acabados.idrollo_lam         ?? null,
-          acabados.desarrollo_laminado     ?? null,
-          acabados.idcat_refuerzo_material ?? null,
-          acabados.idcat_refuerzo_medidas  ?? null,
-          acabados.idcat_base_material     ?? null,
-          acabados.base_medida             ?? null,
-          acabados.idcat_empaque           ?? null,
-          acabados.pzs_caja               ?? null,
-          acabados.lleva_uv               === true,
-          acabados.lleva_alto_relieve     === true,
-          acabados.lleva_textura          === true,
-          acabados.lleva_hot_stamping     === true,
-        ]);
-        idacabados_papel = newAcabados[0].idacabados_papel;
-      }
-
-      await client.query(`DELETE FROM acabados_asas WHERE idacabados_papel = $1`, [idacabados_papel]);
-      const asas: number[] = acabados.asas ?? [];
-      for (const idcat_tipo_asa of asas) {
-        await client.query(`
-          INSERT INTO acabados_asas (idacabados_papel, idcat_tipo_asa)
-          VALUES ($1, $2) ON CONFLICT DO NOTHING
-        `, [idacabados_papel, idcat_tipo_asa]);
-      }
-
-      await client.query(`DELETE FROM acabados_laminado WHERE idacabados_papel = $1`, [idacabados_papel]);
-      await insertarLaminado(client, idacabados_papel, acabados.laminados ?? []);
-    }
-
-    // ── 5. Maquinaria ─────────────────────────────────────────────────────
+    // ── 5. Suaje / Acabados / Maquinaria — a nivel producto ─────────────────
+    // Mismo comentario que en crearProductoPapel: solo aplica al producto
+    // normal; en uno especial esto no debería recibir datos desde Fase 4 (UI).
+    const scopeProducto: Scope = { idproducto_papel: Number(id), idcomponente_papel: null };
+    await upsertSuaje(client, scopeProducto, suaje);
+    await upsertAcabados(client, scopeProducto, acabados);
     if (maquinaria) {
-      await eliminarMaquinaria(client, Number(id));
-      await insertarMaquinaria(client, Number(id), maquinaria);
+      await eliminarMaquinaria(client, scopeProducto);
+      await insertarMaquinaria(client, scopeProducto, maquinaria);
     }
 
     // ── 6. Reflejar el cambio en Catálogo Expo si algún registro apunta a
@@ -1612,5 +1952,165 @@ export const eliminarProductoPapel = async (req: Request, res: Response) => {
     return res.status(500).json({ error: "Error al eliminar el producto" });
   } finally {
     client.release();
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET catálogo de proceso_cat (Fase 5: productos especiales — ruta de procesos)
+// ═══════════════════════════════════════════════════════════════════════════
+// Nadie exponía proceso_cat a un cliente hasta ahora: procesosPapel.controller.ts
+// lo resuelve internamente por nombre_proceso (con su propio caché en
+// memoria) para decidir la cascada de una orden real, pero nunca lo lista
+// para que un formulario lo use. El nuevo panel "Ruta de procesos" del alta
+// de productos especiales necesita justo eso: con qué procesos puede armar
+// la ruta de cada componente.
+//
+// activo = true deja fuera "Almacén / Despacho" (Fase 1 la sembró inactiva
+// a propósito — "queda preparado aunque el motor no lo use todavía", ver
+// modulo-productos-especiales.html) y cualquier otro proceso que se
+// desactive más adelante sin borrarlo.
+//
+// RUTA — en producto_papel.routes.ts, que ya está montado en
+// /api/productos-papel:
+//
+//   router.get("/procesos/catalogo", authMiddleware, getProcesosCat);
+//
+// Son DOS segmentos a propósito. La primera versión usaba uno solo
+// ("/procesos-cat-papel") y eso obligaba a registrarla ANTES que
+// router.get("/:id", ...), porque ":id" combina con cualquier segmento: al
+// quedar después, la petición caía en getProductoPapelById con
+// id="procesos-cat-papel", Postgres tronaba con "invalid input syntax for
+// type integer" y salía un 500 sin explicación. Con dos segmentos ya no
+// puede pasar, así que la ruta puede ir en cualquier parte del archivo —
+// como está hoy, debajo de "/:id".
+export const getProcesosCat = async (_req: Request, res: Response) => {
+  try {
+    // familia = 'papel': proceso_cat guarda TODAS las familias en la misma
+    // tabla, así que sin este filtro la ruta de un producto de papel ofrecía
+    // también extrusión, impresión, bolseo y asa flexible, que son de
+    // plástico y no pintan nada aquí (lo reportó Jose).
+    const { rows } = await pool.query(`
+      SELECT idproceso_cat, nombre_proceso, familia, tabla
+      FROM proceso_cat
+      WHERE activo = true
+        AND LOWER(COALESCE(familia, '')) = 'papel'
+      ORDER BY idproceso_cat ASC
+    `);
+    return res.json(rows);
+  } catch (error: any) {
+    console.error("❌ GET PROCESOS CAT ERROR:", error.message);
+    return res.status(500).json({ error: "Error al obtener el catálogo de procesos" });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NOTAS DEL PRODUCTO (Fase 6: productos especiales)
+// ═══════════════════════════════════════════════════════════════════════════
+// El panel "Notas" de la Ruta de procesos mostraba solo texto armado a
+// partir de los materiales (nombre, calibre, componente) — no eran notas de
+// verdad, no se podían editar ni agregar (Jose). Esto es una lista real: el
+// usuario las escribe y las guarda, tabla nueva `producto_papel_nota`
+// (idproducto_papel, texto), con soft delete igual que el resto del
+// esquema. Requiere la migración que se le pasó a Jose por chat antes de
+// activar estas rutas.
+//
+// RUTAS — en producto_papel.routes.ts, mismo patrón de 2 segmentos que
+// getProcesosCat para que ":id" nunca se las coma:
+//
+//   router.get("/:id/notas",      authMiddleware, getNotasProducto);
+//   router.post("/:id/notas",     authMiddleware, checkPermiso(PERMISO), crearNotaProducto);
+//   router.put("/notas/:idnota",  authMiddleware, checkPermiso(PERMISO), actualizarNotaProducto);
+//   router.delete("/notas/:idnota", authMiddleware, checkPermiso(PERMISO), eliminarNotaProducto);
+
+export const getNotasProducto = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!/^\d+$/.test(String(id))) {
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+    const { rows } = await pool.query(
+      `SELECT idnota_producto_papel, texto, created_at, updated_at
+       FROM producto_papel_nota
+       WHERE idproducto_papel = $1 AND eliminado_at IS NULL
+       ORDER BY created_at ASC`,
+      [id]
+    );
+    return res.json(rows);
+  } catch (error: any) {
+    console.error("❌ GET NOTAS PRODUCTO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al obtener las notas del producto" });
+  }
+};
+
+export const crearNotaProducto = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!/^\d+$/.test(String(id))) {
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+    const texto = String(req.body?.texto ?? "").trim();
+    if (!texto) {
+      return res.status(400).json({ error: "La nota no puede estar vacía" });
+    }
+    const result = await qAudit(req)(
+      `INSERT INTO producto_papel_nota (idproducto_papel, texto, creado_por)
+       VALUES ($1, $2, $3)
+       RETURNING idnota_producto_papel, texto, created_at, updated_at`,
+      [id, texto, (req as any).user?.id ?? null]
+    );
+    return res.status(201).json(result.rows[0]);
+  } catch (error: any) {
+    console.error("❌ CREAR NOTA PRODUCTO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al guardar la nota" });
+  }
+};
+
+export const actualizarNotaProducto = async (req: Request, res: Response) => {
+  try {
+    const { idnota } = req.params;
+    if (!/^\d+$/.test(String(idnota))) {
+      return res.status(404).json({ error: "Nota no encontrada" });
+    }
+    const texto = String(req.body?.texto ?? "").trim();
+    if (!texto) {
+      return res.status(400).json({ error: "La nota no puede estar vacía" });
+    }
+    const result = await qAudit(req)(
+      `UPDATE producto_papel_nota
+       SET texto = $1, actualizado_por = $2, updated_at = now()
+       WHERE idnota_producto_papel = $3 AND eliminado_at IS NULL
+       RETURNING idnota_producto_papel, texto, created_at, updated_at`,
+      [texto, (req as any).user?.id ?? null, idnota]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Nota no encontrada" });
+    }
+    return res.json(result.rows[0]);
+  } catch (error: any) {
+    console.error("❌ ACTUALIZAR NOTA PRODUCTO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al actualizar la nota" });
+  }
+};
+
+export const eliminarNotaProducto = async (req: Request, res: Response) => {
+  try {
+    const { idnota } = req.params;
+    if (!/^\d+$/.test(String(idnota))) {
+      return res.status(404).json({ error: "Nota no encontrada" });
+    }
+    const result = await qAudit(req)(
+      `UPDATE producto_papel_nota
+       SET eliminado_at = now(), eliminado_por = $1
+       WHERE idnota_producto_papel = $2 AND eliminado_at IS NULL
+       RETURNING idnota_producto_papel`,
+      [(req as any).user?.id ?? null, idnota]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Nota no encontrada" });
+    }
+    return res.json({ message: "Nota eliminada" });
+  } catch (error: any) {
+    console.error("❌ ELIMINAR NOTA PRODUCTO ERROR:", error.message);
+    return res.status(500).json({ error: "Error al eliminar la nota" });
   }
 };

@@ -10,6 +10,11 @@ import {
   actualizarCostoLaminado,
   eliminarProductoPapel,
   registrarProductoPapelEnBlancoExpo,
+  getProcesosCat,
+  getNotasProducto,
+  eliminarNotaProducto,
+  actualizarNotaProducto,
+  crearNotaProducto,
 } from "../../controllers/producto_papel/producto_papel.controller";
 import { cargaMasivaProductosPapel } from "../../controllers/producto_papel/carga_masiva_papel.controller";
 import { descargarReporteCatalogos } from "../../controllers/producto_papel/reporte_catalogos.controller";
@@ -41,6 +46,11 @@ const PERMISO = "catalogos.productos_papel.gestionar";
 // ── GET — cualquier autenticado ───────────────────────────────────────────
 router.get("/", authMiddleware, getProductosPapel);
 router.get("/:id", authMiddleware, getProductoPapelById);
+router.get("/procesos/catalogo", authMiddleware, getProcesosCat);
+router.get("/:id/notas", authMiddleware, getNotasProducto);
+router.post("/:id/notas",       authMiddleware, checkPermiso(PERMISO), crearNotaProducto);
+router.put("/notas/:idnota",    authMiddleware, checkPermiso(PERMISO), actualizarNotaProducto);
+router.delete("/notas/:idnota", authMiddleware, checkPermiso(PERMISO), eliminarNotaProducto);
 
 // ── Registro EN BLANCO desde Expo — cualquier autenticado, SIN el permiso
 // especial de "Gestionar Productos Papel" (cualquiera que cotice en Expo
@@ -108,5 +118,7 @@ router.delete(
   checkPermiso(PERMISO),
   eliminarProductoPapel
 );
+
+
 
 export default router;

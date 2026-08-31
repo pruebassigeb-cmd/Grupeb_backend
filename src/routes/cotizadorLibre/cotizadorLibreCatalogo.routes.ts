@@ -6,6 +6,7 @@ import {
   getMedidasCotizadorLibre,
   getDetalleProductoPapelCotizadorLibre,
   getDetalleProductoPlasticoCotizadorLibre,
+  getCintaSeguridadCotizadorLibre,
 } from "../../controllers/cotizadorLibre/cotizadorLibreCatalogo.controller";
 
 const router = Router();
@@ -38,6 +39,12 @@ router.get(
   getDetalleProductoPlasticoCotizadorLibre
 );
 
+router.get(
+  "/cinta-seguridad",
+  checkPermiso("externos.cotizador_libre.ver_catalogo"),
+  getCintaSeguridadCotizadorLibre
+);
+
 export default router;
 
 // ============================================================================
@@ -51,4 +58,5 @@ export default router;
 //   GET /api/cotizador-libre/catalogo/medidas?categoria=papel|plastico&idTipo=X
 //   GET /api/cotizador-libre/catalogo/papel/producto/:idproducto_papel
 //   GET /api/cotizador-libre/catalogo/plastico/producto/:idconfiguracion_plastico
+//   GET /api/cotizador-libre/catalogo/cinta-seguridad
 // ============================================================================

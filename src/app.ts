@@ -74,6 +74,7 @@ import { contextoAuditoria } from "./middlewares/auditoria";
 import cotizadorLibreCorreoRoutes from "./routes/cotizadorLibre/cotizadorLibreCorreo.routes";
 import cotizadorLibreLandingRoutes from "./routes/cotizadorLibre/cotizadorLibreLanding.routes";
 import ticketsRoutes from "./routes/tickets/tickets.routes";
+import escalasIncrementoPlasticoRoutes from "./routes/productos/escalasIncrementoPlastico.routes";
 
 const app = express();
 
@@ -143,6 +144,7 @@ app.use("/api/usuarios", usuariosRoutes);
 app.use("/api/catalogos", catalogosRoutes);
 app.use("/api/clientes", clientesRoutes);
 app.use("/api/tarifas", tarifasRoutes);
+app.use("/api/escalas-incremento-plastico", escalasIncrementoPlasticoRoutes);
 app.use("/api/tipo-cambio", tipoCambioRoutes);
 app.use("/api/catalogos-productos", catalogosProductosRoutes);
 app.use("/api/productos-plastico", productosPlasticoRoutes);

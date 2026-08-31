@@ -35,13 +35,15 @@ export interface EnviarCorreoParams {
   html: string;
   adjuntos?: AdjuntoCorreo[];
   cc?: string | string[];
+  bcc?: string | string[];
 }
 
-export async function enviarCorreo({ para, asunto, html, adjuntos = [], cc }: EnviarCorreoParams) {
+export async function enviarCorreo({ para, asunto, html, adjuntos = [], cc, bcc }: EnviarCorreoParams) {
   const info = await transporter.sendMail({
     from: `"Grupo EB" <${process.env.EMAIL_USER}>`,
     to: para,
     cc,
+    bcc,
     subject: asunto,
     html,
     attachments: adjuntos.map((a) => ({

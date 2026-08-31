@@ -52,19 +52,24 @@ export const buscarClienteCotizadorLibre = async (req: Request, res: Response) =
     const telefonoNorm = telefono?.replace(/\D/g, "") || null;
     const empresaNorm = empresa?.trim() || null;
 
-    // El RFC del cliente (no el de su razón social — ese es clientes.rfc_rs,
-    // otro dato) vive en datos_facturacion, ligado por clientes_idclientes.
+    // El RFC de un cliente creado por el flujo COMPLETO (createCliente, con
+    // facturación real) vive en datos_facturacion.rfc. El RFC de un cliente
+    // creado por el flujo LIGERO de este cotizador (createClienteLigero)
+    // vive directo en clientes.rfc_rs — nunca toca datos_facturacion. Se
+    // revisan ambas columnas para no dejar de encontrar clientes según por
+    // dónde hayan sido dados de alta.
     const { rows } = await pool.query(
-      `SELECT c.idclientes, c.correo, c.telefono, c.celular, df.rfc, c.empresa
+      `SELECT c.idclientes, c.correo, c.telefono, c.celular, df.rfc, c.rfc_rs, c.empresa
        FROM clientes c
        LEFT JOIN datos_facturacion df ON df.clientes_idclientes = c.idclientes
        WHERE ($1::text IS NOT NULL AND UPPER(df.rfc) = $1)
+          OR ($1::text IS NOT NULL AND UPPER(c.rfc_rs) = $1)
           OR ($2::text IS NOT NULL AND LOWER(c.correo) = $2)
           OR ($3::text IS NOT NULL AND (c.telefono = $3 OR c.celular = $3))
           OR ($4::text IS NOT NULL AND LOWER(c.empresa) = LOWER($4))
        ORDER BY
          CASE
-           WHEN $1::text IS NOT NULL AND UPPER(df.rfc) = $1 THEN 1
+           WHEN $1::text IS NOT NULL AND (UPPER(df.rfc) = $1 OR UPPER(c.rfc_rs) = $1) THEN 1
            WHEN $2::text IS NOT NULL AND LOWER(c.correo) = $2 THEN 2
            WHEN $3::text IS NOT NULL AND (c.telefono = $3 OR c.celular = $3) THEN 3
            ELSE 4
@@ -264,5 +269,121 @@ export const confirmarCodigoVerificacion = async (req: Request, res: Response) =
   } catch (error: any) {
     console.error("❌ CONFIRMAR CODIGO VERIFICACION ERROR:", error.message);
     res.status(500).json({ error: "Error al confirmar el código de verificación" });
+  }
+};
+
+// ==========================
+// 4. BUSCAR CLIENTES — uso interno (staff con acceso real al cotizador,
+// nunca la cuenta compartida del cliente externo).
+// ==========================
+// Existe ya un GET /clientes/search en clientes.controller.ts, pero solo
+// exige authMiddleware sin ningún permiso — la cuenta compartida
+// "CotizadorLibre" pasa esa validación igual que cualquier staff real, y
+// esa búsqueda regresa correo/teléfono SIN enmascarar de todo el catálogo.
+// Por eso este es un endpoint aparte con el candado explícito de rol —
+// ocultar el botón en el frontend no es protección real si el endpoint de
+// abajo sigue abierto para cualquier token válido.
+export const buscarClientesInternoCotizadorLibre = async (req: Request, res: Response) => {
+  try {
+    if ((req as any).user?.rol === "CotizadorLibre") {
+      return res.status(403).json({
+        error: "No tienes permiso para buscar clientes.",
+      });
+    }
+
+    const { query } = req.query;
+    const searchTerm =
+      query && typeof query === "string" && query.trim() !== "" ? `%${query.trim()}%` : "%";
+
+    const { rows } = await pool.query(
+      `SELECT
+        c.idclientes, c.empresa, c.correo, c.telefono,
+        c.atencion, c.celular, c.razon_social, c.impresion,
+        c.identificar
+      FROM clientes c
+      WHERE
+        c.idclientes::text ILIKE $1 OR
+        c.identificar      ILIKE $1 OR
+        c.atencion         ILIKE $1 OR
+        c.empresa          ILIKE $1 OR
+        c.telefono         ILIKE $1 OR
+        c.celular          ILIKE $1 OR
+        c.correo           ILIKE $1 OR
+        c.impresion        ILIKE $1
+      ORDER BY c.idclientes DESC
+      LIMIT 20`,
+      [searchTerm]
+    );
+
+    return res.json(rows);
+  } catch (error: any) {
+    console.error("❌ BUSCAR CLIENTES INTERNO COTIZADOR LIBRE ERROR:", error.message);
+    res.status(500).json({ error: "Error al buscar clientes" });
+  }
+};
+
+// ==========================
+// 5. BUSCAR CLIENTE POR COINCIDENCIA EXACTA — uso interno, sin enmascarar
+// ==========================
+// A diferencia de buscarClienteCotizadorLibre (pensada para el flujo
+// externo anónimo: enmascara los datos y solo regresa 1 resultado, porque
+// después viene la verificación por código), esta versión es para staff de
+// confianza: regresa datos completos SIN enmascarar y hasta 5 posibles
+// coincidencias — para que el staff pueda reconocer con certeza cuál es el
+// cliente correcto (o darse cuenta de que ninguno lo es) antes de decidir
+// si crea uno nuevo. Sin esto, un correo/teléfono/RFC que ya pertenece a
+// otro cliente se aceptaba sin ningún aviso.
+export const buscarClientesExactoInternoCotizadorLibre = async (req: Request, res: Response) => {
+  try {
+    if ((req as any).user?.rol === "CotizadorLibre") {
+      return res.status(403).json({ error: "No tienes permiso para buscar clientes." });
+    }
+
+    const { empresa, rfc, telefono, correo } = req.body as {
+      empresa?: string;
+      rfc?: string;
+      telefono?: string;
+      correo?: string;
+    };
+
+    if (!empresa && !rfc && !telefono && !correo) {
+      return res.status(400).json({
+        error: "Captura al menos un dato (empresa, RFC, teléfono o correo).",
+      });
+    }
+
+    const rfcNorm = rfc?.trim().toUpperCase() || null;
+    const correoNorm = correo?.trim().toLowerCase() || null;
+    const telefonoNorm = telefono?.replace(/\D/g, "") || null;
+    const empresaNorm = empresa?.trim() || null;
+
+    // Mismo criterio de matching que buscarClienteCotizadorLibre (rfc de
+    // datos_facturacion + rfc_rs de clientes, correo, teléfono/celular,
+    // empresa) — la diferencia es que aquí sí se regresan datos reales.
+    const { rows } = await pool.query(
+      `SELECT c.idclientes, c.empresa, c.correo, c.telefono, c.celular,
+              c.atencion, c.razon_social, c.impresion, c.identificar
+       FROM clientes c
+       LEFT JOIN datos_facturacion df ON df.clientes_idclientes = c.idclientes
+       WHERE ($1::text IS NOT NULL AND UPPER(df.rfc) = $1)
+          OR ($1::text IS NOT NULL AND UPPER(c.rfc_rs) = $1)
+          OR ($2::text IS NOT NULL AND LOWER(c.correo) = $2)
+          OR ($3::text IS NOT NULL AND (c.telefono = $3 OR c.celular = $3))
+          OR ($4::text IS NOT NULL AND LOWER(c.empresa) = LOWER($4))
+       ORDER BY
+         CASE
+           WHEN $1::text IS NOT NULL AND (UPPER(df.rfc) = $1 OR UPPER(c.rfc_rs) = $1) THEN 1
+           WHEN $2::text IS NOT NULL AND LOWER(c.correo) = $2 THEN 2
+           WHEN $3::text IS NOT NULL AND (c.telefono = $3 OR c.celular = $3) THEN 3
+           ELSE 4
+         END
+       LIMIT 5`,
+      [rfcNorm, correoNorm, telefonoNorm, empresaNorm]
+    );
+
+    return res.json(rows);
+  } catch (error: any) {
+    console.error("❌ BUSCAR CLIENTES EXACTO INTERNO COTIZADOR LIBRE ERROR:", error.message);
+    res.status(500).json({ error: "Error al buscar clientes" });
   }
 };

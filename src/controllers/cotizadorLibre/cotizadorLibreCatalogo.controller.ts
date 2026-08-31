@@ -477,3 +477,37 @@ export const getDetalleProductoPlasticoCotizadorLibre = async (req: Request, res
     res.status(500).json({ error: "Error al obtener el detalle del producto." });
   }
 };
+
+// ==========================
+// GET CINTA DE SEGURIDAD (con imagen resuelta)
+// ==========================
+// 'cinta_seguridad' ya está en la whitelist CATALOGOS_CON_IMAGEN del backend
+// admin (junto con 'medidas_troquel' y 'asa_suaje') — mismo mecanismo
+// catalogo_key/catalogo_id que tipo_producto_plastico. El endpoint de admin
+// (getCintaSeguridadAdmin) no resuelve imagen porque esa pantalla ya la
+// pinta aparte vía useImagenesCatalogo/GET-imagenes-batch; el cotizador
+// necesita la imagen ya incluida en la misma respuesta.
+export const getCintaSeguridadCotizadorLibre = async (_req: Request, res: Response) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT idcinta_seguridad AS id, nombre, medida
+       FROM cinta_seguridad
+       WHERE activo = true
+       ORDER BY nombre ASC`
+    );
+
+    const imagenes = await resolverImagenesCatalogo(
+      rows.map((r: any) => ({ key: "cinta_seguridad", id: r.id }))
+    );
+
+    return res.json(
+      rows.map((r: any) => ({
+        ...r,
+        imagenUrl: imagenes.get(`cinta_seguridad:${r.id}`) ?? null,
+      }))
+    );
+  } catch (error: any) {
+    console.error("❌ GET CINTA SEGURIDAD COTIZADOR LIBRE ERROR:", error.message);
+    res.status(500).json({ error: "Error al obtener el catálogo de cinta de seguridad." });
+  }
+};

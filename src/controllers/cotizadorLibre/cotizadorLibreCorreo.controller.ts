@@ -2,22 +2,13 @@
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
 import { enviarCorreo } from "../../services/email/mailer";
+import { armarAsuntoDocumento, armarHtmlDocumento } from "../../services/email/templates/documentoEmail";
 import type {
   EnviarPdfCotizadorLibreRequest,
 } from "../../types/cotizadorLibre/cotizadorLibreCorreo.types";
 
-const ETIQUETA_TIPO: Record<"cotizacion" | "pedido", string> = {
-  cotizacion: "cotización",
-  pedido: "pedido",
-};
+const CORREO_COPIA_INTERNA = "sistemaeb@grupoeb.com.mx";
 
-// ==========================
-// Envía el PDF ya generado (en el navegador) por correo — pero el
-// DESTINATARIO se resuelve aquí, del lado del servidor, por clienteId. Nunca
-// se confía en un correo que venga del frontend: rompería exactamente la
-// protección de enmascarado que ya construimos en Fase 2 (buscarCliente
-// nunca expone el correo completo de un cliente existente al navegador).
-// ==========================
 export const enviarPdfCotizadorLibre = async (req: Request, res: Response) => {
   try {
     const idsolicitud = Number(req.params.idsolicitud);
@@ -51,20 +42,20 @@ export const enviarPdfCotizadorLibre = async (req: Request, res: Response) => {
     }
 
     const nombreCliente = rows[0].atencion || rows[0].empresa || "";
-    const etiqueta = ETIQUETA_TIPO[body.tipo];
     const pdfBuffer = Buffer.from(body.pdfBase64, "base64");
+
+    const datosDocumento = {
+      tipo: body.tipo,
+      folio: body.folio,
+      cliente: nombreCliente,
+      empresa: rows[0].empresa,
+    };
 
     await enviarCorreo({
       para: correoDestino,
-      asunto: `Tu ${etiqueta} ${body.folio} — Grupo EB`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
-          <h2 style="color:#1e3a2b;">Grupo EB</h2>
-          <p>${nombreCliente ? `Hola ${nombreCliente},` : "Hola,"}</p>
-          <p>Adjunto encontrarás tu ${etiqueta} <b>${body.folio}</b>, generada desde nuestro Cotizador Interactivo.</p>
-          <p style="color:#6b6f63; font-size: 13px;">Si tienes alguna duda, un asesor puede ayudarte con los siguientes pasos.</p>
-        </div>
-      `,
+      bcc: CORREO_COPIA_INTERNA,
+      asunto: armarAsuntoDocumento(datosDocumento),
+      html: armarHtmlDocumento(datosDocumento),
       adjuntos: [
         {
           filename: body.nombreArchivo,

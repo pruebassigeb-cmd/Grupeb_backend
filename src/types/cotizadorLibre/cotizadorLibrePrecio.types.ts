@@ -23,6 +23,15 @@ export interface CalcularPrecioCotizadorLibrePlasticoInput {
   porKilo: number;
   tintasId?: number;
   tintasCantidad?: number;
+  // ✅ NUEVO — necesario para detectar "asa flexible" / "bolsa envíos" y
+  // aplicar el incremento por rango de cantidad correspondiente (ver
+  // incrementoPlasticoCotizadorLibre.service.ts). Sin esto no se puede
+  // calcular ningún incremento, así que es obligatorio.
+  idTipoProductoPlastico: number;
+  // ✅ NUEVO — obligatorio SOLO cuando el tipo detectado es "bolsa envíos"
+  // (toda bolsa de envíos lleva cinta de seguridad, sin excepción). El
+  // controller responde 400 si falta y el tipo lo requiere.
+  cintaSeguridadId?: number;
 }
 
 export interface CalcularPrecioCotizadorLibreRequest {

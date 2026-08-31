@@ -645,9 +645,55 @@ export const createClienteLigero = async (req: Request, res: Response) => {
   const client = await pool.connect();
 
   try {
-    const { nombre, telefono, correo, empresa } = req.body;
+    const {
+      nombre, atencion, telefono, correo, empresa,
+      // ✅ NUEVO — antes solo se guardaban 4 campos (empresa/correo/
+      // telefono/nombre→atencion). Se agregan los 5 restantes de los 9
+      // campos base de `clientes`, para que la cotización/pedido salga
+      // completa (razón social, RFC, CP, impresión, celular). Todos
+      // opcionales — un caller que solo mande los 4 de siempre sigue
+      // funcionando exactamente igual.
+      razon_social, rfc_rs, cp_rs, impresion, celular,
+    } = req.body;
 
-    console.log("📝 Creando cliente ligero para cotización:", { nombre, correo });
+    // `atencion` es el nombre real de la columna en `clientes`; `nombre` se
+    // conserva como alias por compatibilidad con callers existentes que ya
+    // mandaban ese nombre de campo.
+    const atencionFinal = atencion || nombre || null;
+
+    console.log("📝 Creando cliente ligero para cotización:", { empresa, correo });
+
+    // ✅ NUEVO — mismo candado que ya tiene createCliente (alta completa):
+    // sin esto, este flujo ligero creaba un cliente duplicado en cuanto un
+    // correo/RFC ya existente se volvía a capturar, en vez de avisar.
+    // (El flujo normal de identificación ya evita llegar aquí si hay
+    // coincidencia — esto es la defensa de respaldo del lado del servidor,
+    // por si acaso.)
+    if (correo) {
+      const correoExistente = await pool.query(
+        `SELECT idclientes, empresa FROM clientes WHERE LOWER(correo) = LOWER($1) LIMIT 1`,
+        [correo]
+      );
+      if ((correoExistente.rowCount ?? 0) > 0) {
+        const c = correoExistente.rows[0];
+        return res.status(400).json({
+          error: `El correo "${correo}" ya está registrado en el cliente "${c.empresa || `#${c.idclientes}`}"`,
+        });
+      }
+    }
+
+    if (rfc_rs) {
+      const rfcExistente = await pool.query(
+        `SELECT idclientes, empresa FROM clientes WHERE UPPER(rfc_rs) = UPPER($1) LIMIT 1`,
+        [rfc_rs]
+      );
+      if ((rfcExistente.rowCount ?? 0) > 0) {
+        const c = rfcExistente.rows[0];
+        return res.status(400).json({
+          error: `El RFC "${rfc_rs}" ya está registrado en el cliente "${c.empresa || `#${c.idclientes}`}"`,
+        });
+      }
+    }
 
     await iniciarTx(req, client);
 
@@ -656,10 +702,23 @@ export const createClienteLigero = async (req: Request, res: Response) => {
     const resultCliente = await client.query(
       `INSERT INTO clientes (
         regimen_fiscal_idregimen_fiscal, metodo_pago_idmetodo_pago, forma_pago_idforma_pago,
-        empresa, correo, telefono, atencion, fecha, identificar
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP,$8)
-      RETURNING idclientes, empresa, correo, telefono, atencion, identificar`,
-      [null, null, null, empresa || null, correo || null, telefono || null, nombre || null, identificar]
+        empresa, correo, telefono, atencion, razon_social, rfc_rs, cp_rs, impresion, celular,
+        fecha, identificar
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CURRENT_TIMESTAMP,$13)
+      RETURNING idclientes, empresa, correo, telefono, atencion, razon_social, rfc_rs, cp_rs, impresion, celular, identificar`,
+      [
+        null, null, null,
+        empresa      || null,
+        correo       || null,
+        telefono     || null,
+        atencionFinal,
+        razon_social || null,
+        rfc_rs       || null,
+        cp_rs        || null,
+        impresion    || null,
+        celular      || null,
+        identificar,
+      ]
     );
 
     const nuevoCliente = resultCliente.rows[0];
@@ -675,6 +734,11 @@ export const createClienteLigero = async (req: Request, res: Response) => {
         empresa: nuevoCliente.empresa,
         correo: nuevoCliente.correo,
         telefono: nuevoCliente.telefono,
+        razon_social: nuevoCliente.razon_social,
+        rfc_rs: nuevoCliente.rfc_rs,
+        cp_rs: nuevoCliente.cp_rs,
+        impresion: nuevoCliente.impresion,
+        celular: nuevoCliente.celular,
       },
     });
   } catch (error: any) {
