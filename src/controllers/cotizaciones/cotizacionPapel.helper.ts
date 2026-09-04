@@ -1388,7 +1388,10 @@ export function construirProductoPapel(row: any) {
     idsolicitud_producto: row.idsolicitud_producto,
     idcotizacion_producto: row.idsolicitud_producto,
     tipoCotizacion: "papel",
-    tipo_material: "papel",
+    // CORREGIDO (Jose, 2026-09-03): los especiales guardan tipo_material=
+    // "especial" en BD, no "papel" -- se respeta el valor real de la fila
+    // en vez de forzar "papel" para todo lo que entra por esta función.
+    tipo_material: row.tipo_material,
     idproducto_papel: row.producto_papel_idproducto_papel,
     nombre:
       row.papel_tipo_producto ||
@@ -1397,6 +1400,10 @@ export function construirProductoPapel(row: any) {
     medida: row.papel_medida ?? null,
     idgrupo_papel: row.grupo_papel_idgrupo_papel ?? null,
     grupo_descripcion: row.grupo_papel_descripcion ?? null,
+    // NUEVO — le permite al frontend distinguir una línea de producto
+    // especial de una línea de papel normal al recargar la cotización/pedido
+    // (ver pp2.es_especial AS papel_es_especial en el SELECT de este archivo).
+    es_especial: row.papel_es_especial === true,
     precio_sugerido:
       row.papel_precio_sugerido != null
         ? Number(row.papel_precio_sugerido)

@@ -33,6 +33,115 @@ const PROCESO = {
   BOLSEO:       5,
 } as const;
 
+// Campo "de salida final" por tabla de proceso de papel -- copia
+// intencional (a propósito, no import cruzado) del mismo mapa que ya
+// existe en procesosPapel.controller.ts (CAMPO_SALIDA_PAPEL), solo con
+// las tablas que de verdad pueden llegar a ser el ÚLTIMO proceso de una
+// OP de unión que no incluye Empaque. Si mañana se agrega un proceso
+// nuevo a la cascada de papel, hay que reflejarlo también aquí (Jose,
+// 2026-09-04).
+const CAMPO_SALIDA_PAPEL_ANCLA: Record<string, string> = {
+  hojeado_papel: "cantidad_entregada",
+  guillotina_papel: "cantidad_entregada",
+  impresion_papel: "pliegos_entregados",
+  laminacion_papel: "pliegos_entregados",
+  barniz_uv_papel: "pliegos_entregados",
+  hot_stamping_papel: "pliegos_entregados",
+  texturizado_papel: "pliegos_entregados",
+  alto_relieve_papel: "pliegos_entregados",
+  suaje_produccion_papel: "pliegos_entregados",
+  desbarbe_papel: "pliegos_entregados",
+  armado_papel: "bolsas_entregadas",
+  litolaminado_papel: "pliegos_entregados",
+  especial_papel: "pliegos_entregados",
+};
+
+// ─────────────────────────────────────────────
+// HELPER — para una OP de unión (o cualquier componente de un especial)
+// cuya ruta NO incluye Empaque -- "casi que cualquier proceso puede ser
+// el final" (Jose, 2026-09-04): puede quedarse en Litolaminado, Suaje,
+// Desbarbe, etc. y de ahí irse directo a almacenar, sin pasar por
+// empaque_papel. La tabla `bultos` solo tiene 3 llaves fijas (bolseo,
+// asa_flexible, empaque_papel) -- no hay una cuarta genérica para
+// "cualquier proceso". En vez de tocar ese esquema, cuando el último
+// proceso REAL configurado para esta orden ya terminó, se crea una fila
+// "ancla" en empaque_papel (ya en TERMINADO, con la cantidad real
+// copiada) para que el empaquetado/envío se registre EXACTAMENTE igual
+// que en papel normal. No aparece como un paso nuevo en Seguimiento ni en
+// RutaProcesos (esos leen la ruta configurada en componente_papel_proceso,
+// que no se toca aquí) -- esta fila solo sirve de ancla para bultos.
+// ─────────────────────────────────────────────
+async function asegurarAnclaEmpaquePapel(idproduccion: number): Promise<number | null> {
+  const { rows: opRows } = await pool.query(
+    `SELECT sp.tipo_material, op.idcomponente_papel
+       FROM orden_produccion op
+       JOIN solicitud_producto sp ON sp.idsolicitud_producto = op.idsolicitud_producto
+      WHERE op.idproduccion = $1`,
+    [idproduccion]
+  );
+  const tipoMaterial = opRows[0]?.tipo_material;
+  const idComponentePapel = opRows[0]?.idcomponente_papel ?? null;
+  // Papel normal (sin componente) siempre incluye Empaque en su ruta fija
+  // (getProcesosDeOrdenPapel lo agrega sin condición) -- si llegó hasta
+  // acá es porque de verdad no hay fila de empaque_papel, y sin
+  // componente_papel_proceso que consultar no hay ruta "real" distinta
+  // que resolver. Solo aplica a especiales con componente.
+  if ((tipoMaterial !== "papel" && tipoMaterial !== "especial") || idComponentePapel == null) {
+    return null;
+  }
+
+  const { rows: ultimoRows } = await pool.query(
+    `SELECT pc.tabla
+       FROM componente_papel_proceso cpp
+       JOIN proceso_cat pc ON pc.idproceso_cat = cpp.idproceso_cat
+      WHERE cpp.idcomponente_papel = $1
+      ORDER BY cpp.orden DESC
+      LIMIT 1`,
+    [idComponentePapel]
+  );
+  const tablaUltimo: string | undefined = ultimoRows[0]?.tabla;
+  const campoSalida = tablaUltimo ? CAMPO_SALIDA_PAPEL_ANCLA[tablaUltimo] : undefined;
+  // Si el último configurado ya ES empaque_papel, resolverFkBulto ya lo
+  // habría encontrado arriba -- llegar aquí con eso significa que
+  // Empaque simplemente no ha terminado todavía (no hay nada que anclar).
+  if (!tablaUltimo || tablaUltimo === "empaque_papel" || !campoSalida) return null;
+
+  const { rows: regRows } = await pool.query(
+    `SELECT estado_produccion_cat_idestado_produccion_cat AS estado, ${campoSalida} AS campo_final
+       FROM ${tablaUltimo}
+      WHERE orden_produccion_idproduccion = $1`,
+    [idproduccion]
+  );
+  if (regRows.length === 0 || Number(regRows[0].estado) !== ESTADO_PROD.TERMINADO) {
+    // Todavía no termina su último proceso real -- nada que anclar aún
+    // (el flujo normal de "finalizar proceso" es el que debe completarlo
+    // primero).
+    return null;
+  }
+  const cantidadFinal = regRows[0].campo_final != null ? Number(regRows[0].campo_final) : null;
+
+  const { rows: existeRows } = await pool.query(
+    `SELECT idempaque_papel FROM empaque_papel WHERE orden_produccion_idproduccion = $1`,
+    [idproduccion]
+  );
+  if (existeRows.length > 0) return Number(existeRows[0].idempaque_papel);
+
+  const { rows: nuevoRows } = await pool.query(
+    `INSERT INTO empaque_papel
+       (estado_produccion_cat_idestado_produccion_cat, orden_produccion_idproduccion,
+        bolsas_entregadas_final, fecha_creacion, fecha_inicio, fecha_fin, observaciones)
+     VALUES ($1, $2, $3, NOW(), NOW(), NOW(), $4)
+     RETURNING idempaque_papel`,
+    [
+      ESTADO_PROD.TERMINADO,
+      idproduccion,
+      cantidadFinal,
+      `Ancla automática para bultos -- esta orden no pasa por Empaque, su último proceso real fue ${tablaUltimo}.`,
+    ]
+  );
+  return Number(nuevoRows[0].idempaque_papel);
+}
+
 // ─────────────────────────────────────────────
 // HELPER — resuelve qué FK usar
 // ─────────────────────────────────────────────
@@ -62,6 +171,13 @@ async function resolverFkBulto(idproduccion: number): Promise<FkBulto | null> {
   if (bolRows.length > 0) {
     return { tipo: "bolseo", id: Number(bolRows[0].idbolseo) };
   }
+
+  // Especial cuya ruta no incluye Empaque -- ver asegurarAnclaEmpaquePapel.
+  const idAncla = await asegurarAnclaEmpaquePapel(idproduccion);
+  if (idAncla != null) {
+    return { tipo: "empaque_papel", id: idAncla };
+  }
+
   return null;
 }
 
@@ -90,7 +206,11 @@ function validarEstadoOrden(ordenRow: any): string | null {
   const bultosFinalizados = Boolean(ordenRow.bultos_finalizado);
 
   const ordenTerminada    = estadoOrden === ESTADO_PROD.TERMINADO && procesoActual === null;
-  const esEmpaquePapel     = ordenRow.tipo_material === "papel";
+  // Los especiales guardan tipo_material="especial", no "papel", pero se
+  // empacan/embultan exactamente igual que papel normal (mismo Empaque) --
+  // sin este OR, a un especial nunca lo dejaba registrar bultos aunque ya
+  // estuviera en su último proceso (Jose, 2026-09-04).
+  const esEmpaquePapel     = ordenRow.tipo_material === "papel" || ordenRow.tipo_material === "especial";
   const esProcesosFinales =
     Number(procesoActual) === PROCESO.BOLSEO ||
     Number(procesoActual) === PROCESO.ASA_FLEXIBLE ||

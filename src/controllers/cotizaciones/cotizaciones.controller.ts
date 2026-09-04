@@ -24,10 +24,15 @@ export const ESTADO = {
 
 type TipoDocumento = "cotizacion" | "pedido";
 
+// Los especiales corren sobre la misma infraestructura de papel (mismas
+// tablas/formulario), así que para efectos de "es esto de la familia
+// papel/especial" cuentan igual -- aunque su tipo_material real ya no sea
+// "papel" sino "especial" (Jose, 2026-09-03).
 function esProductoPapel(producto: any): boolean {
   return (
     producto?.tipoCotizacion === "papel" ||
     producto?.tipo_material === "papel" ||
+    producto?.tipo_material === "especial" ||
     producto?.idproducto_papel != null ||
     producto?.producto_papel_idproducto_papel != null
   );
@@ -536,6 +541,9 @@ export const getCotizaciones = async (req: Request, res: Response) => {
           tpp2.nombre              AS papel_tipo_producto,
           pp2.descripcion_papel    AS papel_descripcion_papel,
           pp2.medida               AS papel_medida,
+          -- NUEVO — para que el frontend sepa que esta línea es un producto
+          -- especial (mismo dato que ya expone el listado de productos_papel).
+          pp2.es_especial          AS papel_es_especial,
           gp2.precio_sugerido      AS papel_precio_sugerido,
           spp.id_asa,              asa2.nombre   AS asa_nombre,
           spp.tamano_asa,
@@ -722,8 +730,8 @@ export const getCotizaciones = async (req: Request, res: Response) => {
         );
 
         if (!producto) {
-          if (row.tipo_material === "papel") {
-            // ── Producto de PAPEL ──
+          if (row.tipo_material === "papel" || row.tipo_material === "especial") {
+            // ── Producto de PAPEL o ESPECIAL ──
             producto = construirProductoPapel(row);
           } else if (row.tipo_material === "expo") {
             // ── Producto EXPO (no convertido al sistema) ──
@@ -1625,15 +1633,22 @@ export const actualizarCotizacionProductos = async (
           ? (Number(prod.id_color) > 0 ? Number(prod.id_color) : null)
           : null;
 
+        // CORREGIDO (Jose, 2026-09-03): los especiales no son tipo_material
+        // "papel" -- son su propio tipo "especial".
+        const tipoMaterialNuevo =
+          prod.es_especial === true || prod.tipo_material === "especial"
+            ? "especial"
+            : "papel";
+
         const { rows: spPapelRows } = await client.query(
           `INSERT INTO solicitud_producto (
              solicitud_idsolicitud, tipo_material, producto_papel_idproducto_papel,
              grupo_papel_idgrupo_papel, grupo_papel_descripcion,
              tintas_idtintas, caras_idcaras, pantones, observacion, descripcion, id_color
-           ) VALUES ($1,'papel',$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
            RETURNING idsolicitud_producto`,
           [
-            solicitudId, prod.idproducto_papel, prod.idgrupo_papel ?? null,
+            solicitudId, tipoMaterialNuevo, prod.idproducto_papel, prod.idgrupo_papel ?? null,
             prod.grupo_descripcion ?? null, prod.tintasId ?? null, prod.carasId ?? null,
             prod.pantones || null, prod.observacion || null, prod.descripcion || null,
             idColorNuevo,

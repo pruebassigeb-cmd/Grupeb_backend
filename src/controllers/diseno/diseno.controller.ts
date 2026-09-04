@@ -1,7 +1,7 @@
 import { iniciarTx } from "../../middlewares/auditoria";
 import { Request, Response } from "express";
 import { pool } from "../../config/db";
-import { congelarMermaSiEsPapel } from "../../services/producto_papel/merma.service";
+import { emitirOrdenesProduccion } from "../../services/produccion/emitirOrdenProduccionEspecial.service";
 import { AuthRequest } from "../../middlewares/auth.middleware";
 
 const ESTADO = {
@@ -282,7 +282,9 @@ async function esProductoPapel(client: any, idsolicitudProducto: number): Promis
     `SELECT tipo_material FROM solicitud_producto WHERE idsolicitud_producto = $1`,
     [idsolicitudProducto]
   );
-  return rows[0]?.tipo_material === "papel";
+  // Los especiales (tipo_material="especial") corren por la misma
+  // preparación de datos que papel normal (Jose, 2026-09-03).
+  return rows[0]?.tipo_material === "papel" || rows[0]?.tipo_material === "especial";
 }
 
 async function prepararDatosOrdenPapel(client: any, idsolicitudProducto: number) {
@@ -432,7 +434,8 @@ export const getDisenoByPedido = async (req: Request, res: Response) => {
     `, [disenoId]);
 
     const productosFormateados = productos.map((p: any) => {
-      const esPapel = p.tipo_material === "papel";
+      // Los especiales usan los mismos campos papel_* que el papel normal.
+      const esPapel = p.tipo_material === "papel" || p.tipo_material === "especial";
 
       const nombre = esPapel
         ? ([p.papel_tipo_producto, p.papel_medida].filter(Boolean).join(" ") ||
@@ -590,6 +593,7 @@ export const actualizarEstadoProducto = async (req: AuthRequest, res: Response) 
 
     let ordenGenerada = false;
     let noProduccion: string | null = null;
+    let foliosGenerados: string[] = [];
 
     if (estadoNum === ESTADO.APROBADO) {
       const cubierto = await anticipoPagado(client, solicitudId);
@@ -619,73 +623,29 @@ export const actualizarEstadoProducto = async (req: AuthRequest, res: Response) 
             ? await prepararDatosOrdenPapel(client, idsolicitudProducto)
             : await prepararDatosOrden(client, idsolicitudProducto);
 
-          await client.query(
-            `INSERT INTO orden_produccion (
-              estado_administrativo_cat_idestado_administrativo_cat,
-              no_produccion,
-              fecha,
-              fecha_entrega,
-              idsolicitud,
-              idsolicitud_producto,
-              idestado_produccion_cat,
-              repeticion_extrusion,
-              repeticion_metro,
-              metros,
-              metros_merma,
-              ancho_bobina,
-              kilos,
-              kilos_merma,
-              pzas,
-              pzas_merma,
-              repeticion_kidder,
-              repeticion_sicosa
-            ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-            ON CONFLICT (no_produccion) DO NOTHING`,
-            [
-              ESTADO.PENDIENTE,
-              noProduccion,
-              solicitudId,
-              idsolicitudProducto,
-              ESTADO.PENDIENTE,
-              datosOrden.repeticion_extrusion,
-              datosOrden.repeticion_metro,
-              datosOrden.metros,
-              datosOrden.metros_merma,
-              datosOrden.ancho_bobina,
-              datosOrden.kilos,
-              datosOrden.kilos_merma,
-              datosOrden.pzas,
-              datosOrden.pzas_merma,
-              datosOrden.repeticion_kidder,
-              datosOrden.repeticion_sicosa,
-            ]
-          );
+          // ── UNA orden, o una por componente si es un especial de papel ──
+          // (ver emitirOrdenProduccionEspecial.service.ts). noProduccion
+          // sigue siendo el folio "real" (el de la OP de unión/única); si
+          // hay OP de inicio, sus folios OPIn-... salen en foliosGenerados.
+          const { folios, esEspecial } = await emitirOrdenesProduccion(client, {
+            solicitudId,
+            idsolicitudProducto,
+            noProduccionBase: noProduccion,
+            datosOrden,
+            estadoPendiente: ESTADO.PENDIENTE,
+            usuarioId,
+          });
+          foliosGenerados = folios;
 
-          ordenGenerada = true;
-          console.log(
-            esPapel
-              ? `✅ Orden ${noProduccion} creada para PAPEL (sin datos de extrusión)`
-              : `✅ Orden ${noProduccion} creada con metros_merma incluido`
-          );
-
-          // ── MERMA DE PAPEL ── mismo punto de enganche que
-          // ordenDiseno.controller.ts::aprobarOrdenDiseno.
-          if (esPapel) {
-            const { rows: idOrdenRows } = await client.query(
-              `SELECT idproduccion FROM orden_produccion WHERE idsolicitud_producto = $1`,
-              [idsolicitudProducto]
+          if (folios.length > 0) {
+            ordenGenerada = true;
+            console.log(
+              esEspecial
+                ? `✅ Especial: órdenes ${folios.join(", ")} creadas`
+                : esPapel
+                  ? `✅ Orden ${noProduccion} creada para PAPEL (sin datos de extrusión)`
+                  : `✅ Orden ${noProduccion} creada con metros_merma incluido`
             );
-            const idproduccionNueva = idOrdenRows[0]?.idproduccion;
-            if (idproduccionNueva) {
-              const { aplico } = await congelarMermaSiEsPapel(
-                client,
-                Number(idproduccionNueva),
-                usuarioId
-              );
-              if (aplico) {
-                console.log(`📐 Merma de papel congelada para la orden ${noProduccion}`);
-              }
-            }
           }
         } else {
           ordenGenerada = true;
@@ -703,6 +663,7 @@ export const actualizarEstadoProducto = async (req: AuthRequest, res: Response) 
       diseno_completado:  nuevoEstadoPadre === ESTADO.APROBADO,
       orden_generada:     ordenGenerada,
       no_produccion:      noProduccion,
+      folios_generados:   foliosGenerados,
     });
 
   } catch (error: any) {

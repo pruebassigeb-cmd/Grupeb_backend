@@ -367,7 +367,10 @@ export async function calcularMermaDeOrden(
 
   const orden = rows[0];
 
-  if (orden.tipo_material !== "papel") {
+  // Los especiales guardan tipo_material="especial" (no "papel"), pero la
+  // merma por escalones aplica igual -- de hecho la mayor parte del fix de
+  // merma de esta sesión fue justo para especiales (Jose, 2026-09-03).
+  if (orden.tipo_material !== "papel" && orden.tipo_material !== "especial") {
     throw new ErrorMermaPapel(
       "La merma por escalones solo aplica a órdenes de papel.",
       400
@@ -486,7 +489,12 @@ export async function congelarMermaSiEsPapel(
     [idproduccion]
   );
 
-  if (rows[0]?.tipo_material !== "papel") {
+  // CRÍTICO (Jose, 2026-09-03): los especiales ahora guardan tipo_material=
+  // "especial" (no "papel"). Si esta función se queda solo con "papel", las
+  // órdenes de especiales nuevas dejarían de congelar merma por completo al
+  // crearse -- exactamente el flujo que se corrigió esta misma sesión.
+  const tm = rows[0]?.tipo_material;
+  if (tm !== "papel" && tm !== "especial") {
     return { aplico: false };
   }
 
@@ -553,11 +561,22 @@ export async function congelarMermaOrden(
   // hereda la referencia con merma_total = 0 -- ya no hay nada mas que sumar,
   // el 5500 quedó fijado una sola vez. Sin esto, 3 parcialidades del mismo
   // producto producirían 3 veces la merma completa.
+  //
+  // ⚠️ CORREGIDO (Jose, 2026-09-02): esta herencia sólo debe aplicar entre
+  // parcialidades del MISMO componente (mismo idcomponente_papel, o ambos
+  // NULL en papel normal). Un producto ESPECIAL también comparte un único
+  // idsolicitud_producto entre TODAS sus OP (inicio-1, inicio-2, unión...),
+  // pero cada componente es una pieza físicamente distinta -- con su propia
+  // ruta y sus propias columnas de merma -- así que cada una necesita su
+  // propio cálculo. Sin el filtro por idcomponente_papel, la primera OP de
+  // inicio creada "absorbía" la merma y todas las demás OP del especial
+  // (las otras inicio y la unión) se congelaban con merma_total = 0.
   const { rows: contexto } = await client.query(
-    `SELECT idsolicitud_producto FROM orden_produccion WHERE idproduccion = $1`,
+    `SELECT idsolicitud_producto, idcomponente_papel FROM orden_produccion WHERE idproduccion = $1`,
     [idproduccion]
   );
   const idsolicitudProducto = contexto[0]?.idsolicitud_producto ?? null;
+  const idcomponentePapel = contexto[0]?.idcomponente_papel ?? null;
 
   let heredadaDe: number | null = null;
 
@@ -570,10 +589,14 @@ export async function congelarMermaOrden(
       WHERE op.idsolicitud_producto = $1
         AND opm.heredada_de_idproduccion IS NULL
         AND opm.orden_produccion_idproduccion <> $2
+        AND (
+          (op.idcomponente_papel IS NULL AND $3::int IS NULL)
+          OR op.idcomponente_papel = $3
+        )
       ORDER BY opm.orden_produccion_idproduccion ASC
       LIMIT 1
       `,
-      [idsolicitudProducto, idproduccion]
+      [idsolicitudProducto, idproduccion, idcomponentePapel]
     );
 
     if (previas.length > 0) {

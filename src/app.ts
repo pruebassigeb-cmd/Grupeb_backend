@@ -75,6 +75,7 @@ import cotizadorLibreCorreoRoutes from "./routes/cotizadorLibre/cotizadorLibreCo
 import cotizadorLibreLandingRoutes from "./routes/cotizadorLibre/cotizadorLibreLanding.routes";
 import ticketsRoutes from "./routes/tickets/tickets.routes";
 import escalasIncrementoPlasticoRoutes from "./routes/productos/escalasIncrementoPlastico.routes";
+import cotizacionesLibresRoutes from "./routes/cotizaciones/cotizacionesLibres.routes";
 
 const app = express();
 
@@ -151,6 +152,7 @@ app.use("/api/productos-plastico", productosPlasticoRoutes);
 app.use("/api/catalogos-productos/plastico/admin", catalogosPlasticoAdminRoutes);
 app.use("/api/catalogos-produccion", catalogosProduccionRoutes);
 app.use("/api/cotizaciones", cotizacionesRoutes);
+app.use("/api/cotizaciones-libres", cotizacionesLibresRoutes); 
 app.use("/api/pedidos", pedidosRoutes);
 app.use("/api/ventas", ventasRoutes);
 app.use("/api/diseno", disenoRoutes);
@@ -193,6 +195,7 @@ app.use("/api/push", pushRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/catalogos-papel/insumo", catalogosPapelInsumoRoutes);
 app.use("/api/reportes", reportesDestinatariosRoutes);
+
 
 // Cotizador Interactivo (público, cuenta compartida + staff) — se monta bajo
 // /api como el resto del sistema, para que la instancia de axios del

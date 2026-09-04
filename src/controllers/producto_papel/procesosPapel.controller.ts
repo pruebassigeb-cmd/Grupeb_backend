@@ -56,18 +56,43 @@ const NOMBRE_PROCESO_CAT_PAPEL = {
   TEXTURIZADO: "Texturizado",
   ALTO_RELIEVE: "Alto Relieve",
   SUAJE: "Suaje Papel",
+  DESBARBE: "Desbarbe",
   ARMADO: "Armado",
+  PEGADO: "Pegado",
+  LITOLAMINADO: "Litolaminado",
+  ESPECIAL: "Especial",
   EMPAQUE: "Empaque Papel",
 } as const;
 
 type ClaveProcesoPapel = keyof typeof NOMBRE_PROCESO_CAT_PAPEL;
 
-// Orden de cascada fijo de referencia (cuando todos aplican). Hojeado y
-// Guillotina comparten la misma posición relativa porque son mutuamente
-// excluyentes — nunca coexisten en el array filtrado real.
+// Orden de cascada fijo de referencia -- SOLO rige para papel NORMAL (la
+// ruta se resuelve por flags de solicitud_producto_papel, ver
+// getProcesosDeOrdenPapel). Los especiales NO usan este arreglo: su orden
+// sale directo de componente_papel_proceso.orden (ruta libre por
+// componente). Hojeado y Guillotina comparten la misma posición relativa
+// porque son mutuamente excluyentes en el flujo normal — nunca coexisten
+// en el array filtrado real.
+//
+// Litolaminado NO aparece aquí: es exclusivo de la OP de unión de un
+// especial (nunca aplica a papel normal), así que no tiene lugar en la
+// cascada fija. Desbarbe y Especial SÍ pueden aplicar a papel
+// normal (decisión de Jose, 2026-09-02) pero ese flujo -- capturarlos por
+// pedido en solicitud_producto_papel y sumarlos aquí -- todavía no está
+// conectado (queda pendiente, ver nota en getProcesosDeOrdenPapel); por
+// ahora solo entran a la cascada desde el lado de especiales.
+//
+// PEGADO ya no está en esta lista (Jose, 2026-09-03): resultó ser el mismo
+// proceso que Empaque en la práctica, así que se quitó del catálogo
+// seleccionable (ver getProcesosCat en producto_papel.controller.ts) -- lo
+// que valía la pena de capturar ahí ("qué se pega") ahora vive en Armado.
+// La clave PEGADO y su fila en TABLA_POR_CLAVE_PAPEL/CAMPOS_PROCESO_PAPEL
+// se dejan intactas abajo a propósito, solo para no tronar si una orden
+// vieja ya tiene ese proceso capturado.
 const ORDEN_CLAVES_PAPEL: ClaveProcesoPapel[] = [
   "HOJEADO", "GUILLOTINA", "IMPRESION", "LAMINACION", "BARNIZ_UV",
-  "HOT_STAMPING", "TEXTURIZADO", "ALTO_RELIEVE", "SUAJE", "ARMADO", "EMPAQUE",
+  "HOT_STAMPING", "TEXTURIZADO", "ALTO_RELIEVE", "SUAJE", "DESBARBE",
+  "ARMADO", "ESPECIAL", "EMPAQUE",
 ];
 
 const TABLA_POR_CLAVE_PAPEL: Record<ClaveProcesoPapel, string> = {
@@ -80,7 +105,11 @@ const TABLA_POR_CLAVE_PAPEL: Record<ClaveProcesoPapel, string> = {
   TEXTURIZADO: "texturizado_papel",
   ALTO_RELIEVE: "alto_relieve_papel",
   SUAJE: "suaje_produccion_papel",
+  DESBARBE: "desbarbe_papel",
   ARMADO: "armado_papel",
+  PEGADO: "pegado_papel",
+  LITOLAMINADO: "litolaminado_papel",
+  ESPECIAL: "especial_papel",
   EMPAQUE: "empaque_papel",
 };
 
@@ -148,7 +177,14 @@ const CAMPOS_PROCESO_PAPEL: Record<string, string[]> = {
   texturizado_papel: ["maquina", "pliegos_entrada", "merma", "pliegos_entregados"],
   alto_relieve_papel: ["maquina", "pliegos_entrada", "merma", "pliegos_entregados"],
   suaje_produccion_papel: ["maquina", "suaje_idsuaje_papel", "pliegos_entrada", "merma", "pliegos_entregados"],
+  desbarbe_papel: ["maquina", "pliegos_entrada", "merma", "pliegos_entregados"],
   armado_papel: ["maquina", "pliegos_entrada", "bolsas_armadas", "merma", "bolsas_entregadas"],
+  pegado_papel: ["maquina", "idcat_tipo_pegado", "idcat_pegamento", "material_pegado", "pliegos_entrada", "merma", "pliegos_entregados"],
+  // Litolaminado vive en la OP de unión -- qué materiales entran se resuelve
+  // por componente_papel_proceso_material, no aquí (ver comentario de la
+  // tabla en la migración Fase 1).
+  litolaminado_papel: ["maquina", "pliegos_entrada", "merma", "pliegos_entregados"],
+  especial_papel: ["nombre_proceso", "notas", "pliegos_entrada", "merma", "pliegos_entregados"],
   empaque_papel: ["maquina", "bolsas_entrada", "merma", "bolsas_entregadas_final"],
 };
 
@@ -165,7 +201,11 @@ const CAMPO_ENTRADA_PAPEL: Record<string, string | null> = {
   texturizado_papel: "pliegos_entrada",
   alto_relieve_papel: "pliegos_entrada",
   suaje_produccion_papel: "pliegos_entrada",
+  desbarbe_papel: "pliegos_entrada",
   armado_papel: "pliegos_entrada",
+  pegado_papel: "pliegos_entrada",
+  litolaminado_papel: "pliegos_entrada",
+  especial_papel: "pliegos_entrada",
   empaque_papel: "bolsas_entrada", // cambia de unidad: bolsas, no pliegos
 };
 
@@ -182,7 +222,11 @@ const CAMPO_SALIDA_PAPEL: Record<string, string> = {
   texturizado_papel: "pliegos_entregados",
   alto_relieve_papel: "pliegos_entregados",
   suaje_produccion_papel: "pliegos_entregados",
+  desbarbe_papel: "pliegos_entregados",
   armado_papel: "bolsas_entregadas",
+  pegado_papel: "pliegos_entregados",
+  litolaminado_papel: "pliegos_entregados",
+  especial_papel: "pliegos_entregados",
   empaque_papel: "bolsas_entregadas_final",
 };
 
@@ -196,12 +240,21 @@ const AVANCE_UNIDAD_PAPEL: Record<string, "pliegos" | "bolsas"> = {
   texturizado_papel: "pliegos",
   alto_relieve_papel: "pliegos",
   suaje_produccion_papel: "pliegos",
+  desbarbe_papel: "pliegos",
   armado_papel: "bolsas",
+  pegado_papel: "pliegos",
+  litolaminado_papel: "pliegos",
+  especial_papel: "pliegos",
   empaque_papel: "bolsas",
 };
 
 const TABLAS_VALIDAS_PAPEL = Object.values(TABLA_POR_CLAVE_PAPEL);
 
+// Clave lógica para buscar la máquina preseleccionada. Papel NORMAL la
+// busca en solicitud_producto_papel_maquinaria (por pedido); especiales la
+// busca en la tabla maquinaria_* correspondiente, filtrada por
+// idcomponente_papel (por producto/componente) -- ver
+// MAQUINARIA_COMPONENTE_POR_TABLA y getMaquinaElegidaPapel más abajo.
 const CLAVE_MAQUINA_POR_TABLA: Record<string, string> = {
   hojeado_papel: "hojeado_guillotina",
   guillotina_papel: "hojeado_guillotina",
@@ -212,8 +265,68 @@ const CLAVE_MAQUINA_POR_TABLA: Record<string, string> = {
   texturizado_papel: "texturizadora",
   alto_relieve_papel: "hs_ar",
   suaje_produccion_papel: "suaje_maquina",
+  desbarbe_papel: "desbarbe",
   armado_papel: "armado",
+  pegado_papel: "pegado", // sin tabla maquinaria_pegado en BD todavía -- no resuelve nada hasta que exista
+  litolaminado_papel: "empalme",
   empaque_papel: "empaque_maquina",
+};
+
+// Especiales: tabla maquinaria_* + catálogo asociado para cada proceso que
+// sí tiene máquina preseleccionable por componente. `idCol` es la columna
+// que guarda el id de catálogo en la tabla maquinaria_*; `catTabla`/`catPk`
+// son la tabla y llave primaria del catálogo (para traer el nombre a
+// mostrar). `tipoMaquina` es solo para las tablas "compuestas" de Fase 1
+// (ver más abajo) que pueden traer más de un renglón por componente.
+//
+// VERIFICADO (2026-09-02) contra fase1_productos_especiales_up.sql y
+// catalogos_papel.controller.ts real — antes esto eran nombres "por
+// convención", sin confirmar uno por uno. Lo que cambió:
+//   - impresion_papel, laminacion_papel, barniz_uv_papel, hot_stamping_papel,
+//     texturizado_papel, suaje_produccion_papel, desbarbe_papel, armado_papel,
+//     empaque_papel, litolaminado_papel: CONFIRMADOS tal cual ya estaban
+//     (coinciden exacto con CATALOGOS en catalogos_papel.controller.ts y con
+//     las 11 tablas maquinaria_* "simples" del DDL de Fase 1).
+//   - alto_relieve_papel: ERA UN BUG -- apuntaba a maquinaria_hs_ar /
+//     idcat_hs_ar (la tabla de Hot Stamping), pero Fase 1 creó una tabla
+//     PROPIA para Alto Relieve: maquinaria_alto_relieve, columna
+//     idcat_alto_relieve_maquina (confirmado en el DDL, sección "7c. Las
+//     tres excepciones..."). Corregido. catTabla/catPk se dejan en
+//     cat_hs_ar como suposición razonada (el tab "HS y AR" en Catálogos.tsx
+//     es un solo catálogo compartido para Hot Stamping Y Alto Relieve, y no
+//     existe ningún catálogo "cat_alto_relieve_maquina" expuesto en
+//     catalogos_papel.controller.ts) -- si el nombre real de la columna que
+//     guarda el id no es contra cat_hs_ar, esta consulta falla con "column
+//     does not exist" y cae al catch de getMaquinaElegidaPapel sin tronar
+//     nada más (mismo comportamiento de siempre ante un nombre equivocado).
+//   - hojeado_papel / guillotina_papel: FALTABAN por completo -- para
+//     especiales nunca resolvían máquina (quedaban en null silenciosamente).
+//     Fase 1 SÍ tiene su tabla: maquinaria_hojeado_guillotina, columna
+//     idcat_hojeado_guillotina, catálogo cat_hojeado_guillotina (confirmado
+//     en catalogos_papel.controller.ts, tieneTipoMaquina:true). Esta tabla
+//     es "compuesta" a propósito -- el DDL lo dice explícito: "dos renglones
+//     (hojeadora + guillotina)" por componente, uno de cada tipo, porque un
+//     mismo componente puede llevar máquina propia para cada una. Por eso
+//     lleva `tipoMaquina` -- getMaquinaElegidaPapel filtra por
+//     c.tipo_maquina para traer el renglón correcto según cuál de las dos
+//     tablas de proceso se está resolviendo.
+const MAQUINARIA_COMPONENTE_POR_TABLA: Record<
+  string,
+  { maquinariaTabla: string; idCol: string; catTabla: string; catPk: string; tipoMaquina?: "hojeadora" | "guillotina" }
+> = {
+  hojeado_papel: { maquinariaTabla: "maquinaria_hojeado_guillotina", idCol: "idcat_hojeado_guillotina", catTabla: "cat_hojeado_guillotina", catPk: "idcat_hojeado_guillotina", tipoMaquina: "hojeadora" },
+  guillotina_papel: { maquinariaTabla: "maquinaria_hojeado_guillotina", idCol: "idcat_hojeado_guillotina", catTabla: "cat_hojeado_guillotina", catPk: "idcat_hojeado_guillotina", tipoMaquina: "guillotina" },
+  impresion_papel: { maquinariaTabla: "maquinaria_impresora", idCol: "idcat_impresora", catTabla: "cat_impresora", catPk: "idcat_impresora" },
+  laminacion_papel: { maquinariaTabla: "maquinaria_laminado", idCol: "idcat_laminado_maquina", catTabla: "cat_laminado_maquina", catPk: "idcat_laminado_maquina" },
+  barniz_uv_papel: { maquinariaTabla: "maquinaria_uv", idCol: "idcat_uv", catTabla: "cat_uv", catPk: "idcat_uv" },
+  hot_stamping_papel: { maquinariaTabla: "maquinaria_hs_ar", idCol: "idcat_hs_ar", catTabla: "cat_hs_ar", catPk: "idcat_hs_ar" },
+  alto_relieve_papel: { maquinariaTabla: "maquinaria_alto_relieve", idCol: "idcat_alto_relieve_maquina", catTabla: "cat_hs_ar", catPk: "idcat_hs_ar" },
+  texturizado_papel: { maquinariaTabla: "maquinaria_texturizadora", idCol: "idcat_texturizadora", catTabla: "cat_texturizadora", catPk: "idcat_texturizadora" },
+  suaje_produccion_papel: { maquinariaTabla: "maquinaria_suaje_maquina", idCol: "idcat_suaje_maquina", catTabla: "cat_suaje_maquina", catPk: "idcat_suaje_maquina" },
+  desbarbe_papel: { maquinariaTabla: "maquinaria_desbarbe", idCol: "idcat_desbarbe", catTabla: "cat_desbarbe", catPk: "idcat_desbarbe" },
+  armado_papel: { maquinariaTabla: "maquinaria_armado", idCol: "idcat_armado", catTabla: "cat_armado", catPk: "idcat_armado" },
+  empaque_papel: { maquinariaTabla: "maquinaria_empaque", idCol: "idcat_empaque_maquina", catTabla: "cat_empaque_maquina", catPk: "idcat_empaque_maquina" },
+  litolaminado_papel: { maquinariaTabla: "maquinaria_empalme", idCol: "idcat_empalme", catTabla: "cat_empalme", catPk: "idcat_empalme" },
 };
 
 // ════════════════════════════════════════════════════════════════════════
@@ -231,6 +344,42 @@ const CLAVE_MAQUINA_POR_TABLA: Record<string, string> = {
  */
 export async function getProcesosDeOrdenPapel(client: any, idproduccion: number): Promise<number[]> {
   const { claveAId } = await getMapaProcesoCatPapel();
+
+  // ── Especiales: la ruta NO sale de los flags de solicitud_producto_papel,
+  // sale de componente_papel_proceso -- es la ruta libre armada por
+  // componente al dar de alta el producto (ver RutaProcesos.tsx / Fase 1).
+  // orden_produccion.idcomponente_papel es lo que distingue una OP de un
+  // especial (se pone al emitir, ver emitirOrdenProduccionEspecial.service.ts)
+  // de una orden normal (siempre NULL).
+  //
+  // PENDIENTE (deliberado, fuera de esta pasada): `veces` en cada renglón
+  // de componente_papel_proceso (repetición del proceso) todavía NO se
+  // expande aquí -- cada renglón de ruta entra una sola vez a la cascada,
+  // igual que si `veces` siempre fuera 1. Expandir a pasadas reales
+  // (pasada 1..veces, con su propio avance/estado) implica tocar también
+  // getSiguienteEfectivoPapel, resolverAnteriorEfectivoPapel,
+  // getLimiteAvanceAnteriorPapel, iniciarProcesoPapel, registrarAvancePapel,
+  // finalizarProcesoPapel y editarProcesoPapel -- son todas funciones que
+  // hoy asumen un solo registro por (orden, tabla_proceso), y es lo mismo
+  // que le falta a papel normal para su propio `repeticiones_procesos`. Se
+  // deja como su propio siguiente paso, compartido entre los dos modelos,
+  // en vez de resolverlo a medias solo para especiales.
+  const { rows: componenteRows } = await client.query(
+    `SELECT idcomponente_papel FROM orden_produccion WHERE idproduccion = $1`,
+    [idproduccion]
+  );
+  const idComponentePapel = componenteRows[0]?.idcomponente_papel ?? null;
+
+  if (idComponentePapel != null) {
+    const { rows: rutaRows } = await client.query(
+      `SELECT idproceso_cat
+         FROM componente_papel_proceso
+        WHERE idcomponente_papel = $1
+        ORDER BY orden ASC`,
+      [idComponentePapel]
+    );
+    return rutaRows.map((r: any) => Number(r.idproceso_cat));
+  }
 
   const { rows } = await client.query(
     `
@@ -305,6 +454,33 @@ export async function getProcesosDeOrdenPapel(client: any, idproduccion: number)
 }
 
 /**
+ * Igual que getProcesosDeOrdenPapel, pero ya resuelto a tabla/nombre en vez
+ * de solo idproceso_cat -- para que otros archivos (seguimiento.controller.ts,
+ * el PDF) puedan pintar "qué procesos aplican a esta OP" sin tener que
+ * reimplementar la lógica de flags de papel normal vs. componente_papel_proceso
+ * de especiales por su cuenta (que es justo el tipo de duplicado que se
+ * desincroniza solo). Única fuente de verdad: la misma que ya usa el motor
+ * de producción para decidir la cascada real.
+ */
+export async function getProcesosDeOrdenPapelConTabla(
+  client: any,
+  idproduccion: number
+): Promise<{ idproceso_cat: number; tabla: string; nombre_proceso: string }[]> {
+  const { idAClave } = await getMapaProcesoCatPapel();
+  const ids = await getProcesosDeOrdenPapel(client, idproduccion);
+  const out: { idproceso_cat: number; tabla: string; nombre_proceso: string }[] = [];
+  for (const idProcesoCat of ids) {
+    const clave = idAClave.get(idProcesoCat);
+    if (!clave) continue;
+    const tabla = TABLA_POR_CLAVE_PAPEL[clave];
+    const nombre_proceso = NOMBRE_PROCESO_CAT_PAPEL[clave];
+    if (!tabla) continue;
+    out.push({ idproceso_cat: idProcesoCat, tabla, nombre_proceso });
+  }
+  return out;
+}
+
+/**
  * Total de tintas (frente + dentro/reverso) de la orden — hasta 4 de cada
  * lado, 8 en total. Usado por merma.service.ts para multiplicar la merma de
  * Impresión por la cantidad de tintas (ver R9 en ese archivo). Consulta
@@ -373,6 +549,51 @@ async function getMaquinaElegidaPapel(
   idproduccion: number,
   tablaProceso: string
 ): Promise<{ id: number; nombre: string } | null> {
+  // Especiales: la máquina no se preselecciona por pedido
+  // (solicitud_producto_papel_maquinaria no tiene noción de componente) --
+  // se busca en la tabla maquinaria_* del proceso, filtrada por el
+  // idcomponente_papel de ESTA orden (ver Fase 1: cada maquinaria_* tiene
+  // idproducto_papel XOR idcomponente_papel).
+  const { rows: opRows } = await client.query(
+    `SELECT idcomponente_papel FROM orden_produccion WHERE idproduccion = $1`,
+    [idproduccion]
+  );
+  const idComponentePapel = opRows[0]?.idcomponente_papel ?? null;
+
+  if (idComponentePapel != null) {
+    const cfg = MAQUINARIA_COMPONENTE_POR_TABLA[tablaProceso];
+    if (!cfg) return null;
+
+    // NOTA (verificado 2026-09-02, ver comentario arriba de
+    // MAQUINARIA_COMPONENTE_POR_TABLA): los nombres de tabla/columna ya se
+    // cotejaron contra el DDL real de Fase 1 y contra
+    // catalogos_papel.controller.ts. La única pieza que sigue siendo una
+    // suposición razonada (no confirmada 1:1) es a qué catálogo apunta
+    // idcat_alto_relieve_maquina -- se probó con cat_hs_ar. Si algo no
+    // coincide, esta consulta falla con "relation/column does not exist"
+    // y se corrige aquí puntualmente (no afecta a papel normal).
+    try {
+      const filtroTipo = cfg.tipoMaquina ? ` AND c.tipo_maquina = $2` : "";
+      const params = cfg.tipoMaquina ? [idComponentePapel, cfg.tipoMaquina] : [idComponentePapel];
+      const { rows } = await client.query(
+        `SELECT m.${cfg.idCol} AS id, c.nombre AS nombre
+           FROM ${cfg.maquinariaTabla} m
+           JOIN ${cfg.catTabla} c ON c.${cfg.catPk} = m.${cfg.idCol}
+          WHERE m.idcomponente_papel = $1${filtroTipo}`,
+        params
+      );
+      const maquina = rows[0];
+      if (!maquina?.id) return null;
+      return { id: Number(maquina.id), nombre: String(maquina.nombre ?? "") };
+    } catch (err) {
+      console.warn(
+        `[getMaquinaElegidaPapel] No se pudo resolver máquina de componente para ${tablaProceso} ` +
+        `(revisa MAQUINARIA_COMPONENTE_POR_TABLA contra el esquema real):`, (err as any)?.message
+      );
+      return null;
+    }
+  }
+
   const clave = CLAVE_MAQUINA_POR_TABLA[tablaProceso];
   if (!clave) return null;
 
@@ -726,6 +947,242 @@ async function getLimiteAvanceAnteriorPapel(
   return total > 0 ? total : null;
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Compuerta de la OP de UNIÓN: sólo debe esperar a que TODAS sus OP de
+// INICIO hermanas terminen TODOS sus procesos cuando la unión realmente
+// fusiona materiales por Litolaminado (Jose, 2026-09-02):
+//   - "Caja de regalo": dos piezas independientes (cada una su propio
+//     material, su propia OP-INICIO) que sólo ENCAJAN mecánicamente para
+//     formar el producto final -- ahí SÍ se genera una OP de unión (hay que
+//     juntar ambas piezas en un solo producto), pero esa unión NO lleva
+//     Litolaminado en su ruta porque no hay nada que fusionar. Ese caso NO
+//     se bloquea: no tiene sentido esperar a que ambas piezas estén
+//     terminadas al 100% sólo para poder ensamblarlas después, en planta.
+//   - Unión CON Litolaminado en su ruta: sí necesita que las piezas que va
+//     a fusionar ya estén completas antes de poder arrancar (no se puede
+//     litolaminar algo que todavía no terminó de imprimirse/barnizarse/etc).
+//     Ahí SÍ se bloquea el primer proceso de la unión hasta que cada OP de
+//     inicio hermana (misma idsolicitud_producto) tenga TODOS sus procesos
+//     en estado TERMINADO.
+//
+// Sólo aplica al tipo "union" -- "unica" (modo "misma orden", un solo
+// componente) nunca tiene hermanas que esperar, por diseño.
+// ────────────────────────────────────────────────────────────────────────
+export async function unionEsperandoHermanasPapel(
+  client: any,
+  idproduccion: number
+): Promise<{ espera: boolean; motivo?: string }> {
+  const { rows: opRows } = await client.query(
+    `SELECT idcomponente_papel, idsolicitud_producto FROM orden_produccion WHERE idproduccion = $1`,
+    [idproduccion]
+  );
+  const idComponentePapel = opRows[0]?.idcomponente_papel ?? null;
+  const idSolicitudProducto = opRows[0]?.idsolicitud_producto ?? null;
+  if (idComponentePapel == null || idSolicitudProducto == null) return { espera: false };
+
+  const { rows: compRows } = await client.query(
+    `SELECT tipo FROM componente_papel WHERE idcomponente_papel = $1`,
+    [idComponentePapel]
+  );
+  if (compRows.length === 0 || compRows[0].tipo !== "union") return { espera: false };
+
+  const { rows: litoRows } = await client.query(
+    `SELECT 1
+       FROM componente_papel_proceso cpp
+       JOIN proceso_cat pc ON pc.idproceso_cat = cpp.idproceso_cat
+      WHERE cpp.idcomponente_papel = $1 AND pc.tabla = 'litolaminado_papel'
+      LIMIT 1`,
+    [idComponentePapel]
+  );
+  if (litoRows.length === 0) return { espera: false }; // unión "encaja", no fusiona -- no espera
+
+  const { rows: hermanasRows } = await client.query(
+    `SELECT op2.idproduccion, op2.no_produccion
+       FROM orden_produccion op2
+       JOIN componente_papel cp2 ON cp2.idcomponente_papel = op2.idcomponente_papel
+      WHERE op2.idsolicitud_producto = $1 AND cp2.tipo = 'inicio'`,
+    [idSolicitudProducto]
+  );
+
+  if (hermanasRows.length === 0) return { espera: false };
+
+  const { idAClave } = await getMapaProcesoCatPapel();
+  const pendientes: string[] = [];
+
+  for (const hermana of hermanasRows) {
+    const procesosHermana = await getProcesosDeOrdenPapel(client, Number(hermana.idproduccion));
+    for (const idProcesoCat of procesosHermana) {
+      const clave = idAClave.get(idProcesoCat);
+      const tabla = clave ? TABLA_POR_CLAVE_PAPEL[clave] : null;
+      if (!tabla) continue;
+
+      const { rows: regRows } = await client.query(
+        `SELECT estado_produccion_cat_idestado_produccion_cat AS estado
+           FROM ${tabla} WHERE orden_produccion_idproduccion = $1`,
+        [hermana.idproduccion]
+      );
+      const terminado = regRows.length > 0 && Number(regRows[0].estado) === ESTADO_PROD.TERMINADO;
+      if (!terminado) {
+        const nombreProceso = clave ? NOMBRE_PROCESO_CAT_PAPEL[clave] : tabla;
+        pendientes.push(`${hermana.no_produccion} (${nombreProceso})`);
+      }
+    }
+  }
+
+  if (pendientes.length === 0) return { espera: false };
+
+  return {
+    espera: true,
+    motivo: `Esta unión lleva Litolaminado -- debe esperar a que terminen todas sus OP de inicio: ${pendientes.join(", ")}`,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Piezas finales de cada OP de INICIO hermana, para una OP de UNIÓN
+// (Jose, 2026-09-02): la unión no fabrica piezas desde cero -- recibe las
+// piezas que ya salieron del ÚLTIMO proceso de cada una de sus OP de inicio
+// hermanas (misma idsolicitud_producto, componente_papel.tipo = 'inicio').
+// Esto es lo que debe aparecer como "entrada" del primer proceso de la
+// unión en su PDF, y lo que el usuario necesita ver para saber cuántas
+// piezas debe recibir/tener a la mano antes de arrancar la unión.
+//
+// Por cada hermana se toma el ÚLTIMO proceso de su propia ruta (no el de la
+// unión) y se lee su columna de "entregado" (CAMPO_SALIDA_PAPEL). Si ese
+// último proceso ya está TERMINADO se usa su cantidad entregada final; si
+// todavía está en curso se suma su avance parcial (avance_proceso), igual
+// que hace getLimiteAvanceAnteriorPapel para la cascada dentro de una
+// misma OP.
+// ────────────────────────────────────────────────────────────────────────
+export interface CantidadFinalPapel {
+  proceso_final_tabla: string | null;
+  proceso_final_nombre: string | null;
+  cantidad_entregada: number | null;
+  terminado: boolean;
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Cantidad final realmente entregada por una orden de papel, sea cual sea
+// su ÚLTIMO proceso real. Para papel normal (no especial) ese último
+// proceso siempre es Empaque (ver getProcesosDeOrdenPapel: EMPAQUE se
+// agrega siempre, sin condición), pero para un componente de un especial
+// la ruta es la que se haya configurado en componente_papel_proceso -- "casi
+// que cualquier proceso puede ser el final" (Jose, 2026-09-04): puede
+// quedarse en Litolaminado y de ahí solo irse a almacenar, sin pasar por
+// Suaje/Desbarbe/Armado/Empaque. Antes esto se asumía fijo (Empaque) en
+// más de un lugar (aquí y en estadoCuenta.service.ts), lo cual daba
+// "cantidad_real" en null para cualquier OP de papel/especial que no
+// terminara en Empaque. Factorizado aquí para que ambos (y cualquier otro
+// consumidor futuro) usen siempre la misma fuente de verdad, en vez de
+// reimplementar la cascada cada vez (el mismo tipo de duplicado que ya se
+// desincronizó antes con tipo_material="papel"/"especial").
+// ────────────────────────────────────────────────────────────────────────
+export async function cantidadEntregadaFinalPapel(
+  client: any,
+  idproduccion: number
+): Promise<CantidadFinalPapel> {
+  const procesos = await getProcesosDeOrdenPapelConTabla(client, idproduccion);
+  const ultimo = procesos[procesos.length - 1] ?? null;
+  if (!ultimo) {
+    return { proceso_final_tabla: null, proceso_final_nombre: null, cantidad_entregada: null, terminado: false };
+  }
+
+  const campoSalida = CAMPO_SALIDA_PAPEL[ultimo.tabla];
+  let cantidadEntregada: number | null = null;
+  let terminado = false;
+
+  if (campoSalida) {
+    const { rows: regRows } = await client.query(
+      `SELECT estado_produccion_cat_idestado_produccion_cat AS estado, ${campoSalida} AS campo_final
+         FROM ${ultimo.tabla}
+        WHERE orden_produccion_idproduccion = $1`,
+      [idproduccion]
+    );
+
+    if (regRows.length > 0) {
+      const estado = Number(regRows[0].estado);
+      terminado = estado === ESTADO_PROD.TERMINADO;
+
+      if (terminado) {
+        const v = regRows[0].campo_final;
+        cantidadEntregada = v == null ? null : Number(v);
+      } else {
+        const { rows: avRows } = await client.query(
+          `SELECT COALESCE(SUM(cantidad), 0) AS total
+             FROM avance_proceso
+            WHERE orden_produccion_idproduccion = $1 AND tabla_proceso = $2`,
+          [idproduccion, ultimo.tabla]
+        );
+        const total = Number(avRows[0]?.total ?? 0);
+        cantidadEntregada = total > 0 ? total : null;
+      }
+    }
+  }
+
+  return {
+    proceso_final_tabla: ultimo.tabla,
+    proceso_final_nombre: ultimo.nombre_proceso ?? null,
+    cantidad_entregada: cantidadEntregada,
+    terminado,
+  };
+}
+
+export interface PiezasFinalesHermanaPapel {
+  idproduccion: number;
+  no_produccion: string | null;
+  idcomponente_papel: number | null;
+  componente_nombre: string | null;
+  proceso_final_tabla: string | null;
+  proceso_final_nombre: string | null;
+  cantidad_entregada: number | null;
+  terminado: boolean;
+}
+
+export async function piezasFinalesHermanasPapel(
+  client: any,
+  idproduccionUnion: number
+): Promise<PiezasFinalesHermanaPapel[]> {
+  const { rows: opRows } = await client.query(
+    `SELECT idcomponente_papel, idsolicitud_producto FROM orden_produccion WHERE idproduccion = $1`,
+    [idproduccionUnion]
+  );
+  const idComponentePapel = opRows[0]?.idcomponente_papel ?? null;
+  const idSolicitudProducto = opRows[0]?.idsolicitud_producto ?? null;
+  if (idComponentePapel == null || idSolicitudProducto == null) return [];
+
+  const { rows: compRows } = await client.query(
+    `SELECT tipo FROM componente_papel WHERE idcomponente_papel = $1`,
+    [idComponentePapel]
+  );
+  if (compRows.length === 0 || compRows[0].tipo !== "union") return [];
+
+  const { rows: hermanasRows } = await client.query(
+    `SELECT op2.idproduccion, op2.no_produccion, cp2.idcomponente_papel, cp2.nombre AS componente_nombre
+       FROM orden_produccion op2
+       JOIN componente_papel cp2 ON cp2.idcomponente_papel = op2.idcomponente_papel
+      WHERE op2.idsolicitud_producto = $1 AND cp2.tipo = 'inicio'
+      ORDER BY cp2.orden ASC NULLS LAST, op2.idproduccion ASC`,
+    [idSolicitudProducto]
+  );
+  if (hermanasRows.length === 0) return [];
+
+  const out: PiezasFinalesHermanaPapel[] = [];
+
+  for (const hermana of hermanasRows) {
+    const idprodHermana = Number(hermana.idproduccion);
+    const final = await cantidadEntregadaFinalPapel(client, idprodHermana);
+
+    out.push({
+      idproduccion: idprodHermana,
+      no_produccion: hermana.no_produccion ?? null,
+      idcomponente_papel: hermana.idcomponente_papel ?? null,
+      componente_nombre: hermana.componente_nombre ?? null,
+      ...final,
+    });
+  }
+
+  return out;
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // GET /procesos-papel/:idproduccion
 // ════════════════════════════════════════════════════════════════════════
@@ -759,6 +1216,21 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
         error: "No se pudo determinar los procesos de esta orden de papel. Verifica que la orden tenga una solicitud_producto_papel asociada.",
       });
     }
+
+    // Especiales, sólo UNIÓN: piezas finales de cada OP de inicio hermana y
+    // el mínimo entre todas -- limitan tanto el "máximo" que se puede
+    // registrar como avance del primer proceso de la unión (normalmente
+    // Litolaminado) como la "entrada" que se le precarga al finalizar, ya
+    // que ese proceso no tiene ningún proceso "anterior" dentro de su
+    // propia ruta del que heredar esos datos (Jose, 2026-09-03; espejo de
+    // seguimiento.controller.ts). piezasFinalesHermanasPapel ya resuelve
+    // internamente si esta orden es de tipo unión y regresa [] si no aplica.
+    const piezasFinalesHermanas = await piezasFinalesHermanasPapel(pool, Number(idproduccion));
+    const piezasFinalesTotal = piezasFinalesHermanas.length > 0
+      ? Math.min(
+          ...piezasFinalesHermanas.map((h) => h.cantidad_entregada ?? 0)
+        )
+      : null;
 
     const procesosConRegistros = await Promise.all(procesosIds.map(async (idProcesoCat) => {
       const clave = idAClave.get(idProcesoCat)!;
@@ -841,7 +1313,15 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
       // registro real (si los dos tienen registro es porque el operador
       // confirmó que van los dos, uno seguido del otro).
       const esHojeadoTabla = proceso.tabla === "hojeado_papel";
-      if (index > 0 && !esHojeadoTabla) {
+
+      // Primer proceso de esta orden (típicamente Litolaminado en una
+      // unión): no hay "anterior" dentro de su propia ruta, así que el
+      // límite sale de piezasFinalesTotal en vez de quedar sin tope. Se
+      // respeta la misma excepción de Hojeado (nunca tiene límite) por si
+      // alguna vez apareciera como primer proceso de una unión.
+      if (index === 0 && !esHojeadoTabla) {
+        limiteAvance = piezasFinalesTotal;
+      } else if (index > 0 && !esHojeadoTabla) {
         let anterior = procesosConRegistros[index - 1];
 
         // Si lo inmediato anterior es del par Hojeado/Guillotina, usar el
@@ -900,6 +1380,12 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
       procesoActual = (await getSiguienteEfectivoPapel(procesosIds, Number(procesoActual))) ?? procesosIds[0];
     }
 
+    // Esta OP es de unión y todavía espera a sus OP de inicio hermanas
+    // (ver unionEsperandoHermanasPapel) — se manda ya resuelto para que el
+    // frontend pueda mostrarlo directo en la pantalla, sin que el operador
+    // tenga que darle clic a "Iniciar" para enterarse.
+    const esperaUnion = await unionEsperandoHermanasPapel(pool, Number(idproduccion));
+
     return res.json({
       idproduccion: Number(idproduccion),
       no_produccion: orden.no_produccion,
@@ -908,6 +1394,11 @@ export const getProcesosOrdenPapel = async (req: Request, res: Response) => {
       estado_id: orden.idestado_produccion_cat,
       estado_nombre: orden.estado_nombre,
       procesos: procesosFinales,
+      espera_union: esperaUnion.espera,
+      espera_union_motivo: esperaUnion.motivo ?? null,
+      // Especiales, sólo UNIÓN -- ver piezasFinalesHermanasPapel arriba.
+      piezas_finales_hermanas: piezasFinalesHermanas,
+      piezas_finales_total: piezasFinalesTotal,
     });
 
   } catch (error: any) {
@@ -980,6 +1471,16 @@ export const iniciarProcesoPapel = async (req: Request, res: Response) => {
         return res.status(400).json({
           error: "El proceso anterior debe tener al menos un avance registrado o estar finalizado para poder iniciar este proceso",
         });
+      }
+    } else {
+      // idx === 0: primer proceso de la ruta de ESTA orden. Si esta orden
+      // es la OP de unión de un especial que fusiona por Litolaminado,
+      // no puede arrancar hasta que todas sus OP de inicio hermanas
+      // terminen por completo (ver unionEsperandoHermanasPapel).
+      const { espera, motivo } = await unionEsperandoHermanasPapel(client, Number(idproduccion));
+      if (espera) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: motivo });
       }
     }
 

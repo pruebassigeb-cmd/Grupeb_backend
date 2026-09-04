@@ -6,6 +6,18 @@ import { getPresignedUrl } from "../../config/multer";
 // merma tolerada ya congelada en orden_produccion_merma, sin tocar la
 // cantidad del pedido que se le muestra al cliente.
 import { getMermaDeOrdenBatch } from "../../services/producto_papel/merma.service";
+// ── NUEVO: lectura de la ruta real de procesos de una OP de papel, ya
+// resuelta a tabla/nombre -- misma fuente de verdad que usa el motor de
+// producción (procesosPapel.controller.ts) para decidir la cascada, tanto
+// para papel normal (flags de solicitud_producto_papel) como para
+// especiales (componente_papel_proceso). Evita reimplementar esa lógica
+// aquí por separado, que es justo el tipo de duplicado que se desincroniza
+// solo (Jose, 2026-09-02: "sigamos con lo que quedó pendiente para las
+// órdenes de producción" -- ver contexto de productos especiales).
+// AJUSTA ESTA RUTA si procesosPapel.controller.ts no vive en el mismo
+// directorio que este archivo -- ambos importan "../../config/db" con la
+// misma profundidad, así que se asume mismo directorio.
+import { getProcesosDeOrdenPapelConTabla, unionEsperandoHermanasPapel, piezasFinalesHermanasPapel } from "../producto_papel/procesosPapel.controller";
 // ── NUEVO: estado de cuenta / cuentas por cobrar (plan-estado-cuenta-cobranza-v2.md) ──
 // Reutiliza el util que ya existe para el reporte semanal — mismo
 // contarDiasHabiles, no se duplica.
@@ -504,6 +516,21 @@ export const getSeguimiento = async (req: Request, res: Response) => {
         op.idproduccion,
         op.fecha                                        AS fecha_habilitacion_orden,
 
+        -- ── Especiales: a qué componente pertenece ESTA OP ──────────────
+        -- Igual que en getOrdenProduccion (ver la nota ahí): op.idcomponente_papel
+        -- IS NULL para papel normal y para el modo "misma orden" de un
+        -- especial de un solo componente; con varios componentes, el JOIN
+        -- sin restringir a op (por idsolicitud_producto) ya regresaba una
+        -- fila por cada OP real -- lo que faltaba era ESTO, para que
+        -- Seguimiento.tsx pueda distinguir/agrupar esas filas en vez de
+        -- verlas como "duplicados" del mismo producto y quedarse solo con
+        -- una (ver el filtro de dedupe en el frontend).
+        op.idcomponente_papel,
+        cp.tipo        AS componente_tipo,
+        cp.nombre      AS componente_nombre,
+        cp.orden       AS componente_orden,
+        pp.es_especial,
+
         CASE WHEN (v.abono >= v.anticipo OR v.estado_administrativo_cat_idestado_administrativo_cat IN (2, 6))
               AND dp.estado_administrativo_cat_idestado_administrativo_cat = 3
               AND op.no_produccion IS NOT NULL
@@ -682,14 +709,45 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           ON pp.idproducto_papel = COALESCE(sp.producto_papel_idproducto_papel, gp.idproducto_papel)
       LEFT JOIN cat_tipo_producto_papel ctpp
           ON ctpp.idcat_tipo_producto_papel = pp.idcat_tipo_producto_papel
-      LEFT JOIN detalle_material_papel dmp
-          ON dmp.idgrupo_papel = gp.idgrupo_papel
+      -- op y cp se adelantan aquí (antes vivían más abajo, después de
+      -- diseno_producto) porque los LATERAL de dmp/suaje_seg de abajo
+      -- necesitan leer op.idcomponente_papel -- un LATERAL (y, en general,
+      -- cualquier ON de este FROM) solo puede referenciar tablas que ya
+      -- aparecieron ANTES en la cadena de JOINs, así que si op se unía
+      -- después, esas subconsultas tronaban con "column op.idcomponente_papel
+      -- does not exist" (500 real en /api/seguimiento).
+      LEFT JOIN orden_produccion op
+          ON op.idsolicitud_producto = sp.idsolicitud_producto
+      LEFT JOIN componente_papel cp
+          ON cp.idcomponente_papel = op.idcomponente_papel
+      -- Especiales: la ficha de material es POR COMPONENTE, no del producto
+      -- completo (ver detalle_material_papel.idcomponente_papel en
+      -- fase1_productos_especiales_up.sql). Mismo patrón CASE que ya usa
+      -- getOrdenProduccion -- sin esto, cada OP de un especial mostraba en
+      -- Seguimiento la ficha del producto entero en vez de la suya propia.
+      LEFT JOIN LATERAL (
+        SELECT dm.*
+        FROM detalle_material_papel dm
+        WHERE
+          CASE
+            WHEN op.idcomponente_papel IS NOT NULL THEN dm.idcomponente_papel = op.idcomponente_papel
+            ELSE dm.idgrupo_papel = gp.idgrupo_papel
+          END
+        ORDER BY dm.iddetalle_material ASC
+        LIMIT 1
+      ) dmp ON true
       -- Piezas del suaje (PZS en el alta de producto) -- paso intermedio
       -- de la fórmula de cortes/hojeado/pliegos, ver calcularCortes().
+      -- suaje_papel también es dual-scope (idproducto_papel XOR
+      -- idcomponente_papel) desde Fase 1 -- mismo criterio que dmp arriba.
       LEFT JOIN LATERAL (
         SELECT s.pzs AS piezas_suaje
         FROM suaje_papel s
-        WHERE s.idproducto_papel = pp.idproducto_papel
+        WHERE
+          CASE
+            WHEN op.idcomponente_papel IS NOT NULL THEN s.idcomponente_papel = op.idcomponente_papel
+            ELSE s.idproducto_papel = pp.idproducto_papel
+          END
         LIMIT 1
       ) suaje_seg ON true
       LEFT JOIN cat_tipo_papel ctp
@@ -730,8 +788,6 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       LEFT JOIN diseno_producto dp
           ON dp.diseno_iddiseno = d.iddiseno
           AND dp.solicitud_producto_idsolicitud_producto = sp.idsolicitud_producto
-      LEFT JOIN orden_produccion op
-          ON op.idsolicitud_producto = sp.idsolicitud_producto
       LEFT JOIN tintas t
           ON t.idtintas = sp.tintas_idtintas
       LEFT JOIN tintas tdentro
@@ -744,8 +800,13 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           ON ctex.idcat_textura = spp.idcat_textura
       LEFT JOIN cat_tipo_asa cta
           ON cta.idcat_tipo_asa = spp.id_asa
+      -- Especiales: acabados_papel también es dual-scope (idproducto_papel
+      -- XOR idcomponente_papel) desde Fase 1 -- mismo criterio que dmp arriba.
       LEFT JOIN acabados_papel ap
-          ON ap.idproducto_papel = pp.idproducto_papel
+          ON CASE
+               WHEN op.idcomponente_papel IS NOT NULL THEN ap.idcomponente_papel = op.idcomponente_papel
+               ELSE ap.idproducto_papel = pp.idproducto_papel
+             END
       -- Bobina/desarrollo de laminado registrados en el alta (mismo dato
       -- que ya usa el PDF en getOrdenProduccion) -- se traen aquí también
       -- para que el modal de Seguimiento los muestre en Laminación.
@@ -767,7 +828,7 @@ export const getSeguimiento = async (req: Request, res: Response) => {
 
       WHERE s.estado = 'pedido'
         AND s.no_pedido IS NOT NULL
-        AND sp.tipo_material = 'papel'
+        AND sp.tipo_material IN ('papel', 'especial')
 
       ORDER BY s.no_pedido DESC, sp.idsolicitud_producto ASC
     `);
@@ -830,6 +891,26 @@ export const getSeguimiento = async (req: Request, res: Response) => {
           estado,
           fecha: r.ultima_fecha_inicio ?? null,
         });
+      }
+    }
+
+    // ── Especiales: ¿esta OP de unión debe esperar a sus OP de inicio
+    // hermanas? (ver unionEsperandoHermanasPapel en procesosPapel.controller.ts
+    // -- solo bloquea cuando la unión lleva Litolaminado; el "caso caja de
+    // regalo" de piezas que solo enganchan nunca espera). Se calcula en lote
+    // aquí (no solo en getOrdenProduccion/getProcesosOrdenPapel) para que
+    // Seguimiento.tsx pueda mostrar el candado en la fila de la unión sin
+    // tener que abrir cada OP una por una.
+    const esperaUnionPorIdproduccion = new Map<number, { espera: boolean; motivo?: string }>();
+    const idproduccionesUnion = rowsPapel
+      .filter((r: any) => r.idproduccion != null && r.componente_tipo === "union")
+      .map((r: any) => Number(r.idproduccion));
+
+    for (const idproduccion of idproduccionesUnion) {
+      try {
+        esperaUnionPorIdproduccion.set(idproduccion, await unionEsperandoHermanasPapel(pool, idproduccion));
+      } catch (e) {
+        console.warn(`No se pudo calcular espera_union para OP ${idproduccion}:`, e);
       }
     }
 
@@ -1003,8 +1084,22 @@ export const getSeguimiento = async (req: Request, res: Response) => {
       const resumen = row.idproduccion != null
         ? resumenPorIdproduccion.get(Number(row.idproduccion))
         : undefined;
+      const esperaUnion = row.idproduccion != null
+        ? esperaUnionPorIdproduccion.get(Number(row.idproduccion))
+        : undefined;
 
       return {
+        // ── Especiales: a qué componente pertenece ESTA fila (null en
+        // papel normal). Seguimiento.tsx los agrupa por idsolicitud_producto
+        // y muestra una fila expandible con una sub-fila por componente
+        // cuando hay más de una OP real para el mismo producto.
+        es_especial: row.es_especial === true,
+        idcomponente_papel: row.idcomponente_papel ?? null,
+        componente_tipo: row.componente_tipo ?? null,
+        componente_nombre: row.componente_nombre ?? null,
+        componente_orden: row.componente_orden ?? null,
+        espera_union: esperaUnion?.espera ?? false,
+        espera_union_motivo: esperaUnion?.motivo ?? null,
         idsolicitud: Number(row.idsolicitud),
         idsolicitud_producto: Number(row.idsolicitud_producto),
         no_pedido: row.no_pedido,
@@ -1272,7 +1367,9 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
 
     const pedido = pedidoRows[0];
 
-    // ── PLÁSTICO (sin cambios, filtra tipo_material <> 'papel') ──────────
+    // ── PLÁSTICO (filtra tipo_material NOT IN ('papel','especial'), para
+    // que los especiales -- que ahora tienen su propio tipo_material -- no
+    // se cuelen aquí como si fueran plástico, Jose 2026-09-03) ───────────
     const { rows: productos } = await pool.query(`
       SELECT
         sp.idsolicitud_producto,
@@ -1379,7 +1476,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           ON am.revision_diseno_id = rd_final.idrevision
           AND am.categoria = 'master'
       WHERE sp.solicitud_idsolicitud = $1
-        AND sp.tipo_material <> 'papel'
+        AND sp.tipo_material NOT IN ('papel', 'especial')
       ORDER BY sp.idsolicitud_producto
     `, [pedido.idsolicitud]);
 
@@ -1387,6 +1484,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
     const { rows: productosPapel } = await pool.query(`
       SELECT
         sp.idsolicitud_producto,
+        sp.tipo_material,
         op.idproduccion,
         op.no_produccion,
         op.fecha AS fecha_produccion,
@@ -1395,6 +1493,20 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         dp.fecha_aprobacion AS fecha_aprobacion_diseno,
         dp.observaciones AS observaciones_diseno,
 
+        -- ── Especiales: de qué componente (OP planeada) es esta orden real.
+        -- NULL en papel normal -- así es como se distingue una orden. Con la
+        -- JOIN de op sin restricción (más abajo), un producto especial con
+        -- N componentes ya devuelve N renglones en este SELECT (uno por OP
+        -- real), cada uno con su propio idcomponente_papel -- lo que falta
+        -- es que el resto de columnas (material, acabados, suaje) lean el
+        -- dato de ESE componente en vez del producto completo (ver joins
+        -- de dmp/ap/suj más abajo).
+        op.idcomponente_papel,
+        cp.tipo        AS componente_tipo,
+        cp.nombre      AS componente_nombre,
+        cp.orden       AS componente_orden,
+        pp.es_especial,
+
         ctpp.nombre AS nombre_producto,
         pp.descripcion_papel,
         pp.medida,
@@ -1402,7 +1514,16 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         pp.fuelle,
         pp.altura,
         pp.tamano_asa_default,
-        sp.grupo_papel_descripcion AS grupo_descripcion,
+        -- Materiales de ESTA orden: en papel normal, igual que siempre
+        -- (sp.grupo_papel_descripcion, snapshot armado al cotizar). En un
+        -- especial, un componente puede tener MÁS de un material asignado
+        -- (ej. una unión que fusiona dos materiales por litolaminado) -- el
+        -- dmp de abajo solo toma el primero (para pliego/rendimiento/etc,
+        -- que son datos de UN material), así que aquí se arma la lista
+        -- completa de materiales de ESTE componente, no de todo el
+        -- producto -- antes cada OP mostraba en el PDF los materiales del
+        -- producto entero, sin importar cuál era su propio material.
+        COALESCE(materiales_componente.descripcion, sp.grupo_papel_descripcion) AS grupo_descripcion,
         ctp.nombre AS material,
         cc.nombre AS calibre,
         dmp.pliego,
@@ -1522,6 +1643,26 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
           'empaque_papel', (
             SELECT to_jsonb(em) FROM empaque_papel em
             WHERE em.orden_produccion_idproduccion = op.idproduccion
+          ),
+          -- NUEVO (Fase 2, 2026-09-02): los 4 procesos agregados después de
+          -- los 11 originales -- faltaban aquí por completo, así que el PDF
+          -- nunca mostraba nada de Litolaminado/Desbarbe/Pegado/Especial
+          -- aunque el proceso ya hubiera corrido en planta.
+          'litolaminado_papel', (
+            SELECT to_jsonb(lt) FROM litolaminado_papel lt
+            WHERE lt.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'desbarbe_papel', (
+            SELECT to_jsonb(db) FROM desbarbe_papel db
+            WHERE db.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'pegado_papel', (
+            SELECT to_jsonb(pg) FROM pegado_papel pg
+            WHERE pg.orden_produccion_idproduccion = op.idproduccion
+          ),
+          'especial_papel', (
+            SELECT to_jsonb(es) FROM especial_papel es
+            WHERE es.orden_produccion_idproduccion = op.idproduccion
           )
         )) AS registros_procesos
 
@@ -1530,6 +1671,11 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ON spp.idsolicitud_producto = sp.idsolicitud_producto
       LEFT JOIN orden_produccion op
         ON op.idsolicitud_producto = sp.idsolicitud_producto
+      -- Especiales: a qué componente (OP planeada) pertenece esta orden
+      -- real -- NULL en papel normal. Ver comentario junto a
+      -- op.idcomponente_papel arriba en el SELECT.
+      LEFT JOIN componente_papel cp
+        ON cp.idcomponente_papel = op.idcomponente_papel
       LEFT JOIN diseno_producto dp
         ON dp.solicitud_producto_idsolicitud_producto = sp.idsolicitud_producto
       LEFT JOIN grupo_papel gp
@@ -1538,14 +1684,55 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ON pp.idproducto_papel = COALESCE(sp.producto_papel_idproducto_papel, gp.idproducto_papel)
       LEFT JOIN cat_tipo_producto_papel ctpp
         ON ctpp.idcat_tipo_producto_papel = pp.idcat_tipo_producto_papel
-      LEFT JOIN detalle_material_papel dmp
-        ON dmp.idgrupo_papel = gp.idgrupo_papel
+      -- Material de ESTA orden: en papel normal sigue siendo el único
+      -- renglón de detalle_material_papel del grupo (como siempre); en un
+      -- especial, cada OP es de un componente con su propio material, así
+      -- que se resuelve por idcomponente_papel en vez de por grupo. LATERAL
+      -- + LIMIT 1 porque un componente "unión"/"misma orden" puede tener
+      -- más de un material asignado -- se toma el primero (mismo criterio
+      -- que ya usa RutaProcesos.tsx cuando el componente tiene un solo
+      -- material: la ficha de un solo material sigue funcionando igual;
+      -- mostrar los varios materiales de una unión queda para cuando se
+      -- actualice el generador de PDF).
+      LEFT JOIN LATERAL (
+        SELECT dm.*
+        FROM detalle_material_papel dm
+        WHERE
+          CASE
+            WHEN op.idcomponente_papel IS NOT NULL THEN dm.idcomponente_papel = op.idcomponente_papel
+            ELSE dm.idgrupo_papel = gp.idgrupo_papel
+          END
+        ORDER BY dm.iddetalle_material ASC
+        LIMIT 1
+      ) dmp ON true
+      -- Lista COMPLETA de materiales de ESTE componente (no solo el primero
+      -- que ya toma dmp arriba) -- solo aplica a especiales
+      -- (op.idcomponente_papel IS NOT NULL); en papel normal se queda NULL
+      -- y el SELECT de arriba cae al sp.grupo_papel_descripcion de siempre.
+      LEFT JOIN LATERAL (
+        SELECT string_agg(
+          TRIM(BOTH ' ' FROM COALESCE(ctp2.nombre, '') || ' ' || COALESCE(cc2.nombre, '')),
+          ' + ' ORDER BY dm2.iddetalle_material
+        ) AS descripcion
+        FROM detalle_material_papel dm2
+        LEFT JOIN cat_tipo_papel ctp2 ON ctp2.idcat_tipo_papel = dm2.idcat_tipo_papel
+        LEFT JOIN cat_calibre cc2 ON cc2.idcat_calibre = dm2.idcat_calibre
+        WHERE op.idcomponente_papel IS NOT NULL
+          AND dm2.idcomponente_papel = op.idcomponente_papel
+      ) materiales_componente ON true
       -- Piezas del suaje (PZS en el alta de producto) -- paso intermedio
       -- de la fórmula de cortes/hojeado/pliegos, ver calcularCortes().
+      -- Igual que dmp: por componente en especiales, por producto en normal
+      -- (suaje_papel es de doble alcance desde Fase 1 -- idproducto_papel
+      -- XOR idcomponente_papel).
       LEFT JOIN LATERAL (
         SELECT s.pzs AS piezas_suaje
         FROM suaje_papel s
-        WHERE s.idproducto_papel = pp.idproducto_papel
+        WHERE
+          CASE
+            WHEN op.idcomponente_papel IS NOT NULL THEN s.idcomponente_papel = op.idcomponente_papel
+            ELSE s.idproducto_papel = pp.idproducto_papel
+          END
         LIMIT 1
       ) suaje_op ON true
       LEFT JOIN cat_tipo_papel ctp
@@ -1566,8 +1753,13 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
         ON cta.idcat_tipo_asa = spp.id_asa
       LEFT JOIN color_asa ca
         ON ca.id_color = sp.id_color
+      -- acabados_papel: doble alcance desde Fase 1 (idproducto_papel XOR
+      -- idcomponente_papel) -- mismo criterio que dmp/suaje_op arriba.
       LEFT JOIN acabados_papel ap
-        ON ap.idproducto_papel = pp.idproducto_papel
+        ON CASE
+             WHEN op.idcomponente_papel IS NOT NULL THEN ap.idcomponente_papel = op.idcomponente_papel
+             ELSE ap.idproducto_papel = pp.idproducto_papel
+           END
       LEFT JOIN rollo_lam rl
         ON rl.idrollo_lam = ap.idrollo_lam
       LEFT JOIN cat_tipo_pegado ctpgo
@@ -1589,12 +1781,16 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
     mx.medida_matrix AS matrix
   FROM suaje_papel spj
   LEFT JOIN matrix mx ON mx.idmatrix = spj.idcat_matrix
-  WHERE spj.idproducto_papel = pp.idproducto_papel
+  WHERE
+    CASE
+      WHEN op.idcomponente_papel IS NOT NULL THEN spj.idcomponente_papel = op.idcomponente_papel
+      ELSE spj.idproducto_papel = pp.idproducto_papel
+    END
   ORDER BY spj.idsuaje_papel DESC
   LIMIT 1
 ) suj ON true
       WHERE sp.solicitud_idsolicitud = $1
-        AND sp.tipo_material = 'papel'
+        AND sp.tipo_material IN ('papel', 'especial')
       ORDER BY sp.idsolicitud_producto
     `, [pedido.idsolicitud]);
 
@@ -1692,7 +1888,7 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       .filter((id: any) => id != null);
     const mermaPorIdproduccionPdf = await getMermaDeOrdenBatch(idproduccionesPapelPdf);
 
-    const productosPapelFormateados = productosPapel.map((r: any) => {
+    const productosPapelFormateados = await Promise.all(productosPapel.map(async (r: any) => {
       // Merma: se parte de la cantidad pedida y la merma se suma después,
       // ya en cortes (ver R1 en merma.service.ts). cantidad_a_producir se
       // sigue exponiendo pero solo como dato informativo.
@@ -1754,23 +1950,65 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
       // en ese caso no hay nada que imprimir.
       const tieneTintas = (Number(r.tintas) || 0) > 0 || (Number(r.tintas_dentro) || 0) > 0;
 
-      const procesosAplican = [
-        "hojeado_papel",
-        "guillotina_papel",
-        tieneTintas ? "impresion_papel" : null,
-        r.laminado_nombre ? "laminacion_papel" : null,
-        r.uv === true ? "barniz_uv_papel" : null,
-        r.foil_nombre ? "hot_stamping_papel" : null,
-        r.textura_nombre ? "texturizado_papel" : null,
-        r.alto_relieve === true ? "alto_relieve_papel" : null,
-        "suaje_produccion_papel",
-        r.lleva_armado === true ? "armado_papel" : null,
-        "empaque_papel",
-      ].filter(Boolean);
+      // Fuente de la ruta real: si la OP ya existe, se le pregunta al MISMO
+      // motor que usa producción (getProcesosDeOrdenPapelConTabla) en vez de
+      // reconstruir la lógica de flags aquí aparte -- eso es lo que antes
+      // dejaba a los especiales mostrando la ruta de un producto normal (la
+      // de r.uv/r.laminado_nombre/etc., que son columnas de
+      // solicitud_producto_papel/producto_papel, no de la ruta fija del
+      // componente). Para especiales esto ya resuelve por
+      // componente_papel_proceso (ver getProcesosDeOrdenPapel); para papel
+      // normal resuelve por los mismos flags de siempre, sin cambios de
+      // comportamiento.
+      // Si todavía no existe idproduccion (producto aún no emitido a
+      // producción), no hay de dónde leer la ruta real todavía -- se usa
+      // esta lista como vista previa basada en los flags ya capturados,
+      // igual que se hacía antes.
+      const procesosAplican = r.idproduccion != null
+        ? (await getProcesosDeOrdenPapelConTabla(pool, Number(r.idproduccion))).map((p: { tabla: string }) => p.tabla)
+        : [
+            "hojeado_papel",
+            "guillotina_papel",
+            tieneTintas ? "impresion_papel" : null,
+            r.laminado_nombre ? "laminacion_papel" : null,
+            r.uv === true ? "barniz_uv_papel" : null,
+            r.foil_nombre ? "hot_stamping_papel" : null,
+            r.textura_nombre ? "texturizado_papel" : null,
+            r.alto_relieve === true ? "alto_relieve_papel" : null,
+            "suaje_produccion_papel",
+            r.lleva_armado === true ? "armado_papel" : null,
+            "empaque_papel",
+          ].filter(Boolean);
+
+      // Especiales, sólo UNIÓN: piezas finales de cada OP de inicio hermana
+      // (ver piezasFinalesHermanasPapel en procesosPapel.controller.ts) --
+      // sólo tiene sentido calcularlo cuando ya existe idproduccion (si el
+      // especial todavía no se emitió a producción no hay hermanas con
+      // procesos que consultar) y cuando este componente es de tipo unión.
+      const esUnionParaPiezas = r.idproduccion != null && r.componente_tipo === "union";
+      const piezasFinalesHermanas = esUnionParaPiezas
+        ? await piezasFinalesHermanasPapel(pool, Number(r.idproduccion))
+        : [];
+      // CORREGIDO (Jose, 2026-09-03): "si una OPIn tiene 4000 y la otra
+      // 4150, no van a tener 8150, van a poder entregar 4000, porque
+      // tienen que ir juntas, mas no sumadas" -- las OP de inicio hermanas
+      // no se suman, se EMPAREJAN 1 a 1 (ej. cuerpo + asa de una misma
+      // bolsa). Lo que la unión puede entregar está limitado por la
+      // hermana que menos lleva entregado, no por la suma de todas.
+      const piezasFinalesTotal = piezasFinalesHermanas.length > 0
+        ? Math.min(
+            ...piezasFinalesHermanas.map(
+              (h: { cantidad_entregada: number | null }) => h.cantidad_entregada ?? 0
+            )
+          )
+        : null;
 
       return {
         idsolicitud_producto: r.idsolicitud_producto,
-        tipo_material: "papel",
+        // Se respeta el valor real ("papel" o "especial") en vez de forzar
+        // "papel" -- ver sp.tipo_material agregado al SELECT de arriba
+        // (Jose, 2026-09-03).
+        tipo_material: r.tipo_material ?? "papel",
         no_produccion: r.no_produccion ?? null,
         idproduccion: r.idproduccion ?? null,
         fecha_produccion: r.fecha_produccion ?? null,
@@ -1916,8 +2154,32 @@ export const getOrdenProduccion = async (req: Request, res: Response) => {
 
         // ── Registros runtime de los procesos (merma, entregadas, máquina…) ──
         registros_procesos: r.registros_procesos ?? {},
+
+        // ── Especiales: a qué componente pertenece esta OP (null en papel normal) ──
+        es_especial: r.es_especial === true,
+        idcomponente_papel: r.idcomponente_papel ?? null,
+        componente: r.idcomponente_papel != null
+          ? {
+              id: r.idcomponente_papel,
+              tipo: r.componente_tipo ?? null,
+              nombre: r.componente_nombre ?? null,
+              orden: r.componente_orden ?? null,
+            }
+          : null,
+
+        // ── Especiales, sólo UNIÓN: piezas finales de cada OP de inicio
+        // hermana (último proceso de cada una), para saber cuántas piezas
+        // debe recibir/tener a la mano la unión antes de arrancar. El
+        // MÍNIMO entre todas (piezas_finales_total) alimenta el PDF: es la
+        // "entrada" del primer proceso de la unión, que de otra forma
+        // quedaría en blanco porque no hay ningún proceso "anterior" dentro
+        // de la propia ruta de la unión (Jose, 2026-09-02) -- NO es la suma:
+        // las hermanas se emparejan 1 a 1, así que lo entregable está
+        // limitado por la que menos lleva (Jose, 2026-09-03).
+        piezas_finales_hermanas: piezasFinalesHermanas,
+        piezas_finales_total: piezasFinalesTotal,
       };
-    });
+    }));
 
     const productosFormateados = [
       ...productosPlasticoFormateados,

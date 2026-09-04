@@ -39,12 +39,23 @@ import {
   determinarEstadoVenta,
 } from "./totalesVenta.service";
 import { bloquearSolicitudParaVenta } from "./pagos.service";
+// OJO: ruta a verificar contra la ubicación real de procesosPapel.controller.ts
+// en tu proyecto -- se infirió del import inverso que YA existe en ese
+// archivo ("../../services/ventas/estadoCuenta.service"), asumiendo la
+// misma profundidad (services/ventas/ <-> controllers/producto_papel/).
+// Import cruzado a propósito (procesosPapel.controller.ts ya importa de
+// este archivo): es seguro porque ambas funciones solo se invocan en
+// tiempo de request, nunca en el top-level del módulo, así que el ciclo
+// ya está resuelto para cuando de verdad se llaman (Jose, 2026-09-04).
+import { cantidadEntregadaFinalPapel } from "../../controllers/producto_papel/procesosPapel.controller";
 
 const ESTADO_PROD_TERMINADO = 3; // mismo valor que ESTADO_PROD.TERMINADO en procesosController.ts / procesosPapel.controller.ts
 
 export interface ProductoEstadoCuentaCalculado {
   idsolicitud_producto: number;
-  tipo_material: "plastico" | "papel";
+  // Los especiales guardan tipo_material="especial", no "papel" -- se
+  // respeta el valor real en vez de colapsarlo (Jose, 2026-09-04).
+  tipo_material: "plastico" | "papel" | "especial";
   no_produccion: string | null;
   nombre: string;
   medida: string | null;
@@ -194,10 +205,15 @@ export async function calcularEstadoCuenta(
        op.no_produccion,
 
        CASE
-         WHEN sp.tipo_material = 'papel' THEN (
-           SELECT ep.bolsas_entregadas_final FROM empaque_papel ep
-           WHERE ep.orden_produccion_idproduccion = op.idproduccion LIMIT 1
-         )
+         -- Papel/especial YA NO se resuelve aquí -- se calculaba fijo
+         -- contra empaque_papel, pero un componente de un especial puede
+         -- terminar su ruta en cualquier proceso (Litolaminado y de ahí a
+         -- almacén, por ejemplo), no necesariamente en Empaque (Jose,
+         -- 2026-09-04). Se deja en NULL aquí y se resuelve después en JS
+         -- con cantidadEntregadaFinalPapel (mismo cálculo cascada-abajo
+         -- que ya usa piezasFinalesHermanasPapel), que sí sabe cuál es el
+         -- último proceso REAL de cada orden en particular.
+         WHEN sp.tipo_material IN ('papel', 'especial') THEN NULL
          WHEN EXISTS (
            SELECT 1 FROM tipo_producto_plastico_proceso tppp2
            WHERE tppp2.idtipo_producto_plastico =
@@ -231,10 +247,24 @@ export async function calcularEstadoCuenta(
        FROM herramental h
        WHERE h.idsolicitud_producto = sp.idsolicitud_producto
      ) herr ON true
+     -- CORREGIDO (Jose, 2026-09-04): un producto especial en modo "OP de
+     -- inicio + OP de unión" tiene VARIAS filas de orden_produccion para el
+     -- mismo idsolicitud_producto (una por componente_papel: N de tipo
+     -- 'inicio' + 1 de tipo 'union') -- "ORDER BY idproduccion LIMIT 1" a
+     -- secas se quedaba con la más chica (casi siempre una OP de inicio),
+     -- que nunca tiene su propio empaque_papel/bolsas_entregadas_final
+     -- (solo la unión llega a Empaque), así que cantidad_real siempre
+     -- salía NULL para esos productos. Ahora se prefiere explícitamente la
+     -- OP de tipo 'union' cuando existe; para papel/plástico normal
+     -- (idcomponente_papel es NULL, una sola fila) el criterio no cambia
+     -- nada.
      LEFT JOIN LATERAL (
-       SELECT idproduccion, no_produccion FROM orden_produccion
-       WHERE idsolicitud_producto = sp.idsolicitud_producto
-       ORDER BY idproduccion LIMIT 1
+       SELECT op1.idproduccion, op1.no_produccion
+       FROM orden_produccion op1
+       LEFT JOIN componente_papel cp1 ON cp1.idcomponente_papel = op1.idcomponente_papel
+       WHERE op1.idsolicitud_producto = sp.idsolicitud_producto
+       ORDER BY CASE WHEN cp1.tipo = 'union' THEN 0 ELSE 1 END, op1.idproduccion
+       LIMIT 1
      ) op ON true
      LEFT JOIN configuracion_plastico cfg
          ON cfg.idconfiguracion_plastico = sp.configuracion_plastico_idconfiguracion_plastico
@@ -256,6 +286,17 @@ export async function calcularEstadoCuenta(
     throw new Error(`El pedido de la solicitud ${solicitudId} no tiene productos`);
   }
 
+  // Papel/especial: cantidad_real se resuelve dinámicamente contra el
+  // ÚLTIMO proceso real de CADA orden (ver comentario en el CASE de arriba
+  // y cantidadEntregadaFinalPapel) -- null si ese último proceso todavía
+  // no está terminado.
+  for (const prod of prodRows as any[]) {
+    if ((prod.tipo_material === "papel" || prod.tipo_material === "especial") && prod.idproduccion != null) {
+      const final = await cantidadEntregadaFinalPapel(client, Number(prod.idproduccion));
+      prod.cantidad_real = final.terminado ? final.cantidad_entregada : null;
+    }
+  }
+
   const incompletos = prodRows.filter((p: any) => p.cantidad_real === null || p.idproduccion == null);
   if (incompletos.length > 0) {
     throw new Error(
@@ -269,7 +310,10 @@ export async function calcularEstadoCuenta(
   let cargoAdicionalPapelTotal = 0;
 
   const productos: ProductoEstadoCuentaCalculado[] = prodRows.map((prod: any) => {
-    const esPapel = prod.tipo_material === "papel";
+    // Especiales entran por la misma rama que papel (mismos campos de
+    // ficha, mismo Empaque) -- solo la clasificación final que se guarda
+    // (tipo_material más abajo) respeta el valor real (Jose, 2026-09-04).
+    const esPapel = prod.tipo_material === "papel" || prod.tipo_material === "especial";
     const modoKilo = prod.modo_cantidad === "kilo";
     const precioOrig = Number(prod.precio_total_original ?? 0);
     const cantReal = Number(prod.cantidad_real);
@@ -312,7 +356,9 @@ export async function calcularEstadoCuenta(
 
     return {
       idsolicitud_producto: prod.idsolicitud_producto,
-      tipo_material: esPapel ? "papel" : "plastico",
+      // Se respeta "especial" tal cual en vez de colapsarlo a "papel"
+      // (Jose, 2026-09-04) -- ver tipo_material en ProductoEstadoCuentaCalculado.
+      tipo_material: prod.tipo_material === "especial" ? "especial" : (esPapel ? "papel" : "plastico"),
       no_produccion: prod.no_produccion,
       nombre,
       medida: esPapel ? (prod.papel_medida ?? null) : (prod.medida_plastico ?? null),

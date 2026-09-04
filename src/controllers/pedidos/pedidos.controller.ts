@@ -394,6 +394,7 @@ export const getPedidos = async (req: Request, res: Response) => {
           tpp2.nombre              AS papel_tipo_producto,
           pp2.descripcion_papel    AS papel_descripcion_papel,
           pp2.medida               AS papel_medida,
+          pp2.es_especial          AS papel_es_especial,
           gp2.precio_sugerido      AS papel_precio_sugerido,
           spp.id_asa,              asa2.nombre   AS asa_nombre,
           spp.tamano_asa,
@@ -590,8 +591,13 @@ export const getPedidos = async (req: Request, res: Response) => {
         );
 
         if (!producto) {
-          if (row.tipo_material === "papel") {
-            // ── Producto de PAPEL ──
+          // Los especiales guardan tipo_material="especial" (no "papel"),
+          // pero llegan por las mismas columnas/joins de papel -- se arman
+          // con la misma forma de objeto, solo que tipo_material real se
+          // respeta tal cual viene de BD en vez de forzar "papel"
+          // (Jose, 2026-09-03).
+          if (row.tipo_material === "papel" || row.tipo_material === "especial") {
+            // ── Producto de PAPEL o ESPECIAL ──
             const foilNombre = row.foil_color
               ? `${row.foil_color}${row.foil_codigo ? " " + row.foil_codigo : ""}`
               : null;
@@ -601,7 +607,7 @@ export const getPedidos = async (req: Request, res: Response) => {
               idsolicitud_producto: row.idsolicitud_producto,
               idcotizacion_producto: row.idsolicitud_producto,
               tipoCotizacion: "papel",
-              tipo_material: "papel",
+              tipo_material: row.tipo_material,
 
               idproducto_papel: row.producto_papel_idproducto_papel,
               nombre: row.papel_tipo_producto || `Papel #${row.producto_papel_idproducto_papel}`,
@@ -610,6 +616,9 @@ export const getPedidos = async (req: Request, res: Response) => {
 
               idgrupo_papel: row.grupo_papel_idgrupo_papel ?? null,
               grupo_descripcion: row.grupo_papel_descripcion ?? null,
+              // NUEVO — distingue una línea de producto especial de una de
+              // papel normal al recargar el pedido.
+              es_especial: row.papel_es_especial === true,
               precio_sugerido: row.papel_precio_sugerido != null ? Number(row.papel_precio_sugerido) : null,
 
               // Tintas exteriores
@@ -959,7 +968,11 @@ export const actualizarPedido = async (req: AuthRequest, res: Response) => {
 
       const ordenRows = ordenesPorProducto.get(productoId) ?? [];
 
-      if (productoPersistido.tipo_material === "papel") {
+      // Los especiales guardan tipo_material="especial" (no "papel"), pero
+      // viven en las mismas tablas de papel (solicitud_producto_papel,
+      // producto_papel, etc.) -- así que para efectos de qué ruta de
+      // edición/borrado seguir cuentan igual (Jose, 2026-09-03).
+      if (productoPersistido.tipo_material === "papel" || productoPersistido.tipo_material === "especial") {
         if (prod.eliminado) {
           await client.query(
             `DELETE FROM herramental WHERE idsolicitud_producto = $1`,
@@ -1538,6 +1551,15 @@ export const actualizarPedido = async (req: AuthRequest, res: Response) => {
           ? normalizarId(prod.id_color)
           : null;
 
+        // CORREGIDO (Jose, 2026-09-03): los especiales NO son tipo_material
+        // "papel" -- son su propio tipo "especial". Se detecta por
+        // es_especial (viene del producto_papel elegido) o, por si acaso,
+        // por si el frontend ya mandó tipo_material="especial" directamente.
+        const tipoMaterialNuevo =
+          prod.es_especial === true || prod.tipo_material === "especial"
+            ? "especial"
+            : "papel";
+
         const { rows: spPapelRows } = await client.query(
           `INSERT INTO solicitud_producto (
              solicitud_idsolicitud,
@@ -1551,10 +1573,11 @@ export const actualizarPedido = async (req: AuthRequest, res: Response) => {
              observacion,
              descripcion,
              id_color
-           ) VALUES ($1,'papel',$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
            RETURNING idsolicitud_producto`,
           [
             solicitudId,
+            tipoMaterialNuevo,
             prod.idproducto_papel,
             prod.idgrupo_papel ?? null,
             prod.grupo_descripcion ?? null,
@@ -2236,6 +2259,7 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
           tpp2.nombre              AS papel_tipo_producto,
           pp2.descripcion_papel    AS papel_descripcion_papel,
           pp2.medida               AS papel_medida,
+          pp2.es_especial          AS papel_es_especial,
           gp2.precio_sugerido      AS papel_precio_sugerido,
           spp.id_asa,              asa2.nombre   AS asa_nombre,
           spp.tamano_asa,
@@ -2380,8 +2404,13 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
         );
 
         if (!producto) {
-          if (row.tipo_material === "papel") {
-            // ── Producto de PAPEL ──
+          // Los especiales guardan tipo_material="especial" (no "papel"),
+          // pero llegan por las mismas columnas/joins de papel -- se arman
+          // con la misma forma de objeto, solo que tipo_material real se
+          // respeta tal cual viene de BD en vez de forzar "papel"
+          // (Jose, 2026-09-03).
+          if (row.tipo_material === "papel" || row.tipo_material === "especial") {
+            // ── Producto de PAPEL o ESPECIAL ──
             const foilNombre = row.foil_color
               ? `${row.foil_color}${row.foil_codigo ? " " + row.foil_codigo : ""}`
               : null;
@@ -2391,7 +2420,7 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
               idsolicitud_producto: row.idsolicitud_producto,
               idcotizacion_producto: row.idsolicitud_producto,
               tipoCotizacion: "papel",
-              tipo_material: "papel",
+              tipo_material: row.tipo_material,
 
               idproducto_papel: row.producto_papel_idproducto_papel,
               nombre: row.papel_tipo_producto || `Papel #${row.producto_papel_idproducto_papel}`,
@@ -2400,6 +2429,9 @@ export const getHistorialPedidosPorCliente = async (req: Request, res: Response)
 
               idgrupo_papel: row.grupo_papel_idgrupo_papel ?? null,
               grupo_descripcion: row.grupo_papel_descripcion ?? null,
+              // NUEVO — distingue una línea de producto especial de una de
+              // papel normal al recargar el pedido.
+              es_especial: row.papel_es_especial === true,
               precio_sugerido: row.papel_precio_sugerido != null ? Number(row.papel_precio_sugerido) : null,
 
               // Tintas exteriores

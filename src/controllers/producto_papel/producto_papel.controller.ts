@@ -299,6 +299,11 @@ async function upsertAcabados(client: any, scope: Scope, acabados: any): Promise
     acabados.lleva_alto_relieve     === true,
     acabados.lleva_textura          === true,
     acabados.lleva_hot_stamping     === true,
+    // Campos propios del proceso "Pegado" de la ruta (Fase 2) -- ver nota
+    // en la migración: distintos de idcat_tipo_pegado/idcat_pegamento de
+    // arriba, que son de Armado.
+    acabados.idcat_tipo_pegado_pegado ?? null,
+    acabados.que_se_pega              ?? null,
   ];
 
   let idacabados_papel: number;
@@ -312,8 +317,9 @@ async function upsertAcabados(client: any, scope: Scope, acabados: any): Promise
         idcat_base_material = $7, base_medida = $8,
         idcat_empaque = $9, pzs_caja = $10,
         lleva_uv = $11, lleva_alto_relieve = $12,
-        lleva_textura = $13, lleva_hot_stamping = $14
-      WHERE idacabados_papel = $15
+        lleva_textura = $13, lleva_hot_stamping = $14,
+        idcat_tipo_pegado_pegado = $15, que_se_pega = $16
+      WHERE idacabados_papel = $17
     `, [...valores, idacabados_papel]);
   } else {
     const { rows: nuevo } = await client.query(`
@@ -324,8 +330,9 @@ async function upsertAcabados(client: any, scope: Scope, acabados: any): Promise
         idcat_refuerzo_material, idcat_refuerzo_medidas,
         idcat_base_material, base_medida,
         idcat_empaque, pzs_caja,
-        lleva_uv, lleva_alto_relieve, lleva_textura, lleva_hot_stamping
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        lleva_uv, lleva_alto_relieve, lleva_textura, lleva_hot_stamping,
+        idcat_tipo_pegado_pegado, que_se_pega
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
       RETURNING idacabados_papel
     `, [scope.idproducto_papel, scope.idcomponente_papel, ...valores]);
     idacabados_papel = nuevo[0].idacabados_papel;
@@ -351,6 +358,7 @@ async function getAcabados(scope: Scope) {
       a.*,
       tp.nombre   AS tipo_pegado,
       pg.nombre   AS pegamento,
+      tpp.nombre  AS tipo_pegado_pegado,
       rl.nombre        AS rollo_lam,
       rl.medida_ancho  AS rollo_lam_medida_ancho,
       rm.nombre        AS refuerzo_material,
@@ -360,6 +368,9 @@ async function getAcabados(scope: Scope) {
     FROM acabados_papel a
     LEFT JOIN cat_tipo_pegado       tp   ON tp.idcat_tipo_pegado       = a.idcat_tipo_pegado
     LEFT JOIN cat_pegamento         pg   ON pg.idcat_pegamento         = a.idcat_pegamento
+    -- Catálogo propio del proceso "Pegado" de la ruta (Fase 2) -- mismo
+    -- catálogo cat_tipo_pegado, columna distinta (idcat_tipo_pegado_pegado).
+    LEFT JOIN cat_tipo_pegado       tpp  ON tpp.idcat_tipo_pegado      = a.idcat_tipo_pegado_pegado
     LEFT JOIN rollo_lam             rl   ON rl.idrollo_lam             = a.idrollo_lam
     LEFT JOIN cat_refuerzo_material rm   ON rm.idcat_refuerzo_material = a.idcat_refuerzo_material
     LEFT JOIN cat_refuerzo_medidas  rmed ON rmed.idcat_refuerzo_medidas = a.idcat_refuerzo_medidas
@@ -407,7 +418,16 @@ async function getComponentes(idproducto_papel: number) {
 
     const { rows: procesoRows } = await pool.query(`
       SELECT cpp.idcomponente_papel_proceso, cpp.idproceso_cat, cpp.orden, cpp.observaciones,
-             pc.nombre_proceso
+             cpp.veces,
+             pc.nombre_proceso,
+             -- NUEVO: tabla/familia del proceso. nombre_proceso es texto libre
+             -- del catálogo y no sirve para decidir nada por código; la columna
+             -- tabla es la llave estable con la que ya se resuelve la máquina
+             -- de cada proceso (ver CLAVE_MAQUINA_POR_TABLA). La cotización y
+             -- el pedido la usan para mostrar SOLO los campos de los procesos
+             -- que el producto especial realmente tiene en su ruta
+             -- (impresion_papel, laminacion_papel, armado_papel...).
+             pc.tabla, pc.familia
       FROM componente_papel_proceso cpp
       JOIN proceso_cat pc ON pc.idproceso_cat = cpp.idproceso_cat
       WHERE cpp.idcomponente_papel = $1
@@ -499,23 +519,27 @@ async function upsertComponenteProcesos(
   for (let pi = 0; pi < procesosEntrantes.length; pi++) {
     const proceso = procesosEntrantes[pi];
     const ordenProceso = proceso.orden ?? pi + 1;
+    // `veces` = cuántas pasadas trae este paso de la ruta ("Laminación x2").
+    // Default 1 -- mismo significado que hoy (una sola pasada), y coincide
+    // con el DEFAULT de la columna en BD (Fase 2). Nunca menor a 1.
+    const vecesProceso = Math.max(1, Number(proceso.veces) || 1);
     const idProcesoEntrante = Number(proceso.idcomponente_papel_proceso) || null;
     let idcomponente_papel_proceso: number;
 
     if (idProcesoEntrante && idsExistentes.has(idProcesoEntrante)) {
       await client.query(`
         UPDATE componente_papel_proceso SET
-          idproceso_cat = $1, orden = $2, observaciones = $3,
-          actualizado_por = $4, updated_at = NOW()
-        WHERE idcomponente_papel_proceso = $5 AND idcomponente_papel = $6
-      `, [proceso.idproceso_cat, ordenProceso, proceso.observaciones ?? null, idusuario, idProcesoEntrante, idcomponente_papel]);
+          idproceso_cat = $1, orden = $2, observaciones = $3, veces = $4,
+          actualizado_por = $5, updated_at = NOW()
+        WHERE idcomponente_papel_proceso = $6 AND idcomponente_papel = $7
+      `, [proceso.idproceso_cat, ordenProceso, proceso.observaciones ?? null, vecesProceso, idusuario, idProcesoEntrante, idcomponente_papel]);
       idcomponente_papel_proceso = idProcesoEntrante;
     } else {
       const { rows } = await client.query(`
-        INSERT INTO componente_papel_proceso (idcomponente_papel, idproceso_cat, orden, observaciones, creado_por, actualizado_por)
-        VALUES ($1, $2, $3, $4, $5, $5)
+        INSERT INTO componente_papel_proceso (idcomponente_papel, idproceso_cat, orden, observaciones, veces, creado_por, actualizado_por)
+        VALUES ($1, $2, $3, $4, $5, $6, $6)
         RETURNING idcomponente_papel_proceso
-      `, [idcomponente_papel, proceso.idproceso_cat, ordenProceso, proceso.observaciones ?? null, idusuario]);
+      `, [idcomponente_papel, proceso.idproceso_cat, ordenProceso, proceso.observaciones ?? null, vecesProceso, idusuario]);
       idcomponente_papel_proceso = rows[0].idcomponente_papel_proceso;
     }
     idsConservados.add(idcomponente_papel_proceso);
@@ -1081,21 +1105,31 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "costo_laminado inválido" });
     }
 
+    // CORREGIDO (Jose, 2026-09-03): "productos" es el catálogo maestro
+    // (1=Plástico, 2=Papel, 3=Cartón, 4=Especial -- ver backfill/alta de la
+    // fila 4 que Jose corre aparte). Antes TODO producto de papel, incluidos
+    // los especiales, se guardaba con idproductos=2 fijo -- así que el
+    // catálogo maestro nunca sabía que un producto era especial. Ahora se
+    // decide según es_especial.
+    const idproductosProducto = es_especial === true ? 4 : 2;
+
     // ── Validación de duplicados por descripción + medida ──────────────────
     // Solo se valida cuando ambos campos vienen con contenido: si alguno
     // llega vacío no hay forma confiable de determinar si es "el mismo"
     // producto, así que se deja pasar (sigue siendo opcional en contexto
-    // de cotización).
+    // de cotización). Se compara solo contra la misma familia (papel normal
+    // vs especial) -- un especial y un papel normal con la misma
+    // descripción+medida no son necesariamente "el mismo producto".
     const descripcionNorm = typeof descripcion_papel === "string" ? descripcion_papel.trim() : "";
     const medidaNorm = typeof medida === "string" ? medida.trim() : "";
     if (descripcionNorm && medidaNorm) {
       const { rows: dup } = await client.query(
         `SELECT idproducto_papel FROM producto_papel
-         WHERE idproductos = 2 AND activo = true
-           AND TRIM(LOWER(descripcion_papel)) = TRIM(LOWER($1))
-           AND TRIM(LOWER(COALESCE(medida, ''))) = TRIM(LOWER($2))
+         WHERE idproductos = $1 AND activo = true
+           AND TRIM(LOWER(descripcion_papel)) = TRIM(LOWER($2))
+           AND TRIM(LOWER(COALESCE(medida, ''))) = TRIM(LOWER($3))
          LIMIT 1`,
-        [descripcionNorm, medidaNorm]
+        [idproductosProducto, descripcionNorm, medidaNorm]
       );
       if (dup.length > 0) {
         return res.status(409).json({
@@ -1118,7 +1152,7 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
         descripcion_papel, ancho, fuelle, altura, medida, tamano_asa_default,
         tamano_prod, costo_laminado, es_especial,
         creado_por, actualizado_por
-      ) VALUES (2, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+      ) VALUES ($12, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
       RETURNING idproducto_papel
     `, [
       idcat_tipo_producto_papel,
@@ -1131,6 +1165,7 @@ export const crearProductoPapel = async (req: Request, res: Response) => {
       costoLaminadoValidado,
       es_especial === true,
       idusuario,
+      idproductosProducto,
     ]);
 
     const idproducto_papel = prodRows[0].idproducto_papel;
@@ -1302,20 +1337,25 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
     if (check.length === 0)
       return res.status(404).json({ error: "Producto no encontrado" });
 
+    // Igual que en crearProductoPapel: el catálogo maestro "productos"
+    // distingue especial (4) de papel normal (2) (Jose, 2026-09-03).
+    const idproductosProducto = es_especial === true ? 4 : 2;
+
     // ── Validación de duplicados por descripción + medida ──────────────────
     // Misma regla que en creación, pero excluyendo al propio producto que
-    // se está editando (si no, siempre "chocaría" consigo mismo).
+    // se está editando (si no, siempre "chocaría" consigo mismo). Se
+    // compara solo contra la misma familia (papel normal vs especial).
     const descripcionNorm = typeof descripcion_papel === "string" ? descripcion_papel.trim() : "";
     const medidaNorm = typeof medida === "string" ? medida.trim() : "";
     if (descripcionNorm && medidaNorm) {
       const { rows: dup } = await client.query(
         `SELECT idproducto_papel FROM producto_papel
-         WHERE idproductos = 2 AND activo = true
-           AND idproducto_papel <> $1
-           AND TRIM(LOWER(descripcion_papel)) = TRIM(LOWER($2))
-           AND TRIM(LOWER(COALESCE(medida, ''))) = TRIM(LOWER($3))
+         WHERE idproductos = $1 AND activo = true
+           AND idproducto_papel <> $2
+           AND TRIM(LOWER(descripcion_papel)) = TRIM(LOWER($3))
+           AND TRIM(LOWER(COALESCE(medida, ''))) = TRIM(LOWER($4))
          LIMIT 1`,
-        [id, descripcionNorm, medidaNorm]
+        [idproductosProducto, id, descripcionNorm, medidaNorm]
       );
       if (dup.length > 0) {
         return res.status(409).json({
@@ -1340,6 +1380,7 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
         tamano_prod = $8,
         costo_laminado = $9,
         es_especial = $10,
+        idproductos = $13,
         actualizado_por = $11,
         updated_at = NOW()
       WHERE idproducto_papel = $12
@@ -1354,6 +1395,7 @@ export const actualizarProductoPapel = async (req: Request, res: Response) => {
       costoLaminadoValidado,
       es_especial === true,
       idusuario, id,
+      idproductosProducto,
     ]);
 
     // ── 2. Componentes — mismo patrón de preservar id que grupos/materiales ─
@@ -1989,11 +2031,19 @@ export const getProcesosCat = async (_req: Request, res: Response) => {
     // tabla, así que sin este filtro la ruta de un producto de papel ofrecía
     // también extrusión, impresión, bolseo y asa flexible, que son de
     // plástico y no pintan nada aquí (lo reportó Jose).
+    //
+    // tabla <> 'pegado_papel' (Jose, 2026-09-03): Pegado resultó ser el
+    // mismo proceso que Empaque en la práctica, así que se saca del
+    // catálogo para que ya no se pueda AGREGAR a una ruta nueva. No se
+    // borra ni se desactiva la fila en proceso_cat -- eso rompería órdenes
+    // viejas que ya lo tienen capturado -- solo se excluye de esta lista,
+    // que es la que alimenta "+ Agregar proceso".
     const { rows } = await pool.query(`
       SELECT idproceso_cat, nombre_proceso, familia, tabla
       FROM proceso_cat
       WHERE activo = true
         AND LOWER(COALESCE(familia, '')) = 'papel'
+        AND tabla <> 'pegado_papel'
       ORDER BY idproceso_cat ASC
     `);
     return res.json(rows);

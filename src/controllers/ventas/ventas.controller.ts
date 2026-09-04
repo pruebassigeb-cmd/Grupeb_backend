@@ -12,7 +12,7 @@ import {
 } from "../../services/ventas/pagos.service";
 import { type Moneda, resolverMontoPago } from "../../utils/moneda.utils";
 import { ErrorHttp, responderError } from "../../utils/errorHttp";
-import { congelarMermaSiEsPapel } from "../../services/producto_papel/merma.service";
+import { emitirOrdenesProduccion } from "../../services/produccion/emitirOrdenProduccionEspecial.service";
 
 /*
  * Resuelve primero la solicitud, toma su advisory transaccional y finalmente
@@ -279,6 +279,51 @@ async function prepararDatosOrden(client: any, idsolicitudProducto: number) {
   };
 }
 
+// ── DISCRIMINADOR PAPEL vs PLÁSTICO ──────────────────────────────────────
+// Mismo criterio que diseno.controller.ts / ordenDiseno.controller.ts. Antes
+// esta función (generarOrdenesPendientes, el lado "se cubrió el anticipo")
+// no lo tenía y llamaba SIEMPRE a prepararDatosOrden (plástico): para un
+// producto de papel, configuracion_plastico_idconfiguracion_plastico es
+// NULL, el INNER JOIN de getMedidasParaOrden no encontraba nada y la orden
+// se creaba con pzas/kilos en NULL en vez de la cantidad aprobada real —
+// un hueco preexistente, no algo de especiales. Se corrige de paso porque
+// la rama de especiales necesita el datosOrden correcto para funcionar.
+async function esProductoPapel(client: any, idsolicitudProducto: number): Promise<boolean> {
+  const { rows } = await client.query(
+    `SELECT tipo_material FROM solicitud_producto WHERE idsolicitud_producto = $1`,
+    [idsolicitudProducto]
+  );
+  // Los especiales ahora guardan tipo_material="especial" (no "papel"),
+  // pero necesitan el mismo datosOrden que papel normal (Jose, 2026-09-03).
+  return rows[0]?.tipo_material === "papel" || rows[0]?.tipo_material === "especial";
+}
+
+async function prepararDatosOrdenPapel(client: any, idsolicitudProducto: number) {
+  const { rows } = await client.query(`
+    SELECT
+      COALESCE(sd.cantidad, 0) AS cantidad,
+      sd.kilogramos,
+      sd.modo_cantidad
+    FROM solicitud_detalle sd
+    WHERE sd.solicitud_producto_id = $1
+      AND sd.aprobado = true
+    LIMIT 1
+  `, [idsolicitudProducto]);
+
+  const detalle = rows[0] ?? null;
+  const modoKilo = detalle?.modo_cantidad === "kilo";
+  const cantidad = detalle ? Number(detalle.cantidad) : null;
+  const kilos    = modoKilo && detalle?.kilogramos != null
+    ? Number(Number(detalle.kilogramos).toFixed(4))
+    : null;
+
+  return {
+    repeticion_extrusion: null, repeticion_metro: null, metros: null,
+    metros_merma: null, ancho_bobina: null, repeticion_kidder: null, repeticion_sicosa: null,
+    kilos, kilos_merma: null, pzas: cantidad, pzas_merma: null,
+  };
+}
+
 async function generarOrdenesPendientes(
   client: any,
   solicitudId: number,
@@ -315,39 +360,31 @@ async function generarOrdenesPendientes(
     if (ordenExistenteRows.length > 0) continue;
 
     const noProduccion = await generarNoProduccion(client);
-    const datosOrden   = await prepararDatosOrden(client, productoId);
+    const esPapel      = await esProductoPapel(client, productoId);
+    const datosOrden   = esPapel
+      ? await prepararDatosOrdenPapel(client, productoId)
+      : await prepararDatosOrden(client, productoId);
 
-    const { rows: nuevaOrdenRows } = await client.query(
-      `INSERT INTO orden_produccion (
-        estado_administrativo_cat_idestado_administrativo_cat,
-        no_produccion, fecha, fecha_entrega,
-        idsolicitud, idsolicitud_producto, idestado_produccion_cat,
-        repeticion_extrusion, repeticion_metro, metros, metros_merma, ancho_bobina,
-        kilos, kilos_merma, pzas, pzas_merma, repeticion_kidder, repeticion_sicosa
-      ) VALUES ($1,$2,NOW(),NOW() + INTERVAL '35 days',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-      RETURNING idproduccion`,
-      [
-        ESTADO.PENDIENTE, noProduccion, solicitudId, productoId, ESTADO.PENDIENTE,
-        datosOrden.repeticion_extrusion, datosOrden.repeticion_metro,
-        datosOrden.metros, datosOrden.metros_merma, datosOrden.ancho_bobina,
-        datosOrden.kilos, datosOrden.kilos_merma, datosOrden.pzas, datosOrden.pzas_merma,
-        datosOrden.repeticion_kidder, datosOrden.repeticion_sicosa,
-      ]
-    );
+    // ── UNA orden, o una por componente si es un especial de papel ──
+    // (emitirOrdenesProduccion también congela la merma de papel en cada
+    // fila que crea — ver emitirOrdenProduccionEspecial.service.ts).
+    const { folios, esEspecial } = await emitirOrdenesProduccion(client, {
+      solicitudId,
+      idsolicitudProducto: productoId,
+      noProduccionBase: noProduccion,
+      datosOrden,
+      estadoPendiente: ESTADO.PENDIENTE,
+      usuarioId,
+    });
 
-    // ── MERMA DE PAPEL ── mismo punto de enganche que diseno.controller.ts
-    // y ordenDiseno.controller.ts. congelarMermaSiEsPapel discrimina papel
-    // vs plástico internamente, no hace falta chequearlo aquí.
-    const idproduccionNueva = nuevaOrdenRows[0]?.idproduccion;
-    if (idproduccionNueva) {
-      const { aplico } = await congelarMermaSiEsPapel(client, Number(idproduccionNueva), usuarioId);
-      if (aplico) {
-        console.log(`📐 Merma de papel congelada para la orden ${noProduccion}`);
-      }
+    if (folios.length > 0) {
+      ordenesCreadas.push(...folios);
+      console.log(
+        esEspecial
+          ? `✅ Especial: órdenes ${folios.join(", ")} creadas`
+          : `✅ Orden ${noProduccion} creada`
+      );
     }
-
-    ordenesCreadas.push(noProduccion);
-    console.log(`✅ Orden ${noProduccion} creada`);
   }
 
   return ordenesCreadas;
